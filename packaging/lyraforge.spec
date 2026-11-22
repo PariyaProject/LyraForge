@@ -22,6 +22,7 @@ a = Analysis(
         "lyraforge.playback.windows.driver",
         "lyraforge.playback.windows.win32_types",
         "lyraforge.playback.windows.window_guard",
+        "lyraforge.secrets_win32",
         "uvicorn.logging",
         "uvicorn.loops.auto",
         "uvicorn.protocols.http.auto",
