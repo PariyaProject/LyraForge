@@ -48,6 +48,7 @@ from lyraforge.music_core.scoring import score_arrangement
 from lyraforge.playback.guards import StopToken
 from lyraforge.playback.player import PlaybackResult
 from lyraforge.preview.synth import DEFAULT_SAMPLE_RATE, synthesize_performance_to_wav
+from lyraforge.secrets import SecretStore, default_secret_store, is_sensitive_key
 from lyraforge.transcribers import (
     DEFAULT_TRANSCRIBER_ID,
     ProgressCallback,
@@ -215,12 +216,41 @@ class SongDetail:
 class LibraryStore:
     """Manages SQLite index + atomic file artifacts under ``data_dir``."""
 
-    def __init__(self, data_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path | None = None,
+        *,
+        secret_store: SecretStore | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir).expanduser() if data_dir is not None else default_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "library.db"
+        self._secrets = secret_store or default_secret_store(self.data_dir)
         self._conn = sqlite3.connect(self.db_path)
         self.schema_version = apply_migrations(self._conn)
+        self._migrate_legacy_plaintext_secrets()
+
+    def _migrate_legacy_plaintext_secrets(self) -> None:
+        rows = self._conn.execute("SELECT key, value_json FROM settings").fetchall()
+        sensitive_keys: list[str] = []
+        for row in rows:
+            k = str(row["key"])
+            if not is_sensitive_key(k):
+                continue
+            sensitive_keys.append(k)
+            try:
+                val = json.loads(row["value_json"])
+            except json.JSONDecodeError:
+                val = row["value_json"]
+            if isinstance(val, str) and val.strip():
+                self._secrets.set(k, val.strip())
+        if sensitive_keys:
+            placeholders = ",".join("?" for _ in sensitive_keys)
+            with self._conn:
+                self._conn.execute(
+                    f"DELETE FROM settings WHERE key IN ({placeholders})",
+                    sensitive_keys,
+                )
 
     def __enter__(self) -> LibraryStore:
         return self
@@ -1063,12 +1093,33 @@ class LibraryStore:
         rows = self._conn.execute(
             "SELECT key, value_json FROM settings ORDER BY key ASC"
         ).fetchall()
-        return {str(r["key"]): json.loads(r["value_json"]) for r in rows}
+        out = {
+            str(r["key"]): json.loads(r["value_json"])
+            for r in rows
+            if not is_sensitive_key(str(r["key"]))
+        }
+        out["llm_api_key_configured"] = self._secrets.has("llm_api_key")
+        return out
+
+    def get_secret(self, key: str) -> str | None:
+        clean_key = key.strip()
+        if not clean_key:
+            return None
+        return self._secrets.get(clean_key)
 
     def set_setting(self, key: str, value: Any) -> None:
         clean_key = key.strip()
         if not clean_key:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "setting key must not be empty")
+        if is_sensitive_key(clean_key):
+            secret_str = "" if value is None else str(value).strip()
+            if secret_str:
+                self._secrets.set(clean_key, secret_str)
+            else:
+                self._secrets.delete(clean_key)
+            with self._conn:
+                self._conn.execute("DELETE FROM settings WHERE key = ?", (clean_key,))
+            return
         with self._conn:
             self._conn.execute(
                 """

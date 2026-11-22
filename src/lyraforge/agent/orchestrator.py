@@ -13,6 +13,7 @@ from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.library.store import ArrangementRecord, LibraryStore
 from lyraforge.music_core.arranger import ArrangeOptions, Style
 from lyraforge.sources.local import MIDI_EXTENSIONS, LocalLibrarySourceAdapter, classify_extension
+from lyraforge.sources.online import OpenMusicCatalogSourceAdapter, rank_candidates
 from lyraforge.sources.url import DirectUrlSourceAdapter, validate_public_http_url
 
 ALLOWED_TOOLS: tuple[dict[str, str], ...] = (
@@ -90,11 +91,16 @@ class AgentOrchestrator:
         provider: LLMProvider | None = None,
         search_dirs: Sequence[str | Path] = (),
         url_adapter: DirectUrlSourceAdapter | None = None,
+        online_adapter: OpenMusicCatalogSourceAdapter | None = None,
     ) -> None:
         self.store = store
-        self.provider = provider or resolve_llm_provider(store.get_settings())
+        self.provider = provider or resolve_llm_provider(
+            store.get_settings(),
+            api_key=store.get_secret("llm_api_key"),
+        )
         self.local_adapter = LocalLibrarySourceAdapter(store=store, search_dirs=search_dirs)
         self.url_adapter = url_adapter or DirectUrlSourceAdapter()
+        self.online_adapter = online_adapter or OpenMusicCatalogSourceAdapter()
 
     def _build_context(self, arrangement_id: str | None) -> dict[str, Any]:
         if not arrangement_id:
@@ -109,12 +115,20 @@ class AgentOrchestrator:
             "speed": rec.speed,
         }
 
-    def _import_path(self, path: Path, steps: list[AgentStep]) -> str:
+    def _import_path(
+        self,
+        path: Path,
+        steps: list[AgentStep],
+        *,
+        title: str | None = None,
+        artist: str = "",
+        tags: list[str] | None = None,
+    ) -> str:
         kind = classify_extension(path.suffix)
         res = (
-            self.store.import_midi(path)
+            self.store.import_midi(path, title=title, artist=artist, tags=tags)
             if kind == "midi"
-            else self.store.import_audio(path)
+            else self.store.import_audio(path, title=title, artist=artist, tags=tags)
         )
         steps.append(
             AgentStep(
@@ -125,6 +139,33 @@ class AgentOrchestrator:
             )
         )
         return res.song.id
+
+    def _import_external_url(
+        self,
+        url: str,
+        steps: list[AgentStep],
+        *,
+        title: str | None = None,
+        artist: str = "",
+        tags: list[str] | None = None,
+    ) -> str:
+        with tempfile.TemporaryDirectory(prefix="lyraforge-agent-url-") as tmpdir:
+            downloaded = self.url_adapter.fetch(url, Path(tmpdir), user_authorized=True)
+            kind = "midi" if downloaded.suffix.lower() in MIDI_EXTENSIONS else "audio"
+            res = (
+                self.store.import_midi(downloaded, title=title, artist=artist, tags=tags)
+                if kind == "midi"
+                else self.store.import_audio(downloaded, title=title, artist=artist, tags=tags)
+            )
+            steps.append(
+                AgentStep(
+                    tool="source.import_url",
+                    status="ok",
+                    detail=f"已按用户授权下载并导入：{res.song.title}",
+                    output={"song_id": res.song.id, "url": url, "kind": kind},
+                )
+            )
+            return res.song.id
 
     def _maybe_optimize_arrangement(
         self,
@@ -261,27 +302,9 @@ class AgentOrchestrator:
                     confirmation_prompt=msg,
                     message=msg,
                 )
-            with tempfile.TemporaryDirectory(prefix="lyraforge-agent-url-") as tmpdir:
-                downloaded = self.url_adapter.fetch(
-                    target_url, Path(tmpdir), user_authorized=True
-                )
-                kind = "midi" if downloaded.suffix.lower() in MIDI_EXTENSIONS else "audio"
-                res = (
-                    self.store.import_midi(downloaded)
-                    if kind == "midi"
-                    else self.store.import_audio(downloaded)
-                )
-                resolved_song_id = res.song.id
-                steps.append(
-                    AgentStep(
-                        tool="source.import_url",
-                        status="ok",
-                        detail=f"已按用户授权下载并导入：{res.song.title}",
-                        output={"song_id": resolved_song_id, "url": target_url},
-                    )
-                )
+            resolved_song_id = self._import_external_url(target_url, steps)
         else:
-            cands = self.local_adapter.search(intent.query)
+            cands = rank_candidates(self.local_adapter.search(intent.query), intent.query)
             found_candidates = [c.to_json() for c in cands]
             steps.append(
                 AgentStep(
@@ -292,28 +315,98 @@ class AgentOrchestrator:
                 )
             )
             if not cands:
-                return AgentRunResult(
-                    status="not_found",
-                    provider=self.provider.provider_id,
-                    intent=intent.to_json(),
-                    steps=tuple(steps),
-                    candidates=(),
-                    selected_song=None,
-                    selected_arrangement=None,
-                    comparison=None,
-                    preview_url=None,
-                    requires_confirmation=False,
-                    confirmation_prompt=None,
-                    message=(
-                        f"未在本地曲库中找到“{intent.query or prompt}”。"
-                        "请先导入本地 MIDI/音视频，或在指令中附带经授权的公开音源直链 URL。"
-                    ),
+                search_kw = intent.query or prompt
+                if not allow_network:
+                    msg = (
+                        f"本地曲库未找到“{search_kw}”。"
+                        "是否授权搜索公开授权音乐目录（如 Internet Archive CC/Public Domain 曲库）"
+                        "并下载候选音源？"
+                    )
+                    steps.append(
+                        AgentStep(
+                            tool="source.search",
+                            status="blocked",
+                            detail="等待用户授权在线检索公开曲库",
+                            output={"query": search_kw},
+                        )
+                    )
+                    return AgentRunResult(
+                        status="needs_confirmation",
+                        provider=self.provider.provider_id,
+                        intent=intent.to_json(),
+                        steps=tuple(steps),
+                        candidates=(),
+                        selected_song=None,
+                        selected_arrangement=None,
+                        comparison=None,
+                        preview_url=None,
+                        requires_confirmation=True,
+                        confirmation_prompt=msg,
+                        message=msg,
+                    )
+
+                online_cands = rank_candidates(
+                    self.online_adapter.search(search_kw), search_kw
                 )
-            top = cands[0]
-            if top.source_type == "library":
-                resolved_song_id = top.id
+                found_candidates = [c.to_json() for c in online_cands]
+                steps.append(
+                    AgentStep(
+                        tool="source.search",
+                        status="ok",
+                        detail=f"检索公开授权曲库“{search_kw}”，命中 {len(online_cands)} 项",
+                        output={"count": len(online_cands)},
+                    )
+                )
+                if not online_cands:
+                    return AgentRunResult(
+                        status="not_found",
+                        provider=self.provider.provider_id,
+                        intent=intent.to_json(),
+                        steps=tuple(steps),
+                        candidates=(),
+                        selected_song=None,
+                        selected_arrangement=None,
+                        comparison=None,
+                        preview_url=None,
+                        requires_confirmation=False,
+                        confirmation_prompt=None,
+                        message=(
+                            f"本地与公开授权音乐目录均未找到“{search_kw}”。"
+                            "可手动导入本地 MIDI/音视频，或在指令中附带经授权的直链 URL。"
+                        ),
+                    )
+                top = online_cands[0]
+                if intent.action == "search":
+                    return AgentRunResult(
+                        status="completed",
+                        provider=self.provider.provider_id,
+                        intent=intent.to_json(),
+                        steps=tuple(steps),
+                        candidates=tuple(found_candidates),
+                        selected_song=None,
+                        selected_arrangement=None,
+                        comparison=None,
+                        preview_url=None,
+                        requires_confirmation=False,
+                        confirmation_prompt=None,
+                        message=(
+                            f"在公开授权曲库找到 {len(found_candidates)} 个“{search_kw}”候选，"
+                            f"首推 {top.format.upper()}：《{top.title}》。"
+                        ),
+                    )
+                resolved_song_id = self._import_external_url(
+                    top.location,
+                    steps,
+                    title=top.title,
+                    artist=top.artist,
+                    tags=["online-open-catalog", top.source_type, top.format],
+                )
             else:
-                resolved_song_id = self._import_path(Path(top.location), steps)
+                top = cands[0]
+                if top.source_type == "library":
+                    resolved_song_id = top.id
+                else:
+                    resolved_song_id = self._import_path(Path(top.location), steps)
 
         assert resolved_song_id is not None
         detail = self.store.get_song(resolved_song_id)

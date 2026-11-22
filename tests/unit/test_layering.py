@@ -140,6 +140,12 @@ def test_desktop_has_no_windows_input_imports() -> None:
         )
 
 
+def test_secrets_cross_platform_has_no_win32_imports() -> None:
+    imps = _imported_roots(SRC / "secrets.py")
+    hits = imps & FORBIDDEN_WIN_INPUT
+    assert not hits, f"secrets.py imports forbidden Windows/input modules: {sorted(hits)}"
+
+
 def test_pyproject_core_dependencies_have_no_windows_only_packages() -> None:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     deps = data["project"]["dependencies"]

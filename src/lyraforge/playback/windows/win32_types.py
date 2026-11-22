@@ -145,6 +145,8 @@ def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Wind
             )
         ),
     )
-    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
     if sent != 1:
-        raise OSError(f"Win32 SendInput failed for {spec.binding!r} (sent={sent})")
+        err = ctypes.get_last_error()
+        raise OSError(f"Win32 SendInput failed for {spec.binding!r} (sent={sent}, win32_err={err})")

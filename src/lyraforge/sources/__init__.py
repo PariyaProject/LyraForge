@@ -6,14 +6,22 @@ from lyraforge.sources.local import (
     MIDI_EXTENSIONS,
     LocalLibrarySourceAdapter,
 )
-from lyraforge.sources.url import DirectUrlSourceAdapter, validate_public_http_url
+from lyraforge.sources.online import OpenMusicCatalogSourceAdapter, rank_candidates
+from lyraforge.sources.url import (
+    DirectUrlSourceAdapter,
+    resolve_public_http_url,
+    validate_public_http_url,
+)
 
 __all__ = [
     "ALLOWED_SOURCE_EXTENSIONS",
     "DirectUrlSourceAdapter",
     "LocalLibrarySourceAdapter",
     "MIDI_EXTENSIONS",
+    "OpenMusicCatalogSourceAdapter",
     "SourceAdapter",
     "SourceCandidate",
+    "rank_candidates",
+    "resolve_public_http_url",
     "validate_public_http_url",
 ]

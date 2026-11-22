@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.instruments import DEFAULT_PROFILE_ID, list_profile_ids
 from lyraforge.music_core.arranger import SemitonePolicy, Style
+from lyraforge.secrets import redact_secret
 
 _URL_RE = re.compile(r"(https?://[^\s<>\"']+)", re.IGNORECASE)
 _PATH_RE = re.compile(
@@ -317,16 +318,18 @@ class OpenAICompatibleLLMProvider:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            safe_err = redact_secret(str(exc), (self.api_key,))
             raise LyraError(
-                ErrorCode.SOURCE_UNAVAILABLE, f"LLM provider request failed: {exc}"
+                ErrorCode.SOURCE_UNAVAILABLE, f"LLM provider request failed: {safe_err}"
             ) from exc
 
         try:
             content = raw["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            safe_err = redact_secret(str(exc), (self.api_key,))
             raise LyraError(
-                ErrorCode.INVALID_ARGUMENT, f"LLM returned malformed JSON intent: {exc}"
+                ErrorCode.INVALID_ARGUMENT, f"LLM returned malformed JSON intent: {safe_err}"
             ) from exc
 
         action = parsed.get("action", baseline.action)
@@ -361,13 +364,21 @@ class OpenAICompatibleLLMProvider:
         )
 
 
-def resolve_llm_provider(settings: dict[str, Any] | None = None) -> LLMProvider:
+def resolve_llm_provider(
+    settings: dict[str, Any] | None = None,
+    *,
+    api_key: str | None = None,
+) -> LLMProvider:
     """Resolve configured LLM provider; defaults safely to offline rule-based parser."""
     cfg = settings or {}
     enabled = bool(cfg.get("llm_enabled", False))
     base_url = str(cfg.get("llm_base_url") or os.environ.get("LYRAFORGE_LLM_BASE_URL", "")).strip()
-    api_key = str(cfg.get("llm_api_key") or os.environ.get("LYRAFORGE_LLM_API_KEY", "")).strip()
+    resolved_key = str(
+        api_key or os.environ.get("LYRAFORGE_LLM_API_KEY", "") or cfg.get("llm_api_key", "")
+    ).strip()
     model = str(cfg.get("llm_model") or os.environ.get("LYRAFORGE_LLM_MODEL", "")).strip()
     if enabled and base_url and model:
-        return OpenAICompatibleLLMProvider(base_url=base_url, api_key=api_key, model=model)
+        return OpenAICompatibleLLMProvider(
+            base_url=base_url, api_key=resolved_key, model=model
+        )
     return RuleBasedLLMProvider()

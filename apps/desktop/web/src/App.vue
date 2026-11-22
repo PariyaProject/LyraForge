@@ -77,6 +77,7 @@ const llmEnabledSetting = ref(false);
 const llmBaseUrlSetting = ref("");
 const llmModelSetting = ref("");
 const llmApiKeySetting = ref("");
+const llmApiKeyConfigured = ref(false);
 
 // Agent
 const agentPrompt = ref("");
@@ -504,7 +505,9 @@ async function handleSaveSettings(): Promise<void> {
       await api.saveSetting("llm_model", llmModelSetting.value.trim());
     }
     if (llmApiKeySetting.value.trim()) {
-      await api.saveSetting("llm_api_key", llmApiKeySetting.value.trim());
+      const updated = await api.saveSetting("llm_api_key", llmApiKeySetting.value.trim());
+      llmApiKeyConfigured.value = Boolean(updated.settings.llm_api_key_configured);
+      llmApiKeySetting.value = "";
     }
     statusMessage.value = "设置已保存至本地曲库";
   } catch (err) {
@@ -643,6 +646,7 @@ onMounted(async () => {
     if (typeof settings.llm_model === "string") {
       llmModelSetting.value = settings.llm_model;
     }
+    llmApiKeyConfigured.value = Boolean(settings.llm_api_key_configured);
     await refreshSongs();
     playbackStatus.value = await api.playbackStatus();
   } catch (err) {
@@ -790,8 +794,15 @@ onBeforeUnmount(() => {
             />
             <label for="setting-llm-model">模型名称</label>
             <input id="setting-llm-model" v-model="llmModelSetting" type="text" placeholder="qwen2.5" />
-            <label for="setting-llm-key">API Key（可选）</label>
-            <input id="setting-llm-key" v-model="llmApiKeySetting" type="password" />
+            <label for="setting-llm-key">
+              API Key {{ llmApiKeyConfigured ? "（已安全存入系统凭据，留空保持不变）" : "（可选）" }}
+            </label>
+            <input
+              id="setting-llm-key"
+              v-model="llmApiKeySetting"
+              type="password"
+              :placeholder="llmApiKeyConfigured ? '已安全存储（输入新密钥可覆盖）' : '建议使用环境变量或系统凭据'"
+            />
           </div>
           <button type="button" style="margin-top: 8px" @click="handleSaveSettings">
             保存设置
@@ -846,7 +857,7 @@ onBeforeUnmount(() => {
             </button>
             <label class="checkbox-row">
               <input v-model="agentAllowNetwork" type="checkbox" />
-              <span>允许下载指令中用户提供的外部直链（默认关闭）</span>
+              <span>允许联网搜索开放曲库（Internet Archive）或下载用户直链（默认关闭）</span>
             </label>
           </div>
 
@@ -858,7 +869,7 @@ onBeforeUnmount(() => {
             <div v-if="agentResult.requires_confirmation" class="banner-warn" style="margin-top: 8px">
               <p style="margin: 0 0 6px">{{ agentResult.confirmation_prompt }}</p>
               <button type="button" class="btn-primary" :disabled="busy" @click="handleRunAgent(true)">
-                确认授权并继续下载
+                确认授权联网并继续
               </button>
             </div>
             <ol v-if="agentResult.steps.length > 0" class="agent-steps">

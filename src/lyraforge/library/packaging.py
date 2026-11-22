@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
+import shutil
 import sqlite3
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -14,9 +17,11 @@ from typing import TYPE_CHECKING, Any
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.fs import atomic_write_bytes, resolve_under
 from lyraforge.instruments import load_builtin_profile
+from lyraforge.library.schema import SCHEMA_VERSION
 from lyraforge.media import SUPPORTED_MEDIA_EXTENSIONS
 from lyraforge.music_core.canonical import pretty_json
 from lyraforge.music_core.performance import validate_performance
+from lyraforge.secrets import SECRET_FILENAME, is_sensitive_key
 
 if TYPE_CHECKING:
     from lyraforge.library.store import LibraryStore
@@ -255,13 +260,22 @@ def import_lyrapack(
 
 
 def export_backup_zip(store: LibraryStore) -> bytes:
-    """Create a consistent SQLite + artifacts backup ZIP of the entire library."""
+    """Create a consistent SQLite + artifacts backup ZIP (never includes secrets)."""
     buf = io.BytesIO()
     with tempfile.TemporaryDirectory(prefix="lyraforge-backup-") as tmpdir:
         snap_db = Path(tmpdir) / "library.db"
         dst_conn = sqlite3.connect(snap_db)
         try:
             store._conn.backup(dst_conn)
+            rows = dst_conn.execute("SELECT key FROM settings").fetchall()
+            sensitive = [str(r[0]) for r in rows if is_sensitive_key(str(r[0]))]
+            if sensitive:
+                placeholders = ",".join("?" for _ in sensitive)
+                with dst_conn:
+                    dst_conn.execute(
+                        f"DELETE FROM settings WHERE key IN ({placeholders})",
+                        sensitive,
+                    )
         finally:
             dst_conn.close()
 
@@ -273,7 +287,12 @@ def export_backup_zip(store: LibraryStore) -> bytes:
                 if not item.is_file():
                     continue
                 rel = item.relative_to(root).as_posix()
-                if rel == "library.db" or rel in _SQLITE_SIDECARS:
+                if (
+                    rel == "library.db"
+                    or rel in _SQLITE_SIDECARS
+                    or rel == SECRET_FILENAME
+                    or rel.endswith(".secrets.json")
+                ):
                     continue
                 zf.write(item, arcname=rel)
                 file_count += 1
@@ -286,6 +305,78 @@ def export_backup_zip(store: LibraryStore) -> bytes:
     return buf.getvalue()
 
 
+def _verify_sqlite_backup(db_path: Path) -> None:
+    try:
+        conn = sqlite3.connect(db_path)
+    except sqlite3.Error as exc:
+        raise LyraError(
+            ErrorCode.PACKAGE_INVALID, f"backup library.db cannot be opened: {exc}"
+        ) from exc
+    try:
+        integrity = conn.execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise LyraError(
+                ErrorCode.PACKAGE_INVALID,
+                f"SQLite integrity check failed: {integrity}",
+            )
+        tables = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        required = {"songs", "sources", "arrangements", "schema_migrations"}
+        missing = sorted(required - tables)
+        if missing:
+            raise LyraError(
+                ErrorCode.PACKAGE_INVALID,
+                f"backup database missing required tables: {missing}",
+            )
+        row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        max_ver = int(row[0]) if row and row[0] is not None else 0
+        if max_ver <= 0 or max_ver > SCHEMA_VERSION:
+            raise LyraError(
+                ErrorCode.PACKAGE_INVALID,
+                f"incompatible backup database version {max_ver} (supported <= {SCHEMA_VERSION})",
+            )
+    except sqlite3.DatabaseError as exc:
+        raise LyraError(
+            ErrorCode.PACKAGE_INVALID, f"corrupt SQLite database in backup: {exc}"
+        ) from exc
+    finally:
+        conn.close()
+
+
+def _copy_dir_contents(
+    src_dir: Path,
+    dst_dir: Path,
+    *,
+    skip_names: frozenset[str] = frozenset(),
+) -> int:
+    count = 0
+    for item in sorted(src_dir.rglob("*")):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(src_dir).as_posix()
+        if rel in skip_names:
+            continue
+        dest = resolve_under(dst_dir, rel)
+        atomic_write_bytes(dest, item.read_bytes())
+        count += 1
+    return count
+
+
+def _clear_dir_except(target_root: Path, *, keep_name: str) -> None:
+    for item in sorted(target_root.rglob("*"), reverse=True):
+        if item.relative_to(target_root).as_posix() == keep_name:
+            continue
+        if item.is_file():
+            item.unlink()
+        elif item.is_dir():
+            with contextlib.suppress(OSError):
+                item.rmdir()
+
+
 def restore_backup_zip(
     data_dir: str | Path,
     data: bytes,
@@ -293,8 +384,9 @@ def restore_backup_zip(
     max_files: int = 5000,
     max_uncompressed_bytes: int = 250_000_000,
 ) -> dict[str, Any]:
-    """Restore a library backup archive safely into ``data_dir`` and verify DB integrity."""
+    """Safely stage, verify, and atomically restore a backup archive with rollback."""
     from lyraforge.library.store import LibraryStore
+    from lyraforge.secrets import MemorySecretBackend, SecretStore
 
     entries = _read_validated_zip_entries(
         data, max_files=max_files, max_uncompressed_bytes=max_uncompressed_bytes
@@ -309,26 +401,73 @@ def restore_backup_zip(
         raise LyraError(ErrorCode.PACKAGE_INVALID, f"invalid backup manifest: {exc}") from exc
     if not isinstance(manifest, dict) or manifest.get("kind") != "lyraforge.backup":
         raise LyraError(ErrorCode.PACKAGE_INVALID, "invalid backup manifest kind")
+    manifest_ver = manifest.get("schema_version")
+    if not isinstance(manifest_ver, int) or manifest_ver < 1 or manifest_ver > SCHEMA_VERSION:
+        raise LyraError(
+            ErrorCode.PACKAGE_INVALID,
+            f"unsupported backup manifest schema_version {manifest_ver!r}",
+        )
 
     target_root = Path(data_dir).expanduser().resolve()
     target_root.mkdir(parents=True, exist_ok=True)
-    for sidecar in _SQLITE_SIDECARS:
-        sc_path = target_root / sidecar
-        if sc_path.exists():
-            sc_path.unlink()
 
-    restored = 0
-    for rel_path, content in entries.items():
-        if rel_path == "backup_manifest.json":
-            continue
-        dest = resolve_under(target_root, rel_path)
-        atomic_write_bytes(dest, content)
-        restored += 1
+    with tempfile.TemporaryDirectory(prefix="lyraforge-restore-stage-") as stage_tmp:
+        stage_root = Path(stage_tmp) / "staged"
+        stage_root.mkdir(parents=True, exist_ok=True)
+        for rel_path, content in entries.items():
+            if (
+                rel_path == "backup_manifest.json"
+                or rel_path in _SQLITE_SIDECARS
+                or rel_path == SECRET_FILENAME
+                or rel_path.endswith(".secrets.json")
+            ):
+                continue
+            dest = resolve_under(stage_root, rel_path)
+            atomic_write_bytes(dest, content)
 
-    with LibraryStore(target_root) as restored_store:
-        songs = restored_store.search_songs("")
-        return {
-            "restored_files": restored,
-            "song_count": len(songs),
-            "schema_version": restored_store.schema_version,
-        }
+        staged_db = stage_root / "library.db"
+        _verify_sqlite_backup(staged_db)
+
+        # Verify migrations & store opening in isolated staging dir before touching target_root
+        staged_secrets = SecretStore(primary=MemorySecretBackend(), fallback=None)
+        with LibraryStore(stage_root, secret_store=staged_secrets) as staged_store:
+            staged_store.search_songs("")
+            # Switch staged DB cleanly out of WAL mode so library.db is self-contained
+            staged_store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            staged_store._conn.execute("PRAGMA journal_mode=DELETE")
+        for sidecar in _SQLITE_SIDECARS:
+            sc = stage_root / sidecar
+            if sc.exists():
+                sc.unlink()
+
+        rollback_dir = target_root.parent / f".{target_root.name}.rollback-{uuid.uuid4().hex[:8]}"
+        rollback_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Flush live WAL if an existing DB sits at target_root, then snapshot it for rollback
+            existing_db = target_root / "library.db"
+            if existing_db.is_file():
+                conn_chk = sqlite3.connect(existing_db)
+                try:
+                    with contextlib.suppress(sqlite3.Error):
+                        conn_chk.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    conn_chk.close()
+            _copy_dir_contents(target_root, rollback_dir, skip_names=frozenset({SECRET_FILENAME}))
+
+            try:
+                _clear_dir_except(target_root, keep_name=SECRET_FILENAME)
+                restored = _copy_dir_contents(stage_root, target_root)
+                _verify_sqlite_backup(target_root / "library.db")
+                with LibraryStore(target_root) as restored_store:
+                    songs = restored_store.search_songs("")
+                    return {
+                        "restored_files": restored,
+                        "song_count": len(songs),
+                        "schema_version": restored_store.schema_version,
+                    }
+            except Exception:
+                _clear_dir_except(target_root, keep_name=SECRET_FILENAME)
+                _copy_dir_contents(rollback_dir, target_root)
+                raise
+        finally:
+            shutil.rmtree(rollback_dir, ignore_errors=True)

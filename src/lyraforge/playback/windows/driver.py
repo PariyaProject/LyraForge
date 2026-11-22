@@ -29,14 +29,21 @@ class WindowsKeyboardDriver:
         profile: InstrumentProfile,
         *,
         send_input_fn: Callable[[KeyInputSpec], None] | None = None,
+        max_release_retries: int = 2,
     ) -> None:
         if send_input_fn is None and sys.platform != "win32":
             raise LyraError(
                 ErrorCode.INVALID_ARGUMENT,
                 "WindowsKeyboardDriver requires Windows",
             )
+        if max_release_retries < 0:
+            raise LyraError(
+                ErrorCode.INVALID_ARGUMENT,
+                "max_release_retries must be non-negative",
+            )
         self.profile = profile
         self._send = send_input_fn or send_key_input_win32
+        self._max_release_retries = max_release_retries
         self.pressed: set[str] = set()
 
     def _binding_for(self, key_id: str) -> str:
@@ -47,6 +54,17 @@ class WindowsKeyboardDriver:
                 f"unknown key_id {key_id!r} for profile {self.profile.id}",
             )
         return key_def.binding
+
+    def _send_release_with_retry(self, spec: KeyInputSpec) -> None:
+        last_exc: Exception | None = None
+        for _attempt in range(self._max_release_retries + 1):
+            try:
+                self._send(spec)
+                return
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def key_down(self, key_id: str) -> None:
         binding = self._binding_for(key_id)
@@ -60,9 +78,10 @@ class WindowsKeyboardDriver:
         if key_id not in self.pressed:
             return
         binding = self._binding_for(key_id)
-        self.pressed.discard(key_id)
         spec = build_key_input_spec(binding, key_up=True)
-        self._send(spec)
+        self._send_release_with_retry(spec)
+        # Update software state ONLY after OS key-up delivery succeeded
+        self.pressed.discard(key_id)
 
     def release_all(self) -> list[str]:
         keys = sorted(self.pressed)

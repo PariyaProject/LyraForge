@@ -72,21 +72,63 @@ def test_windows_keyboard_driver_mocked_and_release_all() -> None:
 def test_windows_keyboard_driver_release_all_attempts_every_key_on_error() -> None:
     profile = load_builtin_profile()
     attempts: list[KeyInputSpec] = []
+    fail_z_release = True
 
     def flaky_send(spec: KeyInputSpec) -> None:
         attempts.append(spec)
-        if spec.is_key_up and spec.binding == "Z":
+        if fail_z_release and spec.is_key_up and spec.binding == "Z":
             raise OSError("simulated SendInput failure")
 
-    driver = WindowsKeyboardDriver(profile, send_input_fn=flaky_send)
+    driver = WindowsKeyboardDriver(profile, send_input_fn=flaky_send, max_release_retries=1)
     driver.key_down("low_1")
     driver.key_down("mid_1")
 
     with pytest.raises(RuntimeError, match="failed releasing key"):
         driver.release_all()
-    # Both Z and A key-ups were attempted despite Z failing
-    assert [(s.binding, s.is_key_up) for s in attempts[-2:]] == [("Z", True), ("A", True)]
+    # Z was retried (1 + 1 retry) and stayed in pressed; A succeeded and was removed
+    assert [(s.binding, s.is_key_up) for s in attempts[-3:]] == [
+        ("Z", True),
+        ("Z", True),
+        ("A", True),
+    ]
+    assert driver.pressed == {"low_1"}
+
+    # After fault clears, subsequent release_all sends only the remaining stuck key Z
+    fail_z_release = False
+    attempts.clear()
+    released = driver.release_all()
+    assert released == ["low_1"]
+    assert [(s.binding, s.is_key_up) for s in attempts] == [("Z", True)]
     assert driver.pressed == set()
+
+
+def test_windows_keyboard_driver_transient_key_up_retry_recovers() -> None:
+    profile = load_builtin_profile()
+    up_calls = 0
+
+    def transient_send(spec: KeyInputSpec) -> None:
+        nonlocal up_calls
+        if spec.is_key_up:
+            up_calls += 1
+            if up_calls <= 2:
+                raise OSError("transient busy")
+
+    driver = WindowsKeyboardDriver(profile, send_input_fn=transient_send, max_release_retries=2)
+    driver.key_down("low_1")
+    driver.key_up("low_1")
+    assert up_calls == 3
+    assert driver.pressed == set()
+
+    # Persistent failure on single key_up keeps key in pressed
+    def always_fail_up(spec: KeyInputSpec) -> None:
+        if spec.is_key_up:
+            raise OSError("persistent failure")
+
+    driver2 = WindowsKeyboardDriver(profile, send_input_fn=always_fail_up, max_release_retries=1)
+    driver2.key_down("mid_1")
+    with pytest.raises(OSError, match="persistent failure"):
+        driver2.key_up("mid_1")
+    assert driver2.pressed == {"mid_1"}
 
 
 def test_foreground_window_guard_allowlist_and_fail_closed() -> None:

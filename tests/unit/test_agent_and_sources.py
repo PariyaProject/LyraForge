@@ -25,7 +25,13 @@ from lyraforge.library import LibraryStore
 from lyraforge.music_core import arrange, build_performance, load_midi_file
 from lyraforge.music_core.arranger import Style
 from lyraforge.preview import synthesize_performance_to_wav
-from lyraforge.sources import DirectUrlSourceAdapter, LocalLibrarySourceAdapter
+from lyraforge.sources import (
+    DirectUrlSourceAdapter,
+    LocalLibrarySourceAdapter,
+    OpenMusicCatalogSourceAdapter,
+    SourceCandidate,
+    rank_candidates,
+)
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "midi"
 
@@ -265,11 +271,22 @@ def test_agent_orchestrator_end_to_end_and_optimization(tmp_path: Path, capsys: 
         assert dense_res.status == "completed"
         assert any(s.tool == "arrange.compare" for s in dense_res.steps)
 
-        # 7. Not found case is honest
-        nf = orch.run("查找 nonexistent_missing_track")
+        # 7. Unmatched local search asks user permission before hitting external catalogs
+        gate = orch.run("查找 nonexistent_missing_track")
+        assert gate.status == "needs_confirmation"
+        assert gate.requires_confirmation is True
+
+        # 8. With allow_network=True and empty online catalog, returns honest not_found
+        class _EmptyOnline:
+            def search(self, _query: str, *, limit: int = 10) -> list[SourceCandidate]:
+                _ = limit
+                return []
+
+        orch_empty_online = AgentOrchestrator(store, online_adapter=_EmptyOnline())  # type: ignore[arg-type]
+        nf = orch_empty_online.run("查找 nonexistent_missing_track", allow_network=True)
         assert nf.status == "not_found"
 
-    # 8. CLI command round-trip
+    # 9. CLI command round-trip
     rc = main([
         "agent",
         "搜索 senbonzakura_demo 转成风物之诗琴曲谱",
@@ -279,3 +296,132 @@ def test_agent_orchestrator_end_to_end_and_optimization(tmp_path: Path, capsys: 
     assert rc == EXIT_OK
     cli_out = json.loads(capsys.readouterr().out)
     assert cli_out["status"] == "completed"
+
+
+def test_online_catalog_ranking_search_and_audio_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    midi_bytes = (FIXTURE_DIR / "c_major_scale.mid").read_bytes()
+    prof = load_builtin_profile()
+    score = load_midi_file(FIXTURE_DIR / "c_major_scale.mid")
+    perf = build_performance(score, prof, arrange(score, prof))
+    wav_tmp = tmp_path / "online_src.wav"
+    synthesize_performance_to_wav(perf, wav_tmp)
+    wav_bytes = wav_tmp.read_bytes()
+
+    # Deterministic candidate ranking prefers local > midi > audio & open license
+    ranked = rank_candidates(
+        [
+            SourceCandidate("archive.org", "1", "Sakura Song", "A", "audio", "https://x/1.wav",
+                            "https://creativecommons.org/licenses/by/4.0/", True),
+            SourceCandidate("archive.org", "2", "Sakura Song", "B", "midi", "https://x/2.mid",
+                            "https://creativecommons.org/publicdomain/zero/1.0/", True),
+            SourceCandidate("library", "3", "Sakura Song", "C", "midi", "3", "Local", False),
+        ],
+        "Sakura Song",
+    )
+    assert [c.id for c in ranked] == ["3", "2", "1"]
+
+    monkeypatch.setattr(
+        "lyraforge.sources.url.socket.getaddrinfo",
+        lambda *_a, **_kw: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    # Case A: archive catalog has both audio item and MIDI item -> prefers MIDI
+    class _RouterOpener:
+        def __init__(self, routes: dict[str, bytes]) -> None:
+            self.routes = routes
+
+        def open(self, req: Any, timeout: float = 15.0) -> _FakeHttpResponse:
+            _ = timeout
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            for prefix, body in self.routes.items():
+                if url.startswith(prefix):
+                    return _FakeHttpResponse(body)
+            raise AssertionError(f"unexpected URL requested: {url}")
+
+    routes_midi = {
+        "https://archive.org/advancedsearch.php": json.dumps({
+            "response": {
+                "docs": [
+                    {
+                        "identifier": "item_audio",
+                        "title": "Moonlight Sketch",
+                        "creator": "Public Author",
+                        "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    },
+                    {
+                        "identifier": "item_midi",
+                        "title": "Moonlight Sketch",
+                        "creator": "Public Author",
+                        "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+                    },
+                    {
+                        "identifier": "item_closed",
+                        "title": "Moonlight Sketch",
+                        "creator": "Closed",
+                        "licenseurl": "",
+                    },
+                ]
+            }
+        }).encode("utf-8"),
+        "https://archive.org/metadata/item_audio/files": json.dumps({
+            "result": [{"name": "moonlight.wav"}]
+        }).encode("utf-8"),
+        "https://archive.org/metadata/item_midi/files": json.dumps({
+            "result": [{"name": "readme.txt"}, {"name": "moonlight.mid"}]
+        }).encode("utf-8"),
+        "https://archive.org/download/item_midi/moonlight.mid": midi_bytes,
+    }
+    router_midi = _RouterOpener(routes_midi)
+    online = OpenMusicCatalogSourceAdapter(opener=router_midi)
+    cands = online.search("Moonlight Sketch")
+    assert len(cands) == 2
+    assert cands[0].format == "midi"
+    assert cands[0].id == "item_midi/moonlight.mid"
+
+    with LibraryStore(tmp_path / "online_lib_midi") as store:
+        orch = AgentOrchestrator(
+            store,
+            url_adapter=DirectUrlSourceAdapter(opener=router_midi),
+            online_adapter=online,
+        )
+        res = orch.run("搜索 Moonlight Sketch 转成风物之诗琴并保存", allow_network=True)
+        assert res.status == "completed"
+        assert res.selected_song is not None
+        assert res.selected_song["title"] == "Moonlight Sketch"
+        assert res.selected_arrangement is not None
+        assert any(s.tool == "source.search" for s in res.steps)
+        assert not any(s.tool == "transcribe.run" for s in res.steps)
+
+    # Case B: online catalog has WAV only -> downloads WAV, transcribes, arranges
+    routes_wav = {
+        "https://archive.org/advancedsearch.php": json.dumps({
+            "response": {
+                "docs": [
+                    {
+                        "identifier": "only_wav",
+                        "title": "Wind Prelude",
+                        "creator": "CC Musician",
+                        "licenseurl": "https://creativecommons.org/publicdomain/mark/1.0/",
+                    }
+                ]
+            }
+        }).encode("utf-8"),
+        "https://archive.org/metadata/only_wav/files": json.dumps({
+            "result": [{"name": "prelude.wav"}]
+        }).encode("utf-8"),
+        "https://archive.org/download/only_wav/prelude.wav": wav_bytes,
+    }
+    router_wav = _RouterOpener(routes_wav)
+    with LibraryStore(tmp_path / "online_lib_wav") as store_wav:
+        orch_wav = AgentOrchestrator(
+            store_wav,
+            url_adapter=DirectUrlSourceAdapter(opener=router_wav),
+            online_adapter=OpenMusicCatalogSourceAdapter(opener=router_wav),
+        )
+        res_wav = orch_wav.run("搜索 Wind Prelude 转成镜花之琴主旋律", allow_network=True)
+        assert res_wav.status == "completed"
+        assert any(s.tool == "transcribe.run" for s in res_wav.steps)
+        assert res_wav.selected_arrangement is not None
+        assert res_wav.selected_arrangement["profile_id"] == "genshin.floral_zither.v1"

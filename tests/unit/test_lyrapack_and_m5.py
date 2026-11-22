@@ -200,3 +200,70 @@ def test_library_tag_favorite_filters_and_backup_restore(tmp_path: Path) -> None
         assert len(restored_favs) == 1
         assert restored_favs[0].title == "Favorited Waltz"
         assert restored.load_arrangement_performance(arr_a.id)["arrangement_id"] == arr_a.id
+        # Verify restored DB supports new writes cleanly
+        extra = restored.import_midi(p_a, title="Duplicate Check")
+        assert extra.deduplicated is True
+
+
+def test_restore_backup_rejects_corrupt_incompatible_and_rolls_back_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live_dir = tmp_path / "live_db"
+    src_a = tmp_path / "live.mid"
+    src_a.write_bytes((FIXTURE_DIR / "c_major_scale.mid").read_bytes())
+
+    with LibraryStore(live_dir) as live:
+        live.import_midi(src_a, title="Existing Live Song")
+        valid_backup = export_backup_zip(live)
+
+    # 1. Corrupt SQLite inside backup must NOT overwrite live_dir
+    corrupt_zip = io.BytesIO()
+    with zipfile.ZipFile(corrupt_zip, "w") as zf:
+        zf.writestr("library.db", b"not-a-sqlite-file")
+        zf.writestr(
+            "backup_manifest.json",
+            json.dumps({"schema_version": 3, "kind": "lyraforge.backup"}),
+        )
+    with pytest.raises(LyraError) as corrupt_exc:
+        restore_backup_zip(live_dir, corrupt_zip.getvalue())
+    assert corrupt_exc.value.code == ErrorCode.PACKAGE_INVALID
+    with LibraryStore(live_dir) as check_live:
+        assert [s.title for s in check_live.search_songs("")] == ["Existing Live Song"]
+
+    # 2. Future incompatible schema_version must be rejected safely
+    future_zip = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(valid_backup), "r") as zin,
+        zipfile.ZipFile(future_zip, "w") as zout,
+    ):
+        for item in zin.infolist():
+            content = zin.read(item.filename)
+            if item.filename == "backup_manifest.json":
+                content = json.dumps({"schema_version": 999, "kind": "lyraforge.backup"}).encode()
+            zout.writestr(item.filename, content)
+    with pytest.raises(LyraError) as ver_exc:
+        restore_backup_zip(live_dir, future_zip.getvalue())
+    assert ver_exc.value.code == ErrorCode.PACKAGE_INVALID
+    with LibraryStore(live_dir) as check_live:
+        assert [s.title for s in check_live.search_songs("")] == ["Existing Live Song"]
+
+    # 3. Mid-swap write failure triggers automatic rollback keeping original DB intact
+    from lyraforge.library import packaging as pkg_mod
+
+    orig_copy = pkg_mod._copy_dir_contents
+    copy_calls = 0
+
+    def failing_copy(src_d: Path, dst_d: Path, **kw: Any) -> int:
+        nonlocal copy_calls
+        copy_calls += 1
+        if copy_calls == 2:
+            raise OSError("simulated disk full during restore swap")
+        return orig_copy(src_d, dst_d, **kw)
+
+    monkeypatch.setattr(pkg_mod, "_copy_dir_contents", failing_copy)
+    with pytest.raises(OSError, match="simulated disk full"):
+        restore_backup_zip(live_dir, valid_backup)
+
+    monkeypatch.undo()
+    with LibraryStore(live_dir) as after_rollback:
+        assert [s.title for s in after_rollback.search_songs("")] == ["Existing Live Song"]
