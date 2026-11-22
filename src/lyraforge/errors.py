@@ -27,6 +27,7 @@ class ErrorCode(StrEnum):
     LIMIT_EXCEEDED = "LIMIT_EXCEEDED"  # size / note-count / duration guards
     PERFORMANCE_INVALID = "PERFORMANCE_INVALID"  # performance.json failed schema/semantic checks
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    LIBRARY_BUSY = "LIBRARY_BUSY"  # library locked or under exclusive restore/shutdown maintenance
 
 
 class LyraError(Exception):

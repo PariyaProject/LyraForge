@@ -7,7 +7,7 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,7 +65,8 @@ class MCPTaskRegistry:
         self._lock = threading.Lock()
         self._tasks: dict[str, MCPTaskRecord] = {}
         self._request_to_task: dict[str, str] = {}
-        self._max_tasks = max_tasks
+        self._pre_cancelled: dict[str, str] = {}
+        self._max_tasks = max(1, int(max_tasks))
 
     def create(
         self,
@@ -73,19 +74,56 @@ class MCPTaskRegistry:
         *,
         task_id: str | None = None,
         request_id: str | int | None = None,
+        stop_token: StopToken | None = None,
     ) -> MCPTaskRecord:
         with self._lock:
             tid = (task_id or "").strip() or f"mcp-{uuid.uuid4().hex[:10]}"
-            rec = MCPTaskRecord(task_id=tid, tool=tool, status="running", progress=0.0)
+            token = stop_token or StopToken()
+            rec = MCPTaskRecord(
+                task_id=tid,
+                tool=tool,
+                status="running",
+                progress=0.0,
+                stop_token=token,
+            )
             rec.logs.append(f"[{tool}] started")
-            self._tasks[tid] = rec
+
+            cancel_reason: str | None = self._pre_cancelled.pop(tid, None)
             if request_id is not None:
+                req_reason = self._pre_cancelled.pop(str(request_id), None)
+                if cancel_reason is None:
+                    cancel_reason = req_reason
                 self._request_to_task[str(request_id)] = tid
-            if len(self._tasks) > self._max_tasks:
-                oldest = next(iter(self._tasks))
-                if oldest != tid:
-                    del self._tasks[oldest]
+            if cancel_reason is not None:
+                rec.stop_token.request_stop(cancel_reason)
+                rec.status = "cancelled"
+                rec.logs.append("cancelled prior to execution")
+            elif rec.stop_token.stopped:
+                rec.status = "cancelled"
+                rec.logs.append("cancelled prior to execution")
+
+            self._tasks[tid] = rec
+            self._evict_excess_locked(keep_id=tid)
             return rec
+
+    def _evict_excess_locked(self, *, keep_id: str) -> None:
+        while len(self._tasks) > self._max_tasks:
+            evict_id = next(
+                (
+                    k
+                    for k, v in self._tasks.items()
+                    if k != keep_id and v.status not in {"queued", "running"}
+                ),
+                None,
+            )
+            if evict_id is None:
+                evict_id = next((k for k in self._tasks if k != keep_id), None)
+            if evict_id is None:
+                break
+            del self._tasks[evict_id]
+            stale_reqs = [rk for rk, mapped in self._request_to_task.items() if mapped == evict_id]
+            for rk in stale_reqs:
+                del self._request_to_task[rk]
 
     def log(self, task_id: str, progress: float, message: str) -> None:
         with self._lock:
@@ -123,13 +161,38 @@ class MCPTaskRegistry:
             tid = self._request_to_task.get(key, key)
             rec = self._tasks.get(tid)
             if rec is None:
+                self._pre_cancelled[key] = f"cancelled via MCP ({key})"
+                max_pre = self._max_tasks * 4
+                while len(self._pre_cancelled) > max_pre:
+                    oldest_pre = next(iter(self._pre_cancelled))
+                    del self._pre_cancelled[oldest_pre]
                 return None
-            rec.stop_token.request_stop(f"cancelled via MCP ({key})")
             if rec.status in {"queued", "running"}:
+                rec.stop_token.request_stop(f"cancelled via MCP ({key})")
                 rec.status = "cancelled"
                 rec.logs.append("cancellation requested")
                 rec.updated_at = datetime.now(UTC).isoformat()
             return rec
+
+    def is_pre_cancelled(self, target_id: str) -> bool:
+        with self._lock:
+            return str(target_id) in self._pre_cancelled
+
+    def consume_pre_cancel(self, target_id: str) -> str | None:
+        with self._lock:
+            return self._pre_cancelled.pop(str(target_id), None)
+
+    def cancel_all(self, reason: str = "shutdown") -> int:
+        cancelled = 0
+        with self._lock:
+            for rec in self._tasks.values():
+                if rec.status in {"queued", "running"}:
+                    rec.stop_token.request_stop(reason)
+                    rec.status = "cancelled"
+                    rec.logs.append(f"cancelled ({reason})")
+                    rec.updated_at = datetime.now(UTC).isoformat()
+                    cancelled += 1
+        return cancelled
 
     def get(self, task_id: str) -> MCPTaskRecord | None:
         with self._lock:
@@ -386,18 +449,22 @@ class MCPToolExecutor:
         self.online_adapter = online_adapter or OpenMusicCatalogSourceAdapter()
         self.tasks = tasks or MCPTaskRegistry()
         self._handlers: dict[
-            str, Callable[[dict[str, Any], str | int | None, LibraryStore], dict[str, Any]]
+            str,
+            Callable[
+                [dict[str, Any], str | int | None, LibraryStore, StopToken | None],
+                dict[str, Any],
+            ],
         ] = {
-            "search_music": self._tool_search_music,
-            "import_media": self._tool_import_media,
+            "search_music": lambda a, r, s, _st: self._tool_search_music(a, r, s),
+            "import_media": lambda a, r, s, _st: self._tool_import_media(a, r, s),
             "transcribe": self._tool_transcribe,
-            "arrange": self._tool_arrange,
-            "evaluate": self._tool_evaluate,
-            "preview": self._tool_preview,
-            "save_to_library": self._tool_save_to_library,
-            "export_score": self._tool_export_score,
-            "get_task_status": self._tool_get_task_status,
-            "play_in_game": self._tool_play_in_game,
+            "arrange": lambda a, r, s, _st: self._tool_arrange(a, r, s),
+            "evaluate": lambda a, r, s, _st: self._tool_evaluate(a, r, s),
+            "preview": lambda a, r, s, _st: self._tool_preview(a, r, s),
+            "save_to_library": lambda a, r, s, _st: self._tool_save_to_library(a, r, s),
+            "export_score": lambda a, r, s, _st: self._tool_export_score(a, r, s),
+            "get_task_status": lambda a, r, s, _st: self._tool_get_task_status(a, r, s),
+            "play_in_game": lambda a, r, s, _st: self._tool_play_in_game(a, r, s),
         }
 
     @contextmanager
@@ -414,12 +481,25 @@ class MCPToolExecutor:
     def call(
         self,
         name: str,
-        arguments: dict[str, Any] | None = None,
+        arguments: Any = None,
         *,
         request_id: str | int | None = None,
+        stop_token: StopToken | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Return ``(payload, is_error)`` for an MCP ``tools/call`` invocation."""
-        args = arguments if isinstance(arguments, dict) else {}
+        if arguments is not None and not isinstance(arguments, dict):
+            return (
+                {
+                    "ok": False,
+                    "error": {
+                        "code": ErrorCode.INVALID_ARGUMENT.value,
+                        "message": "tools/call 'arguments' must be a JSON object",
+                        "recoverable": True,
+                    },
+                },
+                True,
+            )
+        args: dict[str, Any] = dict(arguments) if isinstance(arguments, dict) else {}
         handler = self._handlers.get(name)
         if handler is None:
             return (
@@ -434,16 +514,28 @@ class MCPToolExecutor:
                 True,
             )
         try:
+            if name != "transcribe":
+                pre_reason = (
+                    self.tasks.consume_pre_cancel(str(request_id))
+                    if request_id is not None
+                    else None
+                )
+                if (stop_token is not None and stop_token.stopped) or pre_reason is not None:
+                    raise LyraError(
+                        ErrorCode.PLAYBACK_ABORTED,
+                        (
+                            stop_token.reason
+                            if stop_token is not None and stop_token.stopped and stop_token.reason
+                            else pre_reason or "request cancelled"
+                        ),
+                    )
             with self._thread_store() as store:
-                payload = handler(args, request_id, store)
+                payload = handler(args, request_id, store, stop_token)
             return payload, False
         except LyraError as exc:
             secret_val = ""
-            try:
-                with self._thread_store() as store:
-                    secret_val = store.get_secret("llm_api_key") or ""
-            except Exception:
-                pass
+            with suppress(Exception):
+                secret_val = self.store._secrets.get("llm_api_key") or ""
             return (
                 {
                     "ok": False,
@@ -464,11 +556,8 @@ class MCPToolExecutor:
             )
         except Exception as exc:  # noqa: BLE001
             secret_val = ""
-            try:
-                with self._thread_store() as store:
-                    secret_val = store.get_secret("llm_api_key") or ""
-            except Exception:
-                pass
+            with suppress(Exception):
+                secret_val = self.store._secrets.get("llm_api_key") or ""
             return (
                 {
                     "ok": False,
@@ -560,7 +649,11 @@ class MCPToolExecutor:
         }
 
     def _tool_transcribe(
-        self, args: dict[str, Any], req_id: str | int | None, store: LibraryStore
+        self,
+        args: dict[str, Any],
+        req_id: str | int | None,
+        store: LibraryStore,
+        stop_token: StopToken | None = None,
     ) -> dict[str, Any]:
         song_id = str(args.get("song_id") or "").strip()
         if not song_id:
@@ -575,6 +668,7 @@ class MCPToolExecutor:
             "transcribe",
             task_id=str(args.get("task_id") or "") or None,
             request_id=req_id,
+            stop_token=stop_token,
         )
         try:
             rec = store.transcribe_song(

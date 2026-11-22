@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import tempfile
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -59,6 +61,9 @@ from lyraforge.transcribers import (
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+_ARRANGE_PERSIST_STRIPES = [threading.Lock() for _ in range(64)]
 
 
 def _escape_like(text: str) -> str:
@@ -230,9 +235,13 @@ class LibraryStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "library.db"
         self._secrets = secret_store or default_secret_store(self.data_dir)
-        self._conn = sqlite3.connect(self.db_path)
-        self.schema_version = apply_migrations(self._conn)
-        self._migrate_legacy_plaintext_secrets()
+        self._conn = sqlite3.connect(self.db_path, timeout=5.0)
+        try:
+            self.schema_version = apply_migrations(self._conn)
+            self._migrate_legacy_plaintext_secrets()
+        except Exception:
+            self._conn.close()
+            raise
 
     def _migrate_legacy_plaintext_secrets(self) -> None:
         rows = self._conn.execute("SELECT key, value_json FROM settings").fetchall()
@@ -371,31 +380,53 @@ class LibraryStore:
         atomic_write_bytes(resolve_under(self.data_dir, rel_path), raw_bytes)
 
         now = _utc_now_iso()
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO songs(id, title, artist, tags_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (song_id, clean_title, clean_artist, json.dumps(clean_tags), now, now),
-            )
-            self._conn.execute(
-                """
-                INSERT INTO sources(
-                    id, song_id, kind, original_name, sha256, local_path, size_bytes, imported_at
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO songs(id, title, artist, tags_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        song_id,
+                        clean_title,
+                        clean_artist,
+                        json.dumps(clean_tags, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    source_id,
-                    song_id,
-                    kind,
-                    src_path.name,
-                    sha256,
-                    rel_path,
-                    len(raw_bytes),
-                    now,
-                ),
+                self._conn.execute(
+                    """
+                    INSERT INTO sources(
+                        id, song_id, kind, original_name, sha256,
+                        local_path, size_bytes, imported_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        song_id,
+                        kind,
+                        src_path.name,
+                        sha256,
+                        rel_path,
+                        len(raw_bytes),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            shutil.rmtree(resolve_under(self.data_dir, f"songs/{song_id}"), ignore_errors=True)
+            winner = self._conn.execute(
+                "SELECT * FROM sources WHERE sha256 = ?", (sha256,)
+            ).fetchone()
+            if winner is None:
+                raise
+            src_rec = self._row_to_source(winner)
+            return ImportResult(
+                song=self._fetch_song_summary(src_rec.song_id),
+                source=src_rec,
+                deduplicated=True,
             )
 
         src_row = self._conn.execute(
@@ -487,28 +518,44 @@ class LibraryStore:
         *,
         tag: str | None = None,
         favorites_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[SongSummary]:
-        """List or search songs by title, artist, tag, or favorite status."""
+        """List or search songs by title, artist, exact JSON1 tag match, or favorite status."""
         conditions: list[str] = []
         params: list[Any] = []
         q = query.strip()
         if q:
-            like = f"%{_escape_like(q)}%"
+            like = f"%{_escape_like(q.casefold())}%"
             conditions.append(
-                "(s.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
-                "OR s.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
-                "OR s.tags_json LIKE ? ESCAPE '\\' COLLATE NOCASE)"
+                "(py_lower(s.title) LIKE ? ESCAPE '\\' "
+                "OR py_lower(s.artist) LIKE ? ESCAPE '\\' "
+                "OR (json_valid(s.tags_json) AND EXISTS ("
+                "SELECT 1 FROM json_each(s.tags_json) je "
+                "WHERE py_lower(CAST(je.value AS TEXT)) LIKE ? ESCAPE '\\'"
+                ")))"
             )
             params.extend((like, like, like))
         t = (tag or "").strip()
         if t:
-            conditions.append("s.tags_json LIKE ? ESCAPE '\\' COLLATE NOCASE")
-            params.append(f"%{_escape_like(t)}%")
+            conditions.append(
+                "(json_valid(s.tags_json) AND EXISTS ("
+                "SELECT 1 FROM json_each(s.tags_json) je "
+                "WHERE py_lower(CAST(je.value AS TEXT)) = py_lower(?)"
+                "))"
+            )
+            params.append(t)
         if favorites_only:
             conditions.append(
                 "EXISTS (SELECT 1 FROM arrangements a WHERE a.song_id = s.id AND a.is_favorite = 1)"
             )
         where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        limit_sql = ""
+        if limit is not None:
+            safe_limit = max(0, int(limit))
+            safe_offset = max(0, int(offset))
+            limit_sql = "LIMIT ? OFFSET ?"
+            params.extend((safe_limit, safe_offset))
         rows = self._conn.execute(
             f"""
             SELECT s.*, (SELECT COUNT(*) FROM arrangements a WHERE a.song_id = s.id)
@@ -516,14 +563,11 @@ class LibraryStore:
             FROM songs s
             {where_sql}
             ORDER BY s.updated_at DESC, s.title ASC
+            {limit_sql}
             """,
             params,
         ).fetchall()
-        summaries = [self._row_to_song_summary(r) for r in rows]
-        if t:
-            t_low = t.lower()
-            summaries = [s for s in summaries if any(st.lower() == t_low for st in s.tags)]
-        return summaries
+        return [self._row_to_song_summary(r) for r in rows]
 
     def get_song(self, song_id: str) -> SongDetail:
         song = self._fetch_song_summary(song_id)
@@ -693,63 +737,68 @@ class LibraryStore:
         report = build_report(score, profile, arr)
 
         arr_id = str(perf["arrangement_id"])
-        existing = self._conn.execute(
-            "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
-        ).fetchone()
-        if existing is not None:
-            return self._row_to_arrangement(existing)
+        stripe = _ARRANGE_PERSIST_STRIPES[
+            hash((str(self.data_dir.resolve()), arr_id)) % len(_ARRANGE_PERSIST_STRIPES)
+        ]
+        with stripe:
+            existing = self._conn.execute(
+                "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
+            ).fetchone()
+            if existing is not None:
+                return self._row_to_arrangement(existing)
 
-        quality_doc = report.get("quality") or {}
-        quality_score = (
-            float(quality_doc["overall_score"]) if "overall_score" in quality_doc else None
-        )
-        rel_perf = f"songs/{song_id}/performance/{arr_id}.json"
-        rel_rep = f"songs/{song_id}/reports/{arr_id}.json"
-        rel_arr_mid = f"songs/{song_id}/midis/{arr_id}/arrangement.mid"
-        atomic_write_text(resolve_under(self.data_dir, rel_perf), pretty_json(perf))
-        atomic_write_text(resolve_under(self.data_dir, rel_rep), pretty_json(report))
-        atomic_write_bytes(
-            resolve_under(self.data_dir, rel_arr_mid),
-            arrangement_to_midi_bytes(arr),
-        )
+            quality_doc = report.get("quality") or {}
+            quality_score = (
+                float(quality_doc["overall_score"]) if "overall_score" in quality_doc else None
+            )
+            rel_perf = f"songs/{song_id}/performance/{arr_id}.json"
+            rel_rep = f"songs/{song_id}/reports/{arr_id}.json"
+            rel_arr_mid = f"songs/{song_id}/midis/{arr_id}/arrangement.mid"
+            atomic_write_text(resolve_under(self.data_dir, rel_perf), pretty_json(perf))
+            atomic_write_text(resolve_under(self.data_dir, rel_rep), pretty_json(report))
+            atomic_write_bytes(
+                resolve_under(self.data_dir, rel_arr_mid),
+                arrangement_to_midi_bytes(arr),
+            )
 
-        now = _utc_now_iso()
-        opts = arr.options
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO arrangements(
-                    id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
-                    playable_ratio, event_count, duration_ms, performance_path, report_path,
-                    preview_path, is_favorite, parent_id, score, user_vote, label, created_at
+            now = _utc_now_iso()
+            opts = arr.options
+            with self._conn:
+                cur = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO arrangements(
+                        id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
+                        playable_ratio, event_count, duration_ms, performance_path, report_path,
+                        preview_path, is_favorite, parent_id, score, user_vote, label, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        arr_id,
+                        song_id,
+                        source.id,
+                        profile.id,
+                        profile.hash,
+                        str(opts.style),
+                        arr.transpose,
+                        float(opts.speed),
+                        float(arr.stats["playable_ratio"]),
+                        len(arr.events),
+                        int(arr.stats["duration_ms"]),
+                        rel_perf,
+                        rel_rep,
+                        None,
+                        parent_id,
+                        quality_score,
+                        label,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
-                """,
-                (
-                    arr_id,
-                    song_id,
-                    source.id,
-                    profile.id,
-                    profile.hash,
-                    str(opts.style),
-                    arr.transpose,
-                    float(opts.speed),
-                    float(arr.stats["playable_ratio"]),
-                    len(arr.events),
-                    int(arr.stats["duration_ms"]),
-                    rel_perf,
-                    rel_rep,
-                    None,
-                    parent_id,
-                    quality_score,
-                    label,
-                    now,
-                ),
-            )
-            self._conn.execute(
-                "UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id)
-            )
-        return self.get_arrangement(arr_id)
+                if cur.rowcount > 0:
+                    self._conn.execute(
+                        "UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id)
+                    )
+            return self.get_arrangement(arr_id)
 
     def save_edited_arrangement(
         self,
@@ -972,7 +1021,13 @@ class LibraryStore:
                 SET title = ?, artist = ?, tags_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (new_title, new_artist, json.dumps(new_tags), _utc_now_iso(), song_id),
+                (
+                    new_title,
+                    new_artist,
+                    json.dumps(new_tags, ensure_ascii=False),
+                    _utc_now_iso(),
+                    song_id,
+                ),
             )
         return self._fetch_song_summary(song_id)
 

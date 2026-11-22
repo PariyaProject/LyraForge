@@ -383,15 +383,60 @@ def _copy_dir_contents(
     return count
 
 
+def _unlink_with_retry(path: Path, *, attempts: int = 5, delay_s: float = 0.04) -> None:
+    for idx in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if idx + 1 >= attempts:
+                raise
+            import time
+
+            time.sleep(delay_s)
+
+
 def _clear_dir_except(target_root: Path, *, keep_name: str) -> None:
     for item in sorted(target_root.rglob("*"), reverse=True):
         if item.relative_to(target_root).as_posix() == keep_name:
             continue
         if item.is_file():
-            item.unlink()
+            _unlink_with_retry(item)
         elif item.is_dir():
             with contextlib.suppress(OSError):
                 item.rmdir()
+
+
+def _verify_and_quiesce_existing_db(existing_db: Path) -> None:
+    """Confirm no external reader/writer holds an active lock before DB replacement."""
+    if not existing_db.is_file():
+        return
+    try:
+        conn_chk = sqlite3.connect(existing_db, timeout=0.4)
+    except sqlite3.Error as exc:
+        raise LyraError(
+            ErrorCode.LIBRARY_BUSY,
+            f"cannot restore library: database file cannot be opened exclusively ({exc})",
+        ) from exc
+    try:
+        conn_chk.execute("PRAGMA busy_timeout = 400")
+        conn_chk.execute("BEGIN EXCLUSIVE")
+        conn_chk.execute("COMMIT")
+        conn_chk.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        row = conn_chk.execute("PRAGMA journal_mode = DELETE").fetchone()
+        mode = str(row[0]).lower() if row and row[0] is not None else ""
+        if mode != "delete":
+            raise LyraError(
+                ErrorCode.LIBRARY_BUSY,
+                "cannot restore library: SQLite WAL is still held open by another connection",
+            )
+    except sqlite3.OperationalError as exc:
+        raise LyraError(
+            ErrorCode.LIBRARY_BUSY,
+            f"cannot restore library: database is currently in use ({exc})",
+        ) from exc
+    finally:
+        conn_chk.close()
 
 
 def restore_backup_zip(
@@ -460,16 +505,13 @@ def restore_backup_zip(
         rollback_dir = target_root.parent / f".{target_root.name}.rollback-{uuid.uuid4().hex[:8]}"
         rollback_dir.mkdir(parents=True, exist_ok=True)
         try:
-            # Flush live WAL if an existing DB sits at target_root, then snapshot it for rollback
-            existing_db = target_root / "library.db"
-            if existing_db.is_file():
-                conn_chk = sqlite3.connect(existing_db)
-                try:
-                    with contextlib.suppress(sqlite3.Error):
-                        conn_chk.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                finally:
-                    conn_chk.close()
-            _copy_dir_contents(target_root, rollback_dir, skip_names=frozenset({SECRET_FILENAME}))
+            # Fail fast if any connection holds an active lock/WAL on target library.db
+            _verify_and_quiesce_existing_db(target_root / "library.db")
+            _copy_dir_contents(
+                target_root,
+                rollback_dir,
+                skip_names=frozenset({SECRET_FILENAME, *_SQLITE_SIDECARS}),
+            )
 
             try:
                 _clear_dir_except(target_root, keep_name=SECRET_FILENAME)
@@ -482,6 +524,13 @@ def restore_backup_zip(
                         "song_count": len(songs),
                         "schema_version": restored_store.schema_version,
                     }
+            except PermissionError as exc:
+                _clear_dir_except(target_root, keep_name=SECRET_FILENAME)
+                _copy_dir_contents(rollback_dir, target_root)
+                raise LyraError(
+                    ErrorCode.LIBRARY_BUSY,
+                    f"cannot restore library while database files are in use: {exc}",
+                ) from exc
             except Exception:
                 _clear_dir_except(target_root, keep_name=SECRET_FILENAME)
                 _copy_dir_contents(rollback_dir, target_root)

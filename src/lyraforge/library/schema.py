@@ -95,10 +95,15 @@ def _utc_now_iso() -> str:
 
 def configure_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.create_function(
+        "py_lower",
+        1,
+        lambda val: val.casefold() if isinstance(val, str) else val,
+    )
 
 
 def apply_migrations(conn: sqlite3.Connection) -> int:
