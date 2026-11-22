@@ -21,6 +21,11 @@ function onPackFileChange(event: Event): void {
   const input = event.target as HTMLInputElement;
   props.store.packFile.value = input.files?.[0] ?? null;
 }
+
+function onRestoreFileChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  props.store.restoreFile.value = input.files?.[0] ?? null;
+}
 </script>
 
 <template>
@@ -174,6 +179,32 @@ function onPackFileChange(event: Event): void {
               @click="store.handleImportLyrapack"
             >
               导入 .lyrapack 分享包
+            </button>
+
+            <hr style="border: 0; border-block-start: 1px solid var(--border-subtle); inline-size: 100%" />
+
+            <div class="field">
+              <label for="library-restore-file">从全库备份 ZIP 恢复曲库</label>
+              <div class="file-picker-wrap">
+                <input
+                  id="library-restore-file"
+                  type="file"
+                  accept=".zip"
+                  @change="onRestoreFileChange"
+                />
+              </div>
+            </div>
+            <label class="checkbox-row">
+              <input v-model="store.restoreConfirmed.value" type="checkbox" />
+              我了解恢复备份将替换当前本地曲库（系统密钥保管库保持独立不变）
+            </label>
+            <button
+              class="secondary"
+              type="button"
+              :disabled="store.busy.value"
+              @click="store.handleRestoreBackupZip"
+            >
+              恢复曲库备份 (.zip)
             </button>
           </div>
         </details>

@@ -6,7 +6,8 @@ import json
 import secrets
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from lyraforge.library import (
     export_lyrapack,
     import_lyrapack,
     resolve_under,
+    restore_backup_zip,
 )
 from lyraforge.media import SUPPORTED_MEDIA_EXTENSIONS, MediaLimits
 from lyraforge.music_core.arranger import ArrangeOptions, SemitonePolicy, Style
@@ -192,7 +194,15 @@ def create_app(
     manager = PlaybackManager()
     job_manager = TranscriptionJobManager()
 
-    app = FastAPI(title="LyraForge Local API", version=__version__)
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            manager.stop("server_shutdown")
+            job_manager.cancel_all("server_shutdown")
+
+    app = FastAPI(title="LyraForge Local API", version=__version__, lifespan=_lifespan)
     app.state.data_dir = resolved_dir
     app.state.session_token = token
     app.state.playback_manager = manager
@@ -328,6 +338,24 @@ def create_app(
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="lyraforge-backup.zip"'},
         )
+
+    @app.post("/v1/library/restore", dependencies=[Depends(require_token)])
+    async def restore_library_backup(file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
+        max_bytes = 250 * 1024 * 1024
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := await file.read(65_536):
+            total += len(chunk)
+            if total > max_bytes:
+                raise LyraError(
+                    ErrorCode.LIMIT_EXCEEDED,
+                    f"backup archive exceeds limit ({max_bytes} bytes)",
+                )
+            chunks.append(chunk)
+        manager.stop("library_restore")
+        job_manager.cancel_all("library_restore")
+        summary = restore_backup_zip(app.state.data_dir, b"".join(chunks))
+        return {"restored": summary}
 
     @app.post("/v1/imports/lyrapack", dependencies=[Depends(require_token)])
     async def import_lyrapack_route(file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
@@ -612,17 +640,34 @@ def create_app(
     @app.post("/v1/playback/prepare", dependencies=[Depends(require_token)])
     def playback_prepare(req: PlaybackPrepareRequest) -> dict[str, Any]:
         with LibraryStore(app.state.data_dir) as store:
+            allowed_titles = req.allowed_window_titles
+            if allowed_titles is None:
+                raw_titles = store.get_settings().get("windows_allowed_titles")
+                if isinstance(raw_titles, str):
+                    parsed_titles = [t.strip() for t in raw_titles.split(",") if t.strip()]
+                    allowed_titles = parsed_titles or None
+                elif isinstance(raw_titles, list):
+                    parsed_titles = [str(t).strip() for t in raw_titles if str(t).strip()]
+                    allowed_titles = parsed_titles or None
             return manager.prepare(
                 req.arrangement_id,
                 mode=req.mode,
                 realtime=req.realtime,
-                allowed_window_titles=req.allowed_window_titles,
+                allowed_window_titles=allowed_titles,
                 store=store,
             )
 
     @app.post("/v1/playback/start", dependencies=[Depends(require_token)])
     def playback_start(req: PlaybackStartRequest) -> dict[str, Any]:
         return manager.start(req.prepare_token, data_dir=app.state.data_dir)
+
+    @app.post("/v1/playback/pause", dependencies=[Depends(require_token)])
+    def playback_pause() -> dict[str, Any]:
+        return manager.pause()
+
+    @app.post("/v1/playback/resume", dependencies=[Depends(require_token)])
+    def playback_resume() -> dict[str, Any]:
+        return manager.resume()
 
     @app.get("/v1/playback/status", dependencies=[Depends(require_token)])
     def playback_status() -> dict[str, Any]:

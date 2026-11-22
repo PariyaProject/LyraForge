@@ -12,14 +12,14 @@ Guarantees (tested in tests/unit/test_player.py):
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from lyraforge.playback.clock import Clock
 from lyraforge.playback.driver import PlaybackDriver
-from lyraforge.playback.guards import FocusGuard, NullFocusGuard, StopToken
+from lyraforge.playback.guards import FocusGuard, NullFocusGuard, PauseToken, StopToken
 
 UP, DOWN = 0, 1
 
@@ -93,9 +93,16 @@ class PlaybackResult:
 
 
 class Player:
-    def __init__(self, driver: PlaybackDriver, clock: Clock,
-                 focus_guard: FocusGuard | None = None, stop_token: StopToken | None = None,
-                 poll_interval_us: int = 10_000):
+    def __init__(
+        self,
+        driver: PlaybackDriver,
+        clock: Clock,
+        focus_guard: FocusGuard | None = None,
+        stop_token: StopToken | None = None,
+        poll_interval_us: int = 10_000,
+        pause_token: PauseToken | None = None,
+        emergency_stop_fn: Callable[[], bool] | None = None,
+    ):
         if poll_interval_us <= 0:
             raise ValueError("poll_interval_us must be positive")
         self.driver = driver
@@ -103,25 +110,58 @@ class Player:
         self.focus_guard = focus_guard or NullFocusGuard()
         self.stop_token = stop_token or StopToken()
         self.poll_interval_us = poll_interval_us
+        self.pause_token = pause_token
+        self._emergency_stop_fn = emergency_stop_fn
 
     def _interrupt_state(self) -> PlaybackState | None:
         if self.stop_token.stopped:
             return PlaybackState.STOPPED
+        if self._emergency_stop_fn is not None:
+            try:
+                if self._emergency_stop_fn():
+                    self.stop_token.request_stop("escape_key_pressed")
+                    return PlaybackState.STOPPED
+            except Exception:
+                pass
         if not self.focus_guard.is_target_focused():
             return PlaybackState.FOCUS_LOST
         return None
+
+    def _wait_if_paused(self, pressed: set[str]) -> tuple[int, PlaybackState | None]:
+        if self.pause_token is None or not self.pause_token.paused:
+            return 0, None
+        paused_at = self.clock.now_us()
+        if pressed:
+            self.driver.release_all()
+            pressed.clear()
+        state = self._interrupt_state()
+        while state is None and self.pause_token.paused:
+            self.clock.sleep_us(self.poll_interval_us)
+            state = self._interrupt_state()
+        resumed_at = self.clock.now_us()
+        return max(0, resumed_at - paused_at), state
 
     def play(self, events: Iterable[Mapping[str, Any]]) -> PlaybackResult:
         actions = expand_events(events)
         result = PlaybackResult(state=PlaybackState.COMPLETED, actions_total=len(actions))
         pressed: set[str] = set()
         t0 = self.clock.now_us()
+        pause_offset_us = 0
         result.started_at_us = t0
         try:
             for a in actions:
-                target = t0 + a.at_us
+                target = t0 + pause_offset_us + a.at_us
                 state = self._interrupt_state()
-                while state is None and (remaining := target - self.clock.now_us()) > 0:
+                while state is None:
+                    delta_pause, p_state = self._wait_if_paused(pressed)
+                    pause_offset_us += delta_pause
+                    target = t0 + pause_offset_us + a.at_us
+                    if p_state is not None:
+                        state = p_state
+                        break
+                    remaining = target - self.clock.now_us()
+                    if remaining <= 0:
+                        break
                     self.clock.sleep_us(min(remaining, self.poll_interval_us))
                     state = self._interrupt_state()
                 if state is not None:

@@ -229,5 +229,34 @@ async function handleQuickFileChange(event: Event): Promise<void> {
         <p style="margin: 0">导入第一首曲目后，这里会展示最近的编曲工程。</p>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <h2>首次使用 3 步指南 & 能力范围</h2>
+        <span class="pill pill-warn">
+          {{ store.health.value?.windows_playback_available ? "Windows 实机待校准" : "当前环境仅 Dry-Run 模拟" }}
+        </span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="label">1. 导入或转录</div>
+          <p class="muted" style="margin: 4px 0 0">
+            拖入标准 <code>.mid</code> 准确率最高；纯 Python 内置单音引擎适合独奏 WAV，复杂混音需另配 Basic Pitch / FFmpeg。
+          </p>
+        </div>
+        <div class="stat-card">
+          <div class="label">2. 编曲与精修</div>
+          <p class="muted" style="margin: 4px 0 0">
+            在编曲工作室选择风物之诗琴 / 镜花之琴，A/B 对比并用底部试听栏连续校验，在 Piano Roll 微调错音或八度。
+          </p>
+        </div>
+        <div class="stat-card">
+          <div class="label">3. 安全演奏门控</div>
+          <p class="muted" style="margin: 4px 0 0">
+            游戏内发送按键仅限 Windows 10/11 前台切至《原神》自由演奏界面时通过两段确认启动；切窗或按 Esc 立即松键。
+          </p>
+        </div>
+      </div>
+    </div>
   </section>
 </template>

@@ -81,28 +81,33 @@ def run_isolated_transcriber(
         if on_progress is not None:
             on_progress(0.3, f"running {engine_id} subprocess")
 
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-        )
-        deadline = time.monotonic() + opts.timeout_s
-        while proc.poll() is None:
-            if stop_token is not None and stop_token.stopped:
-                _terminate_proc(proc)
-                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
-            if time.monotonic() > deadline:
-                _terminate_proc(proc)
-                raise LyraError(
-                    ErrorCode.TRANSCRIPTION_FAILED,
-                    f"{display_name} timed out after {opts.timeout_s:.1f}s",
-                )
-            time.sleep(0.05)
+        stdout_log = work / "stdout.log"
+        stderr_log = work / "stderr.log"
+        with (
+            stdout_log.open("wb") as out_fh,
+            stderr_log.open("wb") as err_fh,
+        ):
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=out_fh,
+                stderr=err_fh,
+                shell=False,
+            )
+            deadline = time.monotonic() + opts.timeout_s
+            while proc.poll() is None:
+                if stop_token is not None and stop_token.stopped:
+                    _terminate_proc(proc)
+                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
+                if time.monotonic() > deadline:
+                    _terminate_proc(proc)
+                    raise LyraError(
+                        ErrorCode.TRANSCRIPTION_FAILED,
+                        f"{display_name} timed out after {opts.timeout_s:.1f}s",
+                    )
+                time.sleep(0.05)
 
-        stderr_text = (
-            proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
-        )
+        stderr_bytes = stderr_log.read_bytes()[-8192:] if stderr_log.is_file() else b""
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
             raise LyraError(
                 ErrorCode.TRANSCRIPTION_FAILED,

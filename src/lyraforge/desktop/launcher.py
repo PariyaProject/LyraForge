@@ -133,5 +133,6 @@ def launch_desktop(
         return 0
     finally:
         app.state.playback_manager.stop("window_closed")
+        app.state.job_manager.cancel_all("window_closed")
         server.should_exit = True
         thread.join(timeout=3.0)

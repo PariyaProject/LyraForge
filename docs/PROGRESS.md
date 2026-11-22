@@ -24,9 +24,10 @@
 | **Round 2 P1** | 零依赖 `stdio` MCP Server（`lyraforge mcp`，10 工具、`MCPTaskRegistry` 取消与 `play_in_game` 强制门禁）与客户端 Skill/配置 | **已实现且已测试**（Codex / 独立 Antigravity CLI 待目标客户端环境运行验证） | `src/lyraforge/mcp/*`, `integrations/{claude-code,codex,antigravity}/*`, [AI_INTEGRATION.md](AI_INTEGRATION.md), `tests/unit/test_mcp_server.py`（含真实子进程 `stdio` 全链路测试 + 本机 `claude 2.1.267` `mcp add`/`get` 校验） |
 | **Round 2 P1** | 公开产品主页版 [README.md](../README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[MAINTAINER_WORKFLOW.md](MAINTAINER_WORKFLOW.md)、[SECOND_REVIEW_REPORT.md](SECOND_REVIEW_REPORT.md) 与 [AGENTS.md](../AGENTS.md) 规则持久化 | **已实现且已测试** | 已清除文档内全部本地目录绝对路径，`AGENTS.md` 为 38 行（≤120 行） |
 | **Round 3 UI/UX** | Studio Dark 设计系统（`tokens.css` / `@layer` / `StudioIcon` / `ToastStack`）、6 视图独立工作区、DAW Piano Roll（缩放/吸附/标尺/拖拽/快捷键）、IME 防护与内置 MCP 配置页 | **已实现且已测试** | `apps/desktop/web/src/*`, [THIRD_REVIEW_UI_REPORT.md](THIRD_REVIEW_UI_REPORT.md), [assets/ui/](assets/ui/)；实时 FastAPI + Chrome CDP 12 次截屏 0 溢出 0 控制台报错 |
-| **M2 / 音频** | 原生 WAV 提取标准化 + 内置单音 YIN 转谱（`builtin-mono`） | **部分实现** | 核心与任务取消可用；单音旋律 `F1=1.0`，多声部钢琴和弦 `F1=0.0`，真实复杂音频受纯单音算法限制 |
+| **Round 4 加固 / Alpha 验收** | 子进程临时文件防管道死锁 + `.webm`、`PlaybackView` Win32 检测修复、`VK_ESCAPE`/`PauseToken`/混合精密时钟、`windows_allowed_titles` + `POST /v1/library/restore`、MCP 并发取消 + 线程局部 SQLite、`ProxyHandler({})` + ZIP DOS 保留名拦截、`LyraForge.exe --self-check` CI 门禁、固定全局底部传输栏与 4 项交互 CDP 实测 | **已实现且已测试**（Windows《原神》真机校准与外置 ML 仍待实机验收） | [FOURTH_REVIEW_REPORT.md](FOURTH_REVIEW_REPORT.md), [TEST_REPORT.md](TEST_REPORT.md), [UI_REVIEW.md](UI_REVIEW.md), `tests/unit/test_round4_hardening.py`, `scripts/eval_transcribers.py` |
+| **M2 / 音频** | 原生 WAV 提取标准化 + 内置单音 YIN 转谱（`builtin-mono`） | **部分实现** | 核心与任务取消可用；单音旋律 `F1=1.0000`、钢琴主旋律+琶音 `F1=0.6667`，和弦 `F1=0.0000`、人声伴奏 `F1=0.2000`、多乐器混音 `F1=0.2222` |
 | **M2 / 外部 ML** | `ffmpeg` 非 WAV 音视频提取 + 隔离进程 `basic-pitch` / `dettato` 多音转录 | **因外部环境阻塞** | 适配器和环境变量协议已实现并通过 Mock 测试；当前开发机未安装 `ffmpeg`、`basic-pitch`、`dettato` |
-| **M5 / 发行** | Windows 实体机运行 `LyraForge.exe` 冒烟、`原神` 21 键校准与正式 Stable Release | **未实现** | 需下载 CI 产物 `LyraForge-windows-x64` 后在 Windows 10/11 实体机完成验收 |
+| **M5 / 发行** | Windows 实体机运行 `LyraForge.exe` 冒烟、`原神` 21 键校准与正式 Stable Release | **未实现** | CI 已内置 `LyraForge.exe --self-check` 自动运行自检；需下载 CI 产物 `LyraForge-windows-x64` 后按 [TEST_REPORT.md](TEST_REPORT.md) §5 在 Windows 10/11 实体机完成验收 |
 
 ---
 
@@ -35,20 +36,24 @@
 1. **GitHub Actions CI 验收**
    - `main` 基线（`1f2b34db8dc6911d33ddd4fc9b4f56f7b25475db`）→ [Run #44980488436](https://github.com/PariyaProject/LyraForge/actions/runs/44980488436)：**`success`**（三作业全绿并产出 `LyraForge-windows-x64`）。
    - [PR #1](https://github.com/PariyaProject/LyraForge/pull/1) 合入提交（`a872f664c5e9dd0b05976bcccc1e9260803c0ba2`）→ [Run #45003219667](https://github.com/PariyaProject/LyraForge/actions/runs/45003219667)：**`success`**（`Test (macos-latest)`、`Test (windows-latest)`、`Build Windows Bundle (PyInstaller)` 全绿）。
+   - Round 4 基准 `9123a950ea362e59e714fb6b4127fe6cb79a2212` → [Run #45006178921](https://github.com/PariyaProject/LyraForge/actions/runs/45006178921)：**`success`**；本轮更新提交的 PR 与合并后 `main` CI 见提交后追踪结果。
 2. **本地完整门禁（`pnpm --dir apps/desktop/web install --frozen-lockfile && make check`）**
-   - `pnpm v12.6.0` frozen-lockfile 一致（`42ms`）
+   - `pnpm v12.6.0` frozen-lockfile 一致（`39ms`）
    - `uv run ruff check .` → `All checks passed!`
-   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **117 passed, 1 warning in 24.63s**，总覆盖率 **87.13%**（5228 语句 / 1298 分支）
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **122 passed, 2 warnings in 26.65s**，总覆盖率 **86.53%**（5558 语句 / 1404 分支）
    - `vitest run` → **Test Files 4 passed (4), Tests 6 passed (6)**（含 `App.spec.ts`、`PianoRollInteractions.spec.ts`、`PianoRollEditor.spec.ts`、`LyreKeyboard.spec.ts`）
-   - `vue-tsc --noEmit && vite build` → 构建成功（`787ms`，`152.57 kB` JS / `19.86 kB` CSS）
+   - `vue-tsc --noEmit && vite build` → 构建成功（`833ms`，`158.80 kB` JS / `20.52 kB` CSS）
    - `make smoke` → 退出码 `0`（DryRun 48 动作，0 残留按键）
-3. **无头 Chrome + 实时 FastAPI 视觉/响应式复核**
-   - 6 视图（`1440×900`）+ 紧凑 (`1024×720`) + 宽屏 (`1920×1080`) 共 12 次 CDP 采集全部 `docScrollW <= winInnerW`、`mainScrollW == mainClientW` 且 `console_errors = []`。
-4. **分离式转谱与编曲质量基准（`uv run python scripts/eval_transcribers.py`）**
+   - `uv run lyraforge desktop --self-check` → 退出码 `0`（`ok: true`, `profiles: 2`, `windows_modules_loaded: false`）
+3. **无头 Chrome + 实时 FastAPI 视觉与交互复核**
+   - `1440×900@1x`（6 视图）、`1440×900@2x` High-DPI、紧凑 (`1024×720`) 与宽屏 (`1920×1080`) 共 **14 次 CDP 采集**全部 `docScrollW <= winInnerW`、`mainScrollW == mainClientW`、`hasFooterTransport == true` 且 `console_errors = []`；4 项端到端前端点击交互全过。
+4. **五类音频转谱与编曲分离式基准（`uv run python scripts/eval_transcribers.py`）**
    - `ffmpeg_available = false`，`basic-pitch.available = false`，`dettato.available = false`，`builtin-mono.available = true`
-   - `builtin-mono` 实测数据：
-     - `solo_melody`: 转谱 F1 `1.0` | 端到端召回 `1.0` | 相对转录 MIDI 适配分 `100.0` | `166.86 ms`
-     - `polyphonic_piano_chords`: 转谱 F1 `0.0` | 端到端召回 `0.0` | 相对转录 MIDI 适配分 `100.0` | `139.19 ms`
-     - `dense_multi_register`: 转谱 F1 `0.3333` | 端到端召回 `0.1875` | 相对转录 MIDI 适配分 `100.0` | `148.4 ms`
-     - `fixture_c_major_scale_wav` (自制 MIDI 渲染 WAV): 转谱 F1 `1.0` | 端到端召回 `1.0` | 适配分 `100.0` | `205.06 ms`
-     - `fixture_chords_type1_wav` (自制 MIDI 渲染 WAV): 转谱 F1 `0.1818` | 端到端召回 `0.1429` | 适配分 `91.98` | `677.71 ms`
+   - `builtin-mono` 实测（详见 [TEST_REPORT.md](TEST_REPORT.md) §3）：
+     - `solo_melody`（单音旋律）: 转谱 F1 `1.0` | 主旋律 F1 `1.0` | 相对转录 MIDI 适配分 `100.0` | 端到端召回 `1.0` | `169.88 ms`
+     - `solo_piano_arpeggio`（钢琴独奏主旋律+琶音）: 转谱 F1 `0.6667` | 主旋律 R `1.0` (F1 `0.5714`) | 适配分 `92.36` | 端到端总/主召回 `0.5455` / `1.0` | `137.61 ms`
+     - `polyphonic_piano_chords`（和弦与多声部）: 转谱 F1 `0.0` | 适配分 `100.0` | 端到端召回 `0.0` | `134.39 ms`
+     - `vocal_with_accompaniment`（人声伴奏混合）: 转谱 F1 `0.2` | 适配分 `90.91` | 端到端召回 `0.1` | `192.38 ms`
+     - `multi_instrument_complex`（多乐器混音）: 转谱 F1 `0.2222` | 适配分 `96.65` | 端到端召回 `0.1667` | `161.66 ms`
+     - `fixture_c_major_scale_wav` / `fixture_chords_type1_wav`: 转谱 F1 `1.0` / `0.1818` | 适配分 `100.0` / `91.98` | `208.6 ms` / `677.75 ms`
+     - `pipeline_roundtrip`（音频导入→转录→编曲→试听→编辑→保存新版→再试听）: `ok = true`, `preview_wav_bytes = 155276`

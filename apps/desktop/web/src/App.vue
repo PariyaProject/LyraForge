@@ -107,7 +107,10 @@ onMounted(() => {
           {{ store.health.value.platform }}
         </span>
         <button
-          v-if="store.playbackStatus.value?.state === 'running'"
+          v-if="
+            store.playbackStatus.value?.state === 'running' ||
+            store.playbackStatus.value?.state === 'paused'
+          "
           class="danger"
           type="button"
           style="min-block-size: 30px; padding: 3px 10px"
@@ -142,6 +145,78 @@ onMounted(() => {
         :store="store"
       />
     </main>
+
+    <footer class="studio-transport" aria-label="全局试听与演奏控制栏">
+      <div class="transport-meta">
+        <span class="pill">
+          <StudioIcon name="music" :size="13" />
+          {{ store.arrDetail.value?.arrangement.label || store.arrDetail.value?.arrangement.style || "未选择编曲" }}
+        </span>
+        <span
+          class="pill"
+          :class="
+            store.playbackStatus.value?.state === 'running' ||
+            store.playbackStatus.value?.state === 'paused'
+              ? 'pill-warn'
+              : 'pill-ok'
+          "
+        >
+          演奏状态：{{ store.playbackStatus.value?.state ?? "idle" }}
+        </span>
+      </div>
+
+      <div class="transport-audio">
+        <audio
+          v-if="store.previewUrl.value"
+          controls
+          :src="store.previewUrl.value"
+          aria-label="全局编曲 WAV 试听播放器"
+        />
+        <span v-else class="muted">
+          点击“试听”即可在所有视图间连续播放离线 WAV 合成音频
+        </span>
+      </div>
+
+      <div class="transport-controls">
+        <button
+          class="secondary"
+          type="button"
+          :disabled="!store.selectedArrId.value || store.busy.value"
+          @click="store.handlePreview"
+        >
+          <StudioIcon name="play" :size="14" />
+          {{ store.previewUrl.value ? "刷新试听" : "快速试听" }}
+        </button>
+        <button
+          v-if="store.playbackStatus.value?.state === 'running'"
+          class="secondary"
+          type="button"
+          @click="store.handlePause"
+        >
+          暂停演奏
+        </button>
+        <button
+          v-if="store.playbackStatus.value?.state === 'paused'"
+          class="primary"
+          type="button"
+          @click="store.handleResume"
+        >
+          继续演奏
+        </button>
+        <button
+          v-if="
+            store.playbackStatus.value?.state === 'running' ||
+            store.playbackStatus.value?.state === 'paused'
+          "
+          class="danger"
+          type="button"
+          @click="store.handleEmergencyStop"
+        >
+          <StudioIcon name="stop" :size="14" />
+          紧急停止
+        </button>
+      </div>
+    </footer>
 
     <ToastStack :toasts="store.toasts.value" @dismiss="store.dismissToast" />
   </div>

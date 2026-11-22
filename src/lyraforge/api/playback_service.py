@@ -18,11 +18,13 @@ from lyraforge.music_core.performance import validate_performance
 from lyraforge.music_core.profile import InstrumentProfile
 from lyraforge.playback import (
     MonotonicClock,
+    PauseToken,
     PlaybackDriver,
     PlaybackMode,
     Player,
     StopToken,
     VirtualClock,
+    create_emergency_stop_checker,
     create_playback_backend,
 )
 
@@ -49,6 +51,7 @@ class PlaybackManager:
         self._pending: _PendingPrepare | None = None
         self._thread: threading.Thread | None = None
         self._stop_token: StopToken | None = None
+        self._pause_token: PauseToken | None = None
         self._driver: PlaybackDriver | None = None
         self._state: str = "idle"
         self._session_id: str | None = None
@@ -66,6 +69,7 @@ class PlaybackManager:
         store: LibraryStore,
     ) -> dict[str, Any]:
         mode = PlaybackMode(mode)
+        effective_realtime = True if mode == PlaybackMode.WINDOWS else realtime
         doc = store.load_arrangement_performance(arrangement_id)
         profile = load_builtin_profile(str(doc["instrument_profile_id"]))
         validate_performance(doc, profile)
@@ -91,7 +95,7 @@ class PlaybackManager:
                 expires_mono=time.monotonic() + PREPARE_TOKEN_TTL_S,
                 arrangement_id=arrangement_id,
                 mode=mode,
-                realtime=realtime,
+                realtime=effective_realtime,
                 allowed_window_titles=titles,
                 events=list(doc["events"]),
                 profile=profile,
@@ -102,7 +106,7 @@ class PlaybackManager:
             "expires_in_s": int(PREPARE_TOKEN_TTL_S),
             "arrangement_id": arrangement_id,
             "mode": str(mode),
-            "realtime": realtime,
+            "realtime": effective_realtime,
             "event_count": len(doc["events"]),
             "duration_ms": doc["duration_ms"],
             "calibration_status": profile.calibration_status,
@@ -111,7 +115,8 @@ class PlaybackManager:
                 "Dry-run mode simulates playback internally and sends no OS keyboard events."
                 if mode == PlaybackMode.DRY_RUN
                 else "Windows keyboard simulation may violate game terms of service; "
-                "ensure the in-game instrument UI is open and focused before starting."
+                "ensure the in-game instrument UI is open and focused before starting. "
+                "Press Esc or switch window focus to release keys immediately."
             ),
         }
 
@@ -141,9 +146,12 @@ class PlaybackManager:
                 clock=clock,
                 allowed_window_titles=pending.allowed_window_titles,
             )
+            emergency_stop_fn = create_emergency_stop_checker(pending.mode)
             stop_token = StopToken()
+            pause_token = PauseToken()
             session_id = str(uuid.uuid4())
             self._stop_token = stop_token
+            self._pause_token = pause_token
             self._driver = driver
             self._state = "running"
             self._session_id = session_id
@@ -157,6 +165,8 @@ class PlaybackManager:
                     clock,
                     focus_guard=focus_guard,
                     stop_token=stop_token,
+                    pause_token=pause_token,
+                    emergency_stop_fn=emergency_stop_fn,
                 )
                 result = player.play(pending.events)
                 try:
@@ -171,6 +181,7 @@ class PlaybackManager:
                 with self._lock:
                     self._state = str(result.state)
                     self._last_result = result.to_json()
+                    self._pause_token = None
                     self._thread = None
 
             thread = threading.Thread(
@@ -189,11 +200,38 @@ class PlaybackManager:
                 "sends_os_input": bool(getattr(driver, "sends_os_input", False)),
             }
 
+    def pause(self) -> dict[str, Any]:
+        with self._lock:
+            if (
+                self._thread is None
+                or not self._thread.is_alive()
+                or self._pause_token is None
+            ):
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "no active playback session to pause")
+            self._pause_token.pause()
+            self._state = "paused"
+        return self.status()
+
+    def resume(self) -> dict[str, Any]:
+        with self._lock:
+            if (
+                self._thread is None
+                or not self._thread.is_alive()
+                or self._pause_token is None
+            ):
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "no paused playback session to resume")
+            self._pause_token.resume()
+            self._state = "running"
+        return self.status()
+
     def stop(self, reason: str = "user_api_stop") -> dict[str, Any]:
         with self._lock:
             stop_token = self._stop_token
+            pause_token = self._pause_token
             thread = self._thread
             self._pending = None
+        if pause_token is not None:
+            pause_token.resume()
         if stop_token is not None:
             stop_token.request_stop(reason)
         if thread is not None and thread.is_alive():
@@ -202,7 +240,12 @@ class PlaybackManager:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            pressed = sorted(getattr(self._driver, "pressed", set()))
+            snap_fn = getattr(self._driver, "pressed_snapshot", None)
+            pressed = (
+                snap_fn()
+                if callable(snap_fn)
+                else sorted(getattr(self._driver, "pressed", set()))
+            )
             return {
                 "state": self._state,
                 "session_id": self._session_id,

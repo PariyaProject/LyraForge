@@ -107,6 +107,11 @@ jobs:
             Write-Error "Expected Windows bundle dist/LyraForge/LyraForge.exe was not generated."
             exit 1
           }
+          & "dist/LyraForge/LyraForge.exe" --self-check
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "LyraForge.exe --self-check failed with exit code $LASTEXITCODE"
+            exit 1
+          }
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4

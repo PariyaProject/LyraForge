@@ -218,6 +218,7 @@ class OpenMusicCatalogSourceAdapter:
         self.timeout_s = timeout_s
         self.max_items = max_items
         self._opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
             _PinnedHTTPHandler(),
             _PinnedHTTPSHandler(context=ssl.create_default_context()),
             _SafeRedirectHandler(max_redirects=5),

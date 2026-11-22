@@ -131,13 +131,15 @@
   }
 
   .app-shell {
-    min-block-size: 100dvh;
+    block-size: 100dvh;
+    overflow: hidden;
     display: grid;
     grid-template-columns: 224px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "rail topbar"
-      "rail main";
+      "rail main"
+      "rail transport";
     background: var(--bg-canvas);
   }
 
@@ -272,6 +274,40 @@
     scrollbar-width: thin;
   }
 
+  .studio-transport {
+    grid-area: transport;
+    background: var(--bg-rail);
+    border-block-start: 1px solid var(--border-subtle);
+    padding: 8px var(--space-5);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: safe center;
+    justify-content: space-between;
+    gap: 10px 14px;
+    min-inline-size: 0;
+    z-index: 20;
+  }
+
+  .transport-meta,
+  .transport-audio,
+  .transport-controls {
+    display: flex;
+    align-items: safe center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-inline-size: 0;
+  }
+
+  .transport-audio {
+    flex: 1 1 240px;
+    max-inline-size: 420px;
+  }
+
+  .transport-audio audio {
+    inline-size: 100%;
+    block-size: 32px;
+  }
+
   .view-stack {
     display: flex;
     flex-direction: column;
@@ -326,12 +362,21 @@
 
   @media (max-width: 680px) {
     .app-shell {
+      block-size: auto;
+      min-block-size: 100dvh;
+      overflow: visible;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
       grid-template-areas:
         "topbar"
         "rail"
-        "main";
+        "main"
+        "transport";
+    }
+
+    .studio-transport {
+      position: sticky;
+      inset-block-end: 0;
     }
 
     .studio-rail {
@@ -1029,10 +1074,10 @@
     opacity: 0.92;
   }
 
-  /* Toast Stack */
+  /* Toast Stack (keep clear above sticky global transport dock) */
   .toast-stack {
     position: fixed;
-    inset-block-end: 18px;
+    inset-block-end: 66px;
     inset-inline-end: 18px;
     z-index: 120;
     display: flex;

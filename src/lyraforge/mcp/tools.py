@@ -6,7 +6,8 @@ import shutil
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -337,6 +338,32 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+def _bound_int(
+    args: dict[str, Any],
+    key: str,
+    *,
+    lo: int,
+    hi: int,
+    default: int | None = None,
+) -> int:
+    raw = args.get(key, default)
+    if raw is None or isinstance(raw, bool):
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT, f"{key} must be an integer between {lo} and {hi}"
+        )
+    if isinstance(raw, float) and not raw.is_integer():
+        raise LyraError(ErrorCode.INVALID_ARGUMENT, f"{key} must be an integer")
+    try:
+        val = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT, f"{key} must be an integer between {lo} and {hi}"
+        ) from exc
+    if not (lo <= val <= hi):
+        raise LyraError(ErrorCode.INVALID_ARGUMENT, f"{key} must be within [{lo}, {hi}]")
+    return val
+
+
 class MCPToolExecutor:
     """Executes typed MCP tool calls cleanly against LibraryStore and SourceAdapters."""
 
@@ -351,12 +378,16 @@ class MCPToolExecutor:
         tasks: MCPTaskRegistry | None = None,
     ) -> None:
         self.store = store
+        self._owner_thread_id = threading.get_ident()
+        self._search_dirs = tuple(search_dirs)
         self.default_allow_network = default_allow_network
         self.local_adapter = LocalLibrarySourceAdapter(store=store, search_dirs=search_dirs)
         self.url_adapter = url_adapter or DirectUrlSourceAdapter()
         self.online_adapter = online_adapter or OpenMusicCatalogSourceAdapter()
         self.tasks = tasks or MCPTaskRegistry()
-        self._handlers: dict[str, Callable[[dict[str, Any], str | int | None], dict[str, Any]]] = {
+        self._handlers: dict[
+            str, Callable[[dict[str, Any], str | int | None, LibraryStore], dict[str, Any]]
+        ] = {
             "search_music": self._tool_search_music,
             "import_media": self._tool_import_media,
             "transcribe": self._tool_transcribe,
@@ -368,6 +399,14 @@ class MCPToolExecutor:
             "get_task_status": self._tool_get_task_status,
             "play_in_game": self._tool_play_in_game,
         }
+
+    @contextmanager
+    def _thread_store(self) -> Iterator[LibraryStore]:
+        if threading.get_ident() == self._owner_thread_id:
+            yield self.store
+            return
+        with LibraryStore(self.store.data_dir, secret_store=self.store._secrets) as worker_store:
+            yield worker_store
 
     def list_tools(self) -> list[dict[str, Any]]:
         return list(TOOL_SCHEMAS)
@@ -395,10 +434,16 @@ class MCPToolExecutor:
                 True,
             )
         try:
-            payload = handler(args, request_id)
+            with self._thread_store() as store:
+                payload = handler(args, request_id, store)
             return payload, False
         except LyraError as exc:
-            secret_val = self.store.get_secret("llm_api_key") or ""
+            secret_val = ""
+            try:
+                with self._thread_store() as store:
+                    secret_val = store.get_secret("llm_api_key") or ""
+            except Exception:
+                pass
             return (
                 {
                     "ok": False,
@@ -418,7 +463,12 @@ class MCPToolExecutor:
                 True,
             )
         except Exception as exc:  # noqa: BLE001
-            secret_val = self.store.get_secret("llm_api_key") or ""
+            secret_val = ""
+            try:
+                with self._thread_store() as store:
+                    secret_val = store.get_secret("llm_api_key") or ""
+            except Exception:
+                pass
             return (
                 {
                     "ok": False,
@@ -431,13 +481,20 @@ class MCPToolExecutor:
                 True,
             )
 
-    def _tool_search_music(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_search_music(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
         if not query:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "query must not be empty")
-        limit = int(args.get("limit", 10))
+        limit = _bound_int(args, "limit", default=10, lo=1, hi=50)
         allow_net = bool(args.get("allow_network", self.default_allow_network))
-        local = self.local_adapter.search(query, limit=limit)
+        local_adapter = (
+            self.local_adapter
+            if store is self.store
+            else LocalLibrarySourceAdapter(store=store, search_dirs=self._search_dirs)
+        )
+        local = local_adapter.search(query, limit=limit)
         remote = self.online_adapter.search(query, limit=limit) if allow_net else []
         ranked = rank_candidates([*local, *remote], query)[:limit]
         return {
@@ -452,7 +509,9 @@ class MCPToolExecutor:
             ),
         }
 
-    def _tool_import_media(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_import_media(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         path_raw = args.get("path")
         url_raw = args.get("url")
         title = str(args["title"]).strip() if args.get("title") else None
@@ -473,14 +532,15 @@ class MCPToolExecutor:
                     str(url_raw).strip(), Path(tmpdir), user_authorized=True
                 )
                 return self._import_local_path(
-                    local_file, title=title, artist=artist, tags=tags
+                    store, local_file, title=title, artist=artist, tags=tags
                 )
         return self._import_local_path(
-            Path(str(path_raw)).expanduser(), title=title, artist=artist, tags=tags
+            store, Path(str(path_raw)).expanduser(), title=title, artist=artist, tags=tags
         )
 
     def _import_local_path(
         self,
+        store: LibraryStore,
         path: Path,
         *,
         title: str | None,
@@ -489,9 +549,9 @@ class MCPToolExecutor:
     ) -> dict[str, Any]:
         ext = path.suffix.lower()
         if ext in {".mid", ".midi"}:
-            res = self.store.import_midi(path, title=title, artist=artist, tags=tags)
+            res = store.import_midi(path, title=title, artist=artist, tags=tags)
         else:
-            res = self.store.import_audio(path, title=title, artist=artist, tags=tags)
+            res = store.import_audio(path, title=title, artist=artist, tags=tags)
         return {
             "ok": True,
             "song": res.song.to_json(),
@@ -499,15 +559,17 @@ class MCPToolExecutor:
             "deduplicated": res.deduplicated,
         }
 
-    def _tool_transcribe(self, args: dict[str, Any], req_id: str | int | None) -> dict[str, Any]:
+    def _tool_transcribe(
+        self, args: dict[str, Any], req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         song_id = str(args.get("song_id") or "").strip()
         if not song_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "song_id is required")
         engine_id = str(args.get("engine_id") or DEFAULT_TRANSCRIBER_ID)
         opts = TranscribeOptions(
-            min_pitch=int(args.get("min_pitch", 36)),
-            max_pitch=int(args.get("max_pitch", 96)),
-            min_note_ms=int(args.get("min_note_ms", 60)),
+            min_pitch=_bound_int(args, "min_pitch", default=36, lo=0, hi=126),
+            max_pitch=_bound_int(args, "max_pitch", default=96, lo=1, hi=127),
+            min_note_ms=_bound_int(args, "min_note_ms", default=60, lo=10, hi=5000),
         )
         task = self.tasks.create(
             "transcribe",
@@ -515,7 +577,7 @@ class MCPToolExecutor:
             request_id=req_id,
         )
         try:
-            rec = self.store.transcribe_song(
+            rec = store.transcribe_song(
                 song_id,
                 engine_id=engine_id,
                 options=opts,
@@ -543,7 +605,9 @@ class MCPToolExecutor:
             "status": "completed",
         }
 
-    def _tool_arrange(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_arrange(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         song_id = str(args.get("song_id") or "").strip()
         if not song_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "song_id is required")
@@ -555,18 +619,20 @@ class MCPToolExecutor:
             ),
             speed=float(args.get("speed", 1.0)),
             max_chord_keys=(
-                int(args["max_chord_keys"]) if args.get("max_chord_keys") is not None else None
+                _bound_int(args, "max_chord_keys", lo=1, hi=32)
+                if args.get("max_chord_keys") is not None
+                else None
             ),
-            chord_window_ms=int(args.get("chord_window_ms", 20)),
-            arpeggiate_ms=int(args.get("arpeggiate_ms", 0)),
+            chord_window_ms=_bound_int(args, "chord_window_ms", default=20, lo=0, hi=200),
+            arpeggiate_ms=_bound_int(args, "arpeggiate_ms", default=0, lo=0, hi=60),
         )
-        rec = self.store.arrange_song(
+        rec = store.arrange_song(
             song_id,
             profile_id=str(args.get("profile_id") or DEFAULT_PROFILE_ID),
             options=opts,
             label=str(args["label"]) if args.get("label") else None,
         )
-        report = self.store.load_arrangement_report(rec.id)
+        report = store.load_arrangement_report(rec.id)
         return {
             "ok": True,
             "arrangement": rec.to_json(),
@@ -577,12 +643,14 @@ class MCPToolExecutor:
             },
         }
 
-    def _tool_evaluate(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_evaluate(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         arr_id = str(args.get("arrangement_id") or "").strip()
         if not arr_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "arrangement_id is required")
-        rec = self.store.get_arrangement(arr_id)
-        report = self.store.load_arrangement_report(arr_id)
+        rec = store.get_arrangement(arr_id)
+        report = store.load_arrangement_report(arr_id)
         out: dict[str, Any] = {
             "ok": True,
             "arrangement": rec.to_json(),
@@ -595,10 +663,10 @@ class MCPToolExecutor:
         }
         other_id = args.get("compare_with_arrangement_id")
         if other_id:
-            out["ab_comparison"] = self.store.compare_arrangements(arr_id, str(other_id).strip())
+            out["ab_comparison"] = store.compare_arrangements(arr_id, str(other_id).strip())
         ref_raw = args.get("reference_midi_path")
         if ref_raw:
-            tol = int(args.get("onset_tol_ms", 75))
+            tol = _bound_int(args, "onset_tol_ms", default=75, lo=10, hi=500)
             ref_score = load_midi_file(Path(str(ref_raw)).expanduser())
             ref_pairs = [
                 (round(n.start_us / 1000.0), n.pitch)
@@ -606,16 +674,16 @@ class MCPToolExecutor:
                 if not n.is_percussion
             ]
             # If the song has a transcription MIDI, compute fidelity vs reference as well
-            detail = self.store.get_song(rec.song_id)
+            detail = store.get_song(rec.song_id)
             if detail.transcriptions:
                 tr_mid = load_midi_file(
-                    resolve_under(self.store.data_dir, detail.transcriptions[0].cleaned_midi_path)
+                    resolve_under(store.data_dir, detail.transcriptions[0].cleaned_midi_path)
                 )
                 out["transcription_fidelity"] = evaluate_transcription_against_reference(
                     ref_pairs, tr_mid.notes, onset_tol_ms=tol, pitch_tol_semitones=1
                 ).to_json()
             # Compare persisted arrangement events directly against reference
-            perf = self.store.load_arrangement_performance(arr_id)
+            perf = store.load_arrangement_performance(arr_id)
             ev_rows = perf.get("events") or []
             out["end_to_end_vs_reference"] = evaluate_events_against_reference(
                 ref_pairs,
@@ -625,19 +693,21 @@ class MCPToolExecutor:
             )
         return out
 
-    def _tool_preview(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_preview(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         arr_id = str(args.get("arrangement_id") or "").strip()
         if not arr_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "arrangement_id is required")
-        sr = int(args.get("sample_rate", 22050))
-        wav_path = self.store.render_preview(arr_id, sample_rate=sr)
+        sr = _bound_int(args, "sample_rate", default=22050, lo=8000, hi=48000)
+        wav_path = store.render_preview(arr_id, sample_rate=sr)
         out_raw = args.get("output_path")
         if out_raw:
             dest = Path(str(out_raw)).expanduser().resolve()
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(wav_path, dest)
             wav_path = dest
-        rec = self.store.get_arrangement(arr_id)
+        rec = store.get_arrangement(arr_id)
         return {
             "ok": True,
             "arrangement_id": arr_id,
@@ -647,13 +717,13 @@ class MCPToolExecutor:
         }
 
     def _tool_save_to_library(
-        self, args: dict[str, Any], _req_id: str | int | None
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
     ) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True}
         song_id = args.get("song_id")
         if song_id:
             tags = [str(t) for t in args["tags"]] if isinstance(args.get("tags"), list) else None
-            updated_song = self.store.update_song_metadata(
+            updated_song = store.update_song_metadata(
                 str(song_id).strip(),
                 title=str(args["title"]) if args.get("title") is not None else None,
                 artist=str(args["artist"]) if args.get("artist") is not None else None,
@@ -663,13 +733,14 @@ class MCPToolExecutor:
         arr_id = args.get("arrangement_id")
         if arr_id:
             aid = str(arr_id).strip()
-            rec = self.store.get_arrangement(aid)
+            rec = store.get_arrangement(aid)
             if args.get("label") is not None:
-                rec = self.store.set_arrangement_label(aid, str(args["label"]))
+                rec = store.set_arrangement_label(aid, str(args["label"]))
             if args.get("is_favorite") is not None:
-                rec = self.store.set_favorite(aid, bool(args["is_favorite"]))
+                rec = store.set_favorite(aid, bool(args["is_favorite"]))
             if args.get("user_vote") is not None:
-                rec = self.store.set_user_vote(aid, int(args["user_vote"]))
+                vote_val = _bound_int(args, "user_vote", lo=-1, hi=1)
+                rec = store.set_user_vote(aid, vote_val)
             out["arrangement"] = rec.to_json()
         if "song" not in out and "arrangement" not in out:
             raise LyraError(
@@ -677,7 +748,9 @@ class MCPToolExecutor:
             )
         return out
 
-    def _tool_export_score(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_export_score(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         arr_id = str(args.get("arrangement_id") or "").strip()
         fmt = str(args.get("format") or "").strip().lower()
         out_raw = str(args.get("output_path") or "").strip()
@@ -688,12 +761,12 @@ class MCPToolExecutor:
         dest = Path(out_raw).expanduser().resolve()
         if fmt == "lyrapack":
             payload = export_lyrapack(
-                self.store,
+                store,
                 arr_id,
                 copyright_confirmed=bool(args.get("rights_confirmed", False)),
             )
         elif fmt in {"midi", "json"}:
-            payload = self.store.export_arrangement(arr_id, fmt)  # type: ignore[arg-type]
+            payload = store.export_arrangement(arr_id, fmt)  # type: ignore[arg-type]
         else:
             raise LyraError(
                 ErrorCode.INVALID_ARGUMENT, f"unsupported export format {fmt!r}"
@@ -708,7 +781,7 @@ class MCPToolExecutor:
         }
 
     def _tool_get_task_status(
-        self, args: dict[str, Any], _req_id: str | int | None
+        self, args: dict[str, Any], _req_id: str | int | None, _store: LibraryStore
     ) -> dict[str, Any]:
         task_id = args.get("task_id")
         if task_id:
@@ -724,11 +797,13 @@ class MCPToolExecutor:
             return {"ok": True, "task": rec.to_json()}
         return {"ok": True, "tasks": self.tasks.list_recent()}
 
-    def _tool_play_in_game(self, args: dict[str, Any], _req_id: str | int | None) -> dict[str, Any]:
+    def _tool_play_in_game(
+        self, args: dict[str, Any], _req_id: str | int | None, store: LibraryStore
+    ) -> dict[str, Any]:
         arr_id = str(args.get("arrangement_id") or "").strip()
         if not arr_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "arrangement_id is required")
-        rec = self.store.get_arrangement(arr_id)
+        rec = store.get_arrangement(arr_id)
         prof_id = str(args.get("profile_id") or rec.profile_id or DEFAULT_PROFILE_ID)
         profile = load_builtin_profile(prof_id)
         return {

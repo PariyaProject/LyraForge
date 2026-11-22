@@ -155,3 +155,17 @@ class TranscriptionJobManager:
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
             return [j.to_json() for j in reversed(list(self._jobs.values()))]
+
+    def cancel_all(self, reason: str = "shutdown") -> None:
+        threads: list[threading.Thread] = []
+        with self._lock:
+            for job in self._jobs.values():
+                if job.status in {"queued", "running"}:
+                    job.stop_token.request_stop(reason)
+                    if job.status == "queued":
+                        job.status = "cancelled"
+                        job.stage = "cancelled"
+                    if job.thread is not None and job.thread.is_alive():
+                        threads.append(job.thread)
+        for th in threads:
+            th.join(timeout=1.5)

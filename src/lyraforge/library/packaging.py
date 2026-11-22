@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 LYRAPACK_SCHEMA_VERSION = 1
 _FORBIDDEN_AUDIO_EXTS = SUPPORTED_MEDIA_EXTENSIONS
 _SQLITE_SIDECARS = frozenset({"library.db-wal", "library.db-shm", "library.db-journal"})
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+)
 
 
 def _sha256_prefixed(data: bytes) -> str:
@@ -47,6 +52,18 @@ def _validate_member_name(raw_name: str) -> str:
     parts = PurePosixPath(norm).parts
     if any(p in {"", ".", ".."} for p in parts):
         raise LyraError(ErrorCode.PACKAGE_INVALID, f"invalid ZIP path traversal: {raw_name!r}")
+    for seg in parts:
+        if seg.endswith((" ", ".")) or any(ord(ch) < 32 for ch in seg):
+            raise LyraError(
+                ErrorCode.PACKAGE_INVALID,
+                f"unsafe filename segment in ZIP: {raw_name!r}",
+            )
+        stem = seg.split(".", 1)[0].rstrip(" ").upper()
+        if stem in _WINDOWS_RESERVED_STEMS:
+            raise LyraError(
+                ErrorCode.PACKAGE_INVALID,
+                f"reserved Windows device name in ZIP: {raw_name!r}",
+            )
     return "/".join(parts)
 
 

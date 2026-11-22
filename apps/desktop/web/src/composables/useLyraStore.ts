@@ -73,6 +73,8 @@ export function createLyraStore(api: LyraForgeApi) {
   const importTags = ref("");
   const packFile = ref<File | null>(null);
   const packRightsConfirmed = ref(false);
+  const restoreFile = ref<File | null>(null);
+  const restoreConfirmed = ref(false);
 
   // Transcription state
   const selectedEngineId = ref("builtin-mono");
@@ -571,6 +573,31 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function handleRestoreBackupZip(): Promise<void> {
+    if (!restoreFile.value) {
+      reportError("请先选择一个本地曲库备份 ZIP 文件");
+      return;
+    }
+    if (!restoreConfirmed.value) {
+      reportError("恢复备份将覆盖当前曲库数据（密钥凭据保持独立），请先勾选确认");
+      return;
+    }
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      const res = await api.restoreBackupZip(restoreFile.value);
+      restoreFile.value = null;
+      restoreConfirmed.value = false;
+      selectedSongId.value = null;
+      await refreshSongs();
+      reportOk(`已安全恢复曲库备份，共载入 ${res.restored.song_count} 首曲目`);
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
   async function handleSaveSettings(): Promise<void> {
     errorMessage.value = "";
     try {
@@ -667,7 +694,10 @@ export function createLyraStore(api: LyraForgeApi) {
       pollTimer = window.setInterval(async () => {
         try {
           playbackStatus.value = await api.playbackStatus();
-          if (playbackStatus.value.state !== "running") {
+          if (
+            playbackStatus.value.state !== "running" &&
+            playbackStatus.value.state !== "paused"
+          ) {
             stopPolling();
             reportOk(`演奏已结束（状态：${playbackStatus.value.state}）`);
           }
@@ -679,6 +709,26 @@ export function createLyraStore(api: LyraForgeApi) {
       reportError((err as Error).message);
     } finally {
       busy.value = false;
+    }
+  }
+
+  async function handlePause(): Promise<void> {
+    errorMessage.value = "";
+    try {
+      playbackStatus.value = await api.pausePlayback();
+      reportOk("演奏已暂停并释放全部按键");
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
+  async function handleResume(): Promise<void> {
+    errorMessage.value = "";
+    try {
+      playbackStatus.value = await api.resumePlayback();
+      reportOk("已恢复演奏");
+    } catch (err) {
+      reportError((err as Error).message);
     }
   }
 
@@ -777,6 +827,8 @@ export function createLyraStore(api: LyraForgeApi) {
     importTags,
     packFile,
     packRightsConfirmed,
+    restoreFile,
+    restoreConfirmed,
     selectedEngineId,
     activeJob,
     style,
@@ -827,10 +879,13 @@ export function createLyraStore(api: LyraForgeApi) {
     handleExportLyrapack,
     handleImportLyrapack,
     handleBackupZip,
+    handleRestoreBackupZip,
     handleSaveSettings,
     handleRunAgent,
     handlePrepare,
     handleStart,
+    handlePause,
+    handleResume,
     handleEmergencyStop,
     initialize,
   };
