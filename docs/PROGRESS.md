@@ -25,6 +25,7 @@
 | **Round 2 P1** | 公开产品主页版 [README.md](../README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[MAINTAINER_WORKFLOW.md](MAINTAINER_WORKFLOW.md)、[SECOND_REVIEW_REPORT.md](SECOND_REVIEW_REPORT.md) 与 [AGENTS.md](../AGENTS.md) 规则持久化 | **已实现且已测试** | 已清除文档内全部本地目录绝对路径，`AGENTS.md` 为 38 行（≤120 行） |
 | **Round 3 UI/UX** | Studio Dark 设计系统（`tokens.css` / `@layer` / `StudioIcon` / `ToastStack`）、6 视图独立工作区、DAW Piano Roll（缩放/吸附/标尺/拖拽/快捷键）、IME 防护与内置 MCP 配置页 | **已实现且已测试** | `apps/desktop/web/src/*`, [THIRD_REVIEW_UI_REPORT.md](THIRD_REVIEW_UI_REPORT.md), [assets/ui/](assets/ui/)；实时 FastAPI + Chrome CDP 12 次截屏 0 溢出 0 控制台报错 |
 | **Round 4 加固 / Alpha 验收** | 子进程临时文件防管道死锁 + `.webm`、`PlaybackView` Win32 检测修复、`VK_ESCAPE`/`PauseToken`/混合精密时钟、`windows_allowed_titles` + `POST /v1/library/restore`、MCP 并发取消 + 线程局部 SQLite、`ProxyHandler({})` + ZIP DOS 保留名拦截、`LyraForge.exe --self-check` CI 门禁、固定全局底部传输栏与 4 项交互 CDP 实测 | **已实现且已测试**（Windows《原神》真机校准与外置 ML 仍待实机验收） | [FOURTH_REVIEW_REPORT.md](FOURTH_REVIEW_REPORT.md), [TEST_REPORT.md](TEST_REPORT.md), [UI_REVIEW.md](UI_REVIEW.md), `tests/unit/test_round4_hardening.py`, `scripts/eval_transcribers.py` |
+| **Round 5 深度 Review 加固** | MCP 统一协议/初始化校验与有界线程池 (`max_pending`、前中后无竞态取消、断连清理、`-32603`)；曲库恢复独占维护门控（暂停新任务、等待确认线程退出、`409 LIBRARY_BUSY`、SQLite WAL/锁校验与并发幂等写入）；子进程有界滚动日志与 `seek()` 读尾；SQLite JSON1 (`json_each` + `py_lower`) 精确标签分页查询；LLM `math.isfinite()` 有限数值解析 | **已实现且已测试** | `src/lyraforge/mcp/{server,tools}.py`, `src/lyraforge/api/{app,job_service,playback_service}.py`, `src/lyraforge/library/{schema,store,packaging}.py`, `src/lyraforge/media/subprocess_utils.py`, `src/lyraforge/agent/llm.py`, `tests/unit/test_round5_review_fixes.py`, [TEST_REPORT.md](TEST_REPORT.md) |
 | **M2 / 音频** | 原生 WAV 提取标准化 + 内置单音 YIN 转谱（`builtin-mono`） | **部分实现** | 核心与任务取消可用；单音旋律 `F1=1.0000`、钢琴主旋律+琶音 `F1=0.6667`，和弦 `F1=0.0000`、人声伴奏 `F1=0.2000`、多乐器混音 `F1=0.2222` |
 | **M2 / 外部 ML** | `ffmpeg` 非 WAV 音视频提取 + 隔离进程 `basic-pitch` / `dettato` 多音转录 | **因外部环境阻塞** | 适配器和环境变量协议已实现并通过 Mock 测试；当前开发机未安装 `ffmpeg`、`basic-pitch`、`dettato` |
 | **M5 / 发行** | Windows 实体机运行 `LyraForge.exe` 冒烟、`原神` 21 键校准与正式 Stable Release | **未实现** | CI 已内置 `LyraForge.exe --self-check` 自动运行自检；需下载 CI 产物 `LyraForge-windows-x64` 后按 [TEST_REPORT.md](TEST_REPORT.md) §5 在 Windows 10/11 实体机完成验收 |
@@ -36,13 +37,12 @@
 1. **GitHub Actions CI 验收**
    - `main` 基线（`1f2b34db8dc6911d33ddd4fc9b4f56f7b25475db`）→ [Run #44980488436](https://github.com/PariyaProject/LyraForge/actions/runs/44980488436)：**`success`**（三作业全绿并产出 `LyraForge-windows-x64`）。
    - [PR #1](https://github.com/PariyaProject/LyraForge/pull/1) 合入提交（`a872f664c5e9dd0b05976bcccc1e9260803c0ba2`）→ [Run #45003219667](https://github.com/PariyaProject/LyraForge/actions/runs/45003219667)：**`success`**（`Test (macos-latest)`、`Test (windows-latest)`、`Build Windows Bundle (PyInstaller)` 全绿）。
-   - Round 4 基准 `9123a950ea362e59e714fb6b4127fe6cb79a2212` → [Run #45006178921](https://github.com/PariyaProject/LyraForge/actions/runs/45006178921)：**`success`**；本轮更新提交的 PR 与合并后 `main` CI 见提交后追踪结果。
+   - Round 4 基准 `9123a950ea362e59e714fb6b4127fe6cb79a2212` → [Run #45006178921](https://github.com/PariyaProject/LyraForge/actions/runs/45006178921)：**`success`**；[PR #3](https://github.com/PariyaProject/LyraForge/pull/3) 合入提交（`051a222b10aa7a4dc175748ada8b42ec67b8c48a`）→ [Run #45009837274](https://github.com/PariyaProject/LyraForge/actions/runs/45009837274)：**`success`**。
 2. **本地完整门禁（`pnpm --dir apps/desktop/web install --frozen-lockfile && make check`）**
-   - `pnpm v12.6.0` frozen-lockfile 一致（`39ms`）
    - `uv run ruff check .` → `All checks passed!`
-   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **122 passed, 2 warnings in 26.65s**，总覆盖率 **86.53%**（5558 语句 / 1404 分支）
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **128 passed, 2 warnings in 30.64s**，总覆盖率 **87.75%**（6029 语句 / 1570 分支；含 `test_round5_review_fixes.py` 6 项专项回归）
    - `vitest run` → **Test Files 4 passed (4), Tests 6 passed (6)**（含 `App.spec.ts`、`PianoRollInteractions.spec.ts`、`PianoRollEditor.spec.ts`、`LyreKeyboard.spec.ts`）
-   - `vue-tsc --noEmit && vite build` → 构建成功（`833ms`，`158.80 kB` JS / `20.52 kB` CSS）
+   - `vue-tsc --noEmit && vite build` → 构建成功（`867ms`，`158.80 kB` JS / `20.52 kB` CSS）
    - `make smoke` → 退出码 `0`（DryRun 48 动作，0 残留按键）
    - `uv run lyraforge desktop --self-check` → 退出码 `0`（`ok: true`, `profiles: 2`, `windows_modules_loaded: false`）
 3. **无头 Chrome + 实时 FastAPI 视觉与交互复核**

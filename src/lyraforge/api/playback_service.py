@@ -169,15 +169,16 @@ class PlaybackManager:
                     emergency_stop_fn=emergency_stop_fn,
                 )
                 result = player.play(pending.events)
-                try:
-                    with LibraryStore(data_dir) as s:
-                        s.record_playback_session(
-                            pending.arrangement_id,
-                            f"{pending.mode}:{'realtime' if pending.realtime else 'virtual'}",
-                            result,
-                        )
-                except Exception:  # pragma: no cover - defensive cleanup
-                    pass
+                if stop_token.reason not in {"library_restore", "server_shutdown"}:
+                    try:
+                        with LibraryStore(data_dir) as s:
+                            s.record_playback_session(
+                                pending.arrangement_id,
+                                f"{pending.mode}:{'realtime' if pending.realtime else 'virtual'}",
+                                result,
+                            )
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        pass
                 with self._lock:
                     self._state = str(result.state)
                     self._last_result = result.to_json()
@@ -224,7 +225,11 @@ class PlaybackManager:
             self._state = "running"
         return self.status()
 
-    def stop(self, reason: str = "user_api_stop") -> dict[str, Any]:
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def stop(self, reason: str = "user_api_stop", *, timeout_s: float = 3.0) -> dict[str, Any]:
         with self._lock:
             stop_token = self._stop_token
             pause_token = self._pause_token
@@ -235,7 +240,7 @@ class PlaybackManager:
         if stop_token is not None:
             stop_token.request_stop(reason)
         if thread is not None and thread.is_alive():
-            thread.join(timeout=1.5)
+            thread.join(timeout=max(0.0, float(timeout_s)))
         return self.status()
 
     def status(self) -> dict[str, Any]:

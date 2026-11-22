@@ -6,11 +6,14 @@ import json
 import secrets
 import sys
 import tempfile
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+import threading
+import time
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -54,9 +57,91 @@ _STATUS_MAP: dict[ErrorCode, int] = {
     ErrorCode.PERFORMANCE_INVALID: 400,
     ErrorCode.INVALID_ARGUMENT: 400,
     ErrorCode.PACKAGE_INVALID: 400,
+    ErrorCode.LIBRARY_BUSY: 409,
     ErrorCode.MODEL_MISSING: 503,
     ErrorCode.TRANSCRIPTION_FAILED: 422,
 }
+
+
+class _LibraryAccessGate:
+    """Coordinates shared library access against exclusive restore/shutdown maintenance."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._active_ops = 0
+        self._maintenance_reason: str | None = None
+        self._shutting_down = False
+
+    @property
+    def maintenance_reason(self) -> str | None:
+        with self._cond:
+            return self._maintenance_reason
+
+    @contextmanager
+    def use(self) -> Iterator[None]:
+        with self._cond:
+            if self._shutting_down or self._maintenance_reason is not None:
+                reason = self._maintenance_reason or "server_shutdown"
+                raise LyraError(
+                    ErrorCode.LIBRARY_BUSY,
+                    f"library temporarily unavailable ({reason})",
+                    {"reason": reason},
+                )
+            self._active_ops += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._active_ops -= 1
+                self._cond.notify_all()
+
+    @contextmanager
+    def exclusive(self, reason: str, *, wait_ops_timeout_s: float = 5.0) -> Iterator[None]:
+        deadline = time.monotonic() + max(0.0, float(wait_ops_timeout_s))
+        with self._cond:
+            if self._shutting_down or self._maintenance_reason is not None:
+                active_reason = self._maintenance_reason or "server_shutdown"
+                raise LyraError(
+                    ErrorCode.LIBRARY_BUSY,
+                    f"library maintenance already in progress ({active_reason})",
+                    {"reason": active_reason},
+                )
+            self._maintenance_reason = reason
+            while self._active_ops > 0:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    self._maintenance_reason = None
+                    self._cond.notify_all()
+                    raise LyraError(
+                        ErrorCode.LIBRARY_BUSY,
+                        f"library busy: timed out waiting for {self._active_ops} operation(s)",
+                        {"active_ops": self._active_ops},
+                    )
+                self._cond.wait(timeout=rem)
+        try:
+            yield
+        finally:
+            with self._cond:
+                if not self._shutting_down and self._maintenance_reason == reason:
+                    self._maintenance_reason = None
+                self._cond.notify_all()
+
+    def begin_shutdown(self, *, wait_ops_timeout_s: float = 5.0) -> None:
+        deadline = time.monotonic() + max(0.0, float(wait_ops_timeout_s))
+        with self._cond:
+            self._shutting_down = True
+            while self._maintenance_reason is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                self._cond.wait(timeout=rem)
+            self._maintenance_reason = "server_shutdown"
+            while self._active_ops > 0:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                self._cond.wait(timeout=rem)
+            self._cond.notify_all()
 
 
 class TranscribeJobRequest(BaseModel):
@@ -193,20 +278,31 @@ def create_app(
     token = session_token or secrets.token_urlsafe(32)
     manager = PlaybackManager()
     job_manager = TranscriptionJobManager()
+    library_gate = _LibraryAccessGate()
+
+    @contextmanager
+    def open_store() -> Iterator[LibraryStore]:
+        with library_gate.use(), LibraryStore(app.state.data_dir) as store:
+            yield store
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
-            manager.stop("server_shutdown")
-            job_manager.cancel_all("server_shutdown")
+            timeout_s = float(getattr(app.state, "restore_drain_timeout_s", 5.0))
+            library_gate.begin_shutdown(wait_ops_timeout_s=timeout_s)
+            job_manager.pause_submissions("server_shutdown")
+            manager.stop("server_shutdown", timeout_s=timeout_s)
+            job_manager.cancel_all("server_shutdown", timeout_s=timeout_s, pause_new=True)
 
     app = FastAPI(title="LyraForge Local API", version=__version__, lifespan=_lifespan)
     app.state.data_dir = resolved_dir
     app.state.session_token = token
     app.state.playback_manager = manager
     app.state.job_manager = job_manager
+    app.state.library_gate = library_gate
+    app.state.restore_drain_timeout_s = 5.0
 
     origins = [o for o in cors_origins if o and o != "*"]
     if origins:
@@ -297,7 +393,7 @@ def create_app(
         with tempfile.TemporaryDirectory(prefix="lyraforge-import-") as tmpdir:
             tmp_file = Path(tmpdir) / orig_name
             tmp_file.write_bytes(raw)
-            with LibraryStore(app.state.data_dir) as store:
+            with open_store() as store:
                 if is_audio:
                     res = store.import_audio(
                         tmp_file,
@@ -320,7 +416,7 @@ def create_app(
         tag: str = Query(default=""),
         favorites_only: bool = Query(default=False),
     ) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             songs = [
                 s.to_json()
                 for s in store.search_songs(
@@ -331,7 +427,7 @@ def create_app(
 
     @app.get("/v1/library/backup.zip", dependencies=[Depends(require_token)])
     def download_library_backup() -> Response:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             data = export_backup_zip(store)
         return Response(
             content=data,
@@ -352,10 +448,38 @@ def create_app(
                     f"backup archive exceeds limit ({max_bytes} bytes)",
                 )
             chunks.append(chunk)
-        manager.stop("library_restore")
-        job_manager.cancel_all("library_restore")
-        summary = restore_backup_zip(app.state.data_dir, b"".join(chunks))
-        return {"restored": summary}
+        archive_bytes = b"".join(chunks)
+
+        def _do_restore() -> dict[str, Any]:
+            drain_timeout = float(getattr(app.state, "restore_drain_timeout_s", 5.0))
+            with library_gate.exclusive("library_restore", wait_ops_timeout_s=drain_timeout):
+                job_manager.pause_submissions("library_restore")
+                try:
+                    manager.stop("library_restore", timeout_s=drain_timeout)
+                    if manager.is_active():
+                        raise LyraError(
+                            ErrorCode.LIBRARY_BUSY,
+                            "cannot restore library: active playback session failed to stop",
+                        )
+                    surviving = job_manager.cancel_all(
+                        "library_restore",
+                        timeout_s=drain_timeout,
+                        pause_new=True,
+                    )
+                    if surviving:
+                        raise LyraError(
+                            ErrorCode.LIBRARY_BUSY,
+                            "cannot restore library: background transcription job(s) "
+                            f"did not terminate cleanly ({surviving})",
+                            {"active_jobs": surviving},
+                        )
+                    summary = restore_backup_zip(app.state.data_dir, archive_bytes)
+                    return {"restored": summary}
+                finally:
+                    if library_gate.maintenance_reason != "server_shutdown":
+                        job_manager.resume_submissions()
+
+        return await anyio.to_thread.run_sync(_do_restore)
 
     @app.post("/v1/imports/lyrapack", dependencies=[Depends(require_token)])
     async def import_lyrapack_route(file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
@@ -370,12 +494,12 @@ def create_app(
                     f".lyrapack upload exceeds limit ({max_bytes} bytes)",
                 )
             chunks.append(chunk)
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             return import_lyrapack(store, b"".join(chunks))
 
     @app.get("/v1/library/songs/{song_id}", dependencies=[Depends(require_token)])
     def get_song(song_id: str) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             return store.get_song(song_id).to_json()
 
     @app.get("/v1/transcribers", dependencies=[Depends(require_token)])
@@ -390,14 +514,15 @@ def create_app(
             min_note_ms=req.min_note_ms,
         )
         if req.async_mode:
-            job = job_manager.submit(
-                req.song_id,
-                engine_id=req.engine_id,
-                options=opts,
-                data_dir=app.state.data_dir,
-            )
+            with library_gate.use():
+                job = job_manager.submit(
+                    req.song_id,
+                    engine_id=req.engine_id,
+                    options=opts,
+                    data_dir=app.state.data_dir,
+                )
             return {"job": job}
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.transcribe_song(req.song_id, engine_id=req.engine_id, options=opts)
         return {"transcription": rec.to_json()}
 
@@ -427,7 +552,7 @@ def create_app(
             arpeggiate_ms=req.arpeggiate_ms,
             prefer_melody_track=req.prefer_melody_track,
         )
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.arrange_song(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
@@ -463,7 +588,7 @@ def create_app(
                 prefer_melody_track=v.prefer_melody_track,
             )
 
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec_a = store.arrange_song(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
@@ -485,14 +610,14 @@ def create_app(
 
     @app.post("/v1/arrangements/compare", dependencies=[Depends(require_token)])
     def compare_arrangements_route(req: CompareArrangementsRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             return store.compare_arrangements(req.arrangement_a_id, req.arrangement_b_id)
 
     @app.post("/v1/arrangements/{arrangement_id}/edit", dependencies=[Depends(require_token)])
     def edit_arrangement_route(
         arrangement_id: str, req: EditArrangementRequest
     ) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.save_edited_arrangement(arrangement_id, req.events, label=req.label)
         return {"arrangement": rec.to_json()}
 
@@ -500,19 +625,19 @@ def create_app(
     def favorite_arrangement_route(
         arrangement_id: str, req: FavoriteRequest
     ) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.set_favorite(arrangement_id, req.is_favorite)
         return {"arrangement": rec.to_json()}
 
     @app.post("/v1/arrangements/{arrangement_id}/vote", dependencies=[Depends(require_token)])
     def vote_arrangement_route(arrangement_id: str, req: VoteRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.set_user_vote(arrangement_id, req.vote)
         return {"arrangement": rec.to_json()}
 
     @app.get("/v1/arrangements/{arrangement_id}", dependencies=[Depends(require_token)])
     def get_arrangement(arrangement_id: str) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.get_arrangement(arrangement_id)
             perf = store.load_arrangement_performance(arrangement_id)
             rep_path = resolve_under(store.data_dir, rec.report_path)
@@ -525,7 +650,7 @@ def create_app(
 
     @app.post("/v1/preview", dependencies=[Depends(require_token)])
     def render_preview(req: PreviewRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             wav_path = store.render_preview(req.arrangement_id, sample_rate=req.sample_rate)
             size_bytes = wav_path.stat().st_size
         return {
@@ -540,7 +665,7 @@ def create_app(
         dependencies=[Depends(require_token)],
     )
     def get_preview_wav(arrangement_id: str) -> Response:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             rec = store.get_arrangement(arrangement_id)
             wav_path: Path | None = None
             if rec.preview_path:
@@ -557,7 +682,7 @@ def create_app(
         dependencies=[Depends(require_token)],
     )
     def export_arrangement_midi(arrangement_id: str) -> Response:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             data = store.export_arrangement(arrangement_id, "midi")
         return Response(
             content=data,
@@ -570,7 +695,7 @@ def create_app(
         dependencies=[Depends(require_token)],
     )
     def export_arrangement_json(arrangement_id: str) -> Response:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             data = store.export_arrangement(arrangement_id, "json")
         return Response(
             content=data,
@@ -585,7 +710,7 @@ def create_app(
     def export_arrangement_lyrapack(
         arrangement_id: str, req: LyrapackExportRequest
     ) -> Response:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             data = export_lyrapack(
                 store,
                 arrangement_id,
@@ -600,7 +725,7 @@ def create_app(
 
     @app.get("/v1/settings", dependencies=[Depends(require_token)])
     def get_settings() -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             return {"settings": store.get_settings()}
 
     @app.get("/v1/agent/tools", dependencies=[Depends(require_token)])
@@ -612,7 +737,7 @@ def create_app(
 
     @app.post("/v1/agent/run", dependencies=[Depends(require_token)])
     def run_agent(req: AgentRunRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             settings = store.get_settings()
             raw_dirs = settings.get("local_search_dirs")
             search_dirs = (
@@ -633,13 +758,13 @@ def create_app(
 
     @app.post("/v1/settings", dependencies=[Depends(require_token)])
     def update_setting(req: SettingUpdateRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             store.set_setting(req.key, req.value)
             return {"settings": store.get_settings()}
 
     @app.post("/v1/playback/prepare", dependencies=[Depends(require_token)])
     def playback_prepare(req: PlaybackPrepareRequest) -> dict[str, Any]:
-        with LibraryStore(app.state.data_dir) as store:
+        with open_store() as store:
             allowed_titles = req.allowed_window_titles
             if allowed_titles is None:
                 raw_titles = store.get_settings().get("windows_allowed_titles")
@@ -659,7 +784,8 @@ def create_app(
 
     @app.post("/v1/playback/start", dependencies=[Depends(require_token)])
     def playback_start(req: PlaybackStartRequest) -> dict[str, Any]:
-        return manager.start(req.prepare_token, data_dir=app.state.data_dir)
+        with library_gate.use():
+            return manager.start(req.prepare_token, data_dir=app.state.data_dir)
 
     @app.post("/v1/playback/pause", dependencies=[Depends(require_token)])
     def playback_pause() -> dict[str, Any]:

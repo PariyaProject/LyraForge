@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import urllib.error
@@ -262,19 +263,29 @@ def _coerce_opt_int(raw: Any, fallback: int | None, *, lo: int, hi: int) -> int 
         cleaned = raw.strip().lower()
         if cleaned in {"", "auto", "none", "null"}:
             return None if cleaned == "auto" else fallback
-    try:
-        return max(lo, min(hi, int(raw)))
-    except (TypeError, ValueError):
+    if isinstance(raw, float) and not math.isfinite(raw):
         return fallback
+    try:
+        val = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    if not (lo <= val <= hi):
+        return fallback
+    return val
 
 
 def _coerce_int(raw: Any, fallback: int, *, lo: int, hi: int) -> int:
     if raw is None or isinstance(raw, bool):
         return fallback
-    try:
-        return max(lo, min(hi, int(raw)))
-    except (TypeError, ValueError):
+    if isinstance(raw, float) and not math.isfinite(raw):
         return fallback
+    try:
+        val = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    if not (lo <= val <= hi):
+        return fallback
+    return val
 
 
 def _coerce_float(raw: Any, fallback: float, *, lo: float, hi: float) -> float:
@@ -282,11 +293,11 @@ def _coerce_float(raw: Any, fallback: float, *, lo: float, hi: float) -> float:
         return fallback
     try:
         val = float(raw)
-        if not (lo <= val <= hi):
-            return max(lo, min(hi, val))
-        return val
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return fallback
+    if not math.isfinite(val) or not (lo <= val <= hi):
+        return fallback
+    return val
 
 
 class OpenAICompatibleLLMProvider:

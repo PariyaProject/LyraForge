@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.media.extract import extract_audio_to_wav
+from lyraforge.media.subprocess_utils import format_log_tail, run_bounded_subprocess
 from lyraforge.music_core.midi_import import parse_midi_bytes
 from lyraforge.playback.guards import StopToken
 from lyraforge.transcribers.base import (
@@ -38,15 +37,6 @@ def resolve_runner(
     if found:
         return [found]
     return None
-
-
-def _terminate_proc(proc: subprocess.Popen[bytes]) -> None:
-    proc.terminate()
-    try:
-        proc.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
 
 
 def run_isolated_transcriber(
@@ -81,37 +71,26 @@ def run_isolated_transcriber(
         if on_progress is not None:
             on_progress(0.3, f"running {engine_id} subprocess")
 
-        stdout_log = work / "stdout.log"
-        stderr_log = work / "stderr.log"
-        with (
-            stdout_log.open("wb") as out_fh,
-            stderr_log.open("wb") as err_fh,
-        ):
-            proc = subprocess.Popen(  # noqa: S603
-                cmd,
-                stdout=out_fh,
-                stderr=err_fh,
-                shell=False,
+        res = run_bounded_subprocess(
+            cmd,
+            work_dir=work,
+            prefix=engine_id,
+            timeout_s=opts.timeout_s,
+            stop_token=stop_token,
+            cancel_message="transcription cancelled",
+            timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
+            timeout_message=f"{display_name} timed out after {opts.timeout_s:.1f}s",
+        )
+        if res.returncode != 0:
+            stderr_text = format_log_tail(
+                res.stderr_tail,
+                res.stdout_tail,
+                stderr_truncated=res.stderr_truncated,
+                stderr_bytes=res.stderr_bytes,
             )
-            deadline = time.monotonic() + opts.timeout_s
-            while proc.poll() is None:
-                if stop_token is not None and stop_token.stopped:
-                    _terminate_proc(proc)
-                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
-                if time.monotonic() > deadline:
-                    _terminate_proc(proc)
-                    raise LyraError(
-                        ErrorCode.TRANSCRIPTION_FAILED,
-                        f"{display_name} timed out after {opts.timeout_s:.1f}s",
-                    )
-                time.sleep(0.05)
-
-        stderr_bytes = stderr_log.read_bytes()[-8192:] if stderr_log.is_file() else b""
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-        if proc.returncode != 0:
             raise LyraError(
                 ErrorCode.TRANSCRIPTION_FAILED,
-                f"{display_name} exited with code {proc.returncode}: {stderr_text}",
+                f"{display_name} exited with code {res.returncode}: {stderr_text}",
             )
 
         mids = sorted(out_dir.glob("*.mid")) + sorted(out_dir.glob("*.midi"))

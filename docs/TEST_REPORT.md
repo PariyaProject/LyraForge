@@ -85,3 +85,21 @@
 #    d) 演奏中途测试“暂停/恢复”是否平稳顺延而非连发补键，按下实体键盘 Esc 或 Alt+Tab 切出游戏是否 1 帧级立即停键且零粘滞卡键。
 # 5. （可选）配置独立环境中安装 ffmpeg 与 basic-pitch，使用真实人声/钢琴歌曲实测转谱与手动修音完整体验。
 ```
+
+---
+
+## 6. 第五轮 Code Review 加固专项复核与回归结果（基于 `051a222b`）
+
+针对第五轮独立 Review 指出的 6 类工程隐患已完成代码修改与针对性回归（[tests/unit/test_round5_review_fixes.py](tests/unit/test_round5_review_fixes.py)，新增 **6 组端到端专项测试全部通过**；全库回归共 **128 passed**, 覆盖率 **87.75%**, 前端 Vitest **4 文件 / 6 用例全过**，无新增第三方依赖）：
+
+1. **MCP 协议统一校验、并发有界线程池与竞态安全（`mcp/server.py`, `mcp/tools.py`）**：
+   - 将消息解析、初始化检查（未初始化调用 `tools/call` 或 `tools/list` 统一返回 `-32002`）、`arguments` 对象类型严格校验（拒收字符串/数组/`null` 返回 `-32602`，绝不静默转 `{}`）及错误 JSON-RPC 处理收敛至单一 `_parse_and_route()`，`handle_message()` 与 `serve_streams()` 彻底消除分叉绕过。
+   - 新增 `max_pending`（默认 16）排队上限超载拦截（`-32001`）、`_on_done` Future 与请求令牌释放回调、`notifications/cancelled` 在任务注册前（`_pre_cancelled`）、执行中（包含 `requestId=0`）与完成后（不回滚 `completed`）全相位处理、工作线程未捕获异常 `-32603` 兜底上报及断连取消清理；压力测试中同时暴露并顺带修复 `LibraryStore.arrange_song()` 与 `_import_validated_source()` 多线程并发同内容哈希写入 `UNIQUE constraint failed` 竞态。
+2. **曲库恢复独占维护门控与 SQLite WAL 兼容（`errors.py`, `api/{app,job_service,playback_service}.py`, `library/{schema,store,packaging}.py`）**：
+   - 新增 `ErrorCode.LIBRARY_BUSY` (`409`) 与 `_LibraryAccessGate`：恢复前阻塞新入读/写/转录/编曲/播放启动请求并排空在途请求，暂停新异步任务提交并向活动后台转录及播放线程发停机信号且严格核验线程确实退出；若有停滞线程未退出或外部连接正持有 SQLite 事务/WAL（`BEGIN EXCLUSIVE` + `PRAGMA journal_mode=DELETE` 检测），拒绝恢复并返回 `409 LIBRARY_BUSY`，保持原库完好且可继续正常使用。同时适配 Windows 文件句柄释放重试验退与生命周期关停排序。
+3. **子进程日志有界内存/磁盘（`media/subprocess_utils.py`, `media/extract.py`, `transcribers/_subprocess.py`）**：
+   - 使用双段轮转日志（`_BoundedRotatingLog`，默认单流上限 256 KB）与后台定量（4 KB）流式抽取替代无界写入及 `read_bytes()`；改由 `os.SEEK_END` / `seek()` 精确读尾，兼容现有零参单测桩，并确保正常/失败/取消/超时下清理 `.log`/`.log.1` 且不破坏模型输出 `.mid`/`.wav`。
+4. **SQLite JSON1 标签精确检索（`library/schema.py`, `library/store.py`）**：
+   - 注册 `py_lower()` 并采用 `json_valid(tags_json)` + `json_each()` 在 SQL 层精确匹配标签，配合 `LIMIT/OFFSET`、Unicode（`Café`/`原神`）、LIKE 特殊字符（`%`/`_`/`\`）与 600+ 曲目分页压测均一次精确命中且 0 截断。
+5. **LLM 非有限浮点数安全解析（`agent/llm.py`）**：
+   - 使用 `math.isfinite()` 强化 `_coerce_float`、`_coerce_int` 与 `_coerce_opt_int`，全面拦截 `"nan"`、`"inf"`、`"-inf"`、`1e308`、`"1e309"`、布尔与越界字符串并安全回退默认值。

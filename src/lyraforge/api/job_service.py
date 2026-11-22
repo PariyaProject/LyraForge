@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,27 @@ class TranscriptionJobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, _TranscriptionJob] = {}
+        self._accepting = True
+        self._pause_reason: str | None = None
+
+    def pause_submissions(self, reason: str = "maintenance") -> None:
+        with self._lock:
+            self._accepting = False
+            self._pause_reason = reason
+
+    def resume_submissions(self) -> None:
+        with self._lock:
+            self._accepting = True
+            self._pause_reason = None
+
+    def active_job_ids(self) -> list[str]:
+        with self._lock:
+            return [
+                j.id
+                for j in self._jobs.values()
+                if j.status in {"queued", "running"}
+                or (j.thread is not None and j.thread.is_alive())
+            ]
 
     def submit(
         self,
@@ -55,6 +77,12 @@ class TranscriptionJobManager:
         options: TranscribeOptions,
         data_dir: Path,
     ) -> dict[str, Any]:
+        with self._lock:
+            if not self._accepting:
+                raise LyraError(
+                    ErrorCode.LIBRARY_BUSY,
+                    f"transcription submissions paused ({self._pause_reason or 'maintenance'})",
+                )
         options.validate()
         eng = get_transcriber(engine_id)
         info = eng.probe()
@@ -126,9 +154,13 @@ class TranscriptionJobManager:
         )
         job.thread = thread
         with self._lock:
+            if not self._accepting:
+                raise LyraError(
+                    ErrorCode.LIBRARY_BUSY,
+                    f"transcription submissions paused ({self._pause_reason or 'maintenance'})",
+                )
             self._jobs[job.id] = job
-        thread.start()
-        with self._lock:
+            thread.start()
             return job.to_json()
 
     def get(self, job_id: str) -> dict[str, Any]:
@@ -156,16 +188,32 @@ class TranscriptionJobManager:
         with self._lock:
             return [j.to_json() for j in reversed(list(self._jobs.values()))]
 
-    def cancel_all(self, reason: str = "shutdown") -> None:
+    def cancel_all(
+        self,
+        reason: str = "shutdown",
+        *,
+        timeout_s: float = 5.0,
+        pause_new: bool = False,
+    ) -> list[str]:
+        """Request cancellation for all background jobs and verify thread termination."""
         threads: list[threading.Thread] = []
         with self._lock:
+            if pause_new:
+                self._accepting = False
+                self._pause_reason = reason
             for job in self._jobs.values():
-                if job.status in {"queued", "running"}:
+                alive = job.thread is not None and job.thread.is_alive()
+                if job.status in {"queued", "running"} or alive:
                     job.stop_token.request_stop(reason)
                     if job.status == "queued":
                         job.status = "cancelled"
                         job.stage = "cancelled"
-                    if job.thread is not None and job.thread.is_alive():
+                    if alive and job.thread is not None:
                         threads.append(job.thread)
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
         for th in threads:
-            th.join(timeout=1.5)
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                break
+            th.join(timeout=rem)
+        return self.active_job_ids()
