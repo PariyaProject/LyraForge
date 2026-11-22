@@ -798,6 +798,9 @@ def test_subprocess_derived_process_tree_timeout_cancel_orphan_pipes_and_stress(
     assert not _drain_threads()
 
     # C. Parent exits 0 cleanly WHILE grandchild keeps holding inherited stdout/stderr pipes open
+    #    Use base interpreter directly so Windows venv trampolines do not mask ParentProcessId link.
+    raw_base_py = getattr(sys, "_base_executable", sys.executable)
+    direct_py = raw_base_py if raw_base_py and Path(raw_base_py).is_file() else sys.executable
     gpid_orphan = tmp_path / "gpid_orphan.txt"
     orphan_pipe_script = (
         "import pathlib, subprocess, sys\n"
@@ -811,7 +814,7 @@ def test_subprocess_derived_process_tree_timeout_cancel_orphan_pipes_and_stress(
     work_c = tmp_path / "work_c"
     t0 = time.monotonic()
     res_orphan = run_bounded_subprocess(
-        [sys.executable, "-c", orphan_pipe_script],
+        [direct_py, "-c", orphan_pipe_script],
         work_dir=work_c,
         prefix="orphan-pipe",
         timeout_s=15.0,

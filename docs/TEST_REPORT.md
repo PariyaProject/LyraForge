@@ -108,7 +108,7 @@
 
 ## 7. 第六轮稳定性收敛专项复核与回归结果（基于 `34f08ce`）
 
-针对第六轮 Code Review 剩余边界问题已完成最小化高可靠改造与全量回归验证（[tests/unit/test_round6_review_fixes.py](tests/unit/test_round6_review_fixes.py)，新增 **4 组专项回归全通**；全库回归共 **132 passed**, 覆盖率 **86.43%**, 前端 Vitest **4 文件 / 6 用例全过**, Vite 构建 **753ms**, 无新增第三方依赖）：
+针对第六轮 Code Review 剩余边界问题已完成最小化高可靠改造与全量回归验证（[tests/unit/test_round6_review_fixes.py](tests/unit/test_round6_review_fixes.py)，新增 **4 组专项回归全通**；全库回归共 **132 passed**, 覆盖率 **86.49%**, 前端 Vitest **4 文件 / 6 用例全过**, Vite 构建 **757ms**, 无新增第三方依赖）：
 
 1. **事务型曲库目录切换恢复与断点自动回滚（`library/packaging.py`, `library/store.py`, `library/__init__.py`）**：
    - 在触碰目标库前执行 `_check_target_files_unlocked()` 与 `_verify_and_quiesce_existing_db()`，先于目录外部准备并校验证明完整的 `prepared_dir` 与 `rollback_dir`，再通过 `.restore-txn.json` + 目录原子重命名（`_rename_dir_with_retry()`）实施无就地删档切换。

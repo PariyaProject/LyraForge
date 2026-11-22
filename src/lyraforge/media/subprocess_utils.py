@@ -167,9 +167,9 @@ def _kill_windows_descendants(pid: int, *, created_after_epoch: float | None = N
         "$q = New-Object System.Collections.Generic.Queue[int];"
         f"$q.Enqueue({pid});"
         "$seen = New-Object System.Collections.Generic.HashSet[int];"
-        "$all = Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId,ParentProcessId,CreationDate;"
-        f"$cutoff = [DateTimeOffset]::FromUnixTimeSeconds({cutoff_unix}).UtcDateTime;"
+        "$all = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate;"
+        "$cutoff = ([DateTime]'1970-01-01T00:00:00Z').ToUniversalTime()"
+        f".AddSeconds({cutoff_unix});"
         "while ($q.Count -gt 0) {"
         "$p = $q.Dequeue();"
         "foreach ($c in $all) {"
@@ -186,9 +186,17 @@ def _kill_windows_descendants(pid: int, *, created_after_epoch: float | None = N
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
-            timeout=8.0,
+            timeout=6.0,
             check=False,
         )
+
+
+def _join_threads(threads: Sequence[threading.Thread | None], timeout_s: float) -> None:
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    for th in threads:
+        if th is None or not th.is_alive():
+            continue
+        th.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 def _terminate_process_tree(
@@ -335,6 +343,7 @@ def run_bounded_subprocess(
     proc: subprocess.Popen[bytes] | None = None
     pgid: int | None = None
     spawn_epoch = time.time()
+    reap_attempted = False
 
     try:
         proc = subprocess.Popen(  # noqa: S603
@@ -364,19 +373,20 @@ def run_bounded_subprocess(
         deadline = time.monotonic() + float(timeout_s)
         while proc.poll() is None:
             if stop_token is not None and stop_token.stopped:
+                reap_attempted = True
                 _terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch
                 )
                 raise LyraError(ErrorCode.PLAYBACK_ABORTED, cancel_message)
             if time.monotonic() > deadline:
+                reap_attempted = True
                 _terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch
                 )
                 raise LyraError(timeout_code, timeout_message)
             time.sleep(0.05)
 
-        t_out.join(timeout=drain_grace_s)
-        t_err.join(timeout=drain_grace_s)
+        _join_threads((t_out, t_err), drain_grace_s)
 
         # If a detached grandchild inherited pipes or stayed alive in the session/group,
         # reap the process tree so pipe EOF closes cleanly without hanging.
@@ -385,11 +395,11 @@ def run_bounded_subprocess(
             or t_err.is_alive()
             or (pgid is not None and _pgid_has_live_processes(pgid))
         ):
+            reap_attempted = True
             _terminate_process_tree(
                 proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
             )
-            t_out.join(timeout=3.0)
-            t_err.join(timeout=3.0)
+            _join_threads((t_out, t_err), 2.0)
 
         stdout_tail, stdout_trunc, stdout_total = out_log.read_tail(tail_bytes)
         stderr_tail, stderr_trunc, stderr_total = err_log.read_tail(tail_bytes)
@@ -410,17 +420,14 @@ def run_bounded_subprocess(
                 t_err is not None and t_err.is_alive()
             )
             pg_alive = pgid is not None and _pgid_has_live_processes(pgid)
-            if still_running or drainers_alive or pg_alive:
+            if still_running or (not reap_attempted and (drainers_alive or pg_alive)):
                 _terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
                 )
 
         # Wait briefly for drain threads to observe EOF naturally after process-tree cleanup;
         # avoid closing pipe objects concurrently while a drain thread is inside read().
-        if t_out is not None and t_out.is_alive():
-            t_out.join(timeout=3.0)
-        if t_err is not None and t_err.is_alive():
-            t_err.join(timeout=3.0)
+        _join_threads((t_out, t_err), 1.5)
         stop_drain.set()
 
         if proc is not None:

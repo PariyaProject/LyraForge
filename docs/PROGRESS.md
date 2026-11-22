@@ -41,9 +41,9 @@
    - Round 4 基准 `9123a950ea362e59e714fb6b4127fe6cb79a2212` → [Run #45006178921](https://github.com/PariyaProject/LyraForge/actions/runs/45006178921)：**`success`**；[PR #3](https://github.com/PariyaProject/LyraForge/pull/3) 合入提交（`051a222b10aa7a4dc175748ada8b42ec67b8c48a`）→ [Run #45009837274](https://github.com/PariyaProject/LyraForge/actions/runs/45009837274)：**`success`**；[PR #4](https://github.com/PariyaProject/LyraForge/pull/4) 合入提交（`34f08ce7045e415588a3352141819555e17bedba`）→ [Run #45031231498](https://github.com/PariyaProject/LyraForge/actions/runs/45031231498)：**`success`**。
 2. **本地完整门禁（`pnpm --dir apps/desktop/web install --frozen-lockfile && make check`）**
    - `uv run ruff check .` → `All checks passed!`
-   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **132 passed, 2 warnings in 34.54s**，总覆盖率 **86.43%**（6534 语句 / 1808 分支；含 `test_round6_review_fixes.py` 4 项专项回归）
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **132 passed, 2 warnings in 34.48s**，总覆盖率 **86.49%**（6539 语句 / 1808 分支；含 `test_round6_review_fixes.py` 4 项专项回归）
    - `vitest run` → **Test Files 4 passed (4), Tests 6 passed (6)**（含 `App.spec.ts`、`PianoRollInteractions.spec.ts`、`PianoRollEditor.spec.ts`、`LyreKeyboard.spec.ts`）
-   - `vue-tsc --noEmit && vite build` → 构建成功（`753ms`，`158.80 kB` JS / `20.52 kB` CSS）
+   - `vue-tsc --noEmit && vite build` → 构建成功（`757ms`，`158.80 kB` JS / `20.52 kB` CSS）
    - `make smoke` → 退出码 `0`（DryRun 48 动作，0 残留按键）
    - `uv run lyraforge desktop --self-check` → 退出码 `0`（`ok: true`, `profiles: 2`, `windows_modules_loaded: false`）
 3. **无头 Chrome + 实时 FastAPI 视觉与交互复核**
