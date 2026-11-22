@@ -141,7 +141,7 @@ defineProps<{
             <option value="dry-run">Dry-Run 安全模拟（推荐调试与 macOS）</option>
             <option
               value="windows"
-              :disabled="store.health.value?.platform !== 'windows'"
+              :disabled="!store.health.value?.windows_playback_available"
             >
               Windows 原神窗口 SendInput（仅 Windows）
             </option>
@@ -175,6 +175,22 @@ defineProps<{
           >
             <StudioIcon name="play" />
             2. 确认授权开始
+          </button>
+          <button
+            v-if="store.playbackStatus.value?.state === 'running'"
+            class="secondary"
+            type="button"
+            @click="store.handlePause"
+          >
+            暂停
+          </button>
+          <button
+            v-if="store.playbackStatus.value?.state === 'paused'"
+            class="primary"
+            type="button"
+            @click="store.handleResume"
+          >
+            继续
           </button>
           <button
             class="danger"

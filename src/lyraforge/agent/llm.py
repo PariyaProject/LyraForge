@@ -255,6 +255,40 @@ class RuleBasedLLMProvider:
         return cleaned
 
 
+def _coerce_opt_int(raw: Any, fallback: int | None, *, lo: int, hi: int) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return fallback
+    if isinstance(raw, str):
+        cleaned = raw.strip().lower()
+        if cleaned in {"", "auto", "none", "null"}:
+            return None if cleaned == "auto" else fallback
+    try:
+        return max(lo, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _coerce_int(raw: Any, fallback: int, *, lo: int, hi: int) -> int:
+    if raw is None or isinstance(raw, bool):
+        return fallback
+    try:
+        return max(lo, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _coerce_float(raw: Any, fallback: float, *, lo: float, hi: float) -> float:
+    if raw is None or isinstance(raw, bool):
+        return fallback
+    try:
+        val = float(raw)
+        if not (lo <= val <= hi):
+            return max(lo, min(hi, val))
+        return val
+    except (TypeError, ValueError):
+        return fallback
+
+
 class OpenAICompatibleLLMProvider:
     """Optional external LLM endpoint via standard HTTP JSON (no Antigravity CLI runtime)."""
 
@@ -316,8 +350,22 @@ class OpenAICompatibleLLMProvider:
         )
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                raw_bytes = resp.read(1_048_577)
+                if len(raw_bytes) > 1_048_576:
+                    raise LyraError(
+                        ErrorCode.LIMIT_EXCEEDED,
+                        "LLM provider response exceeded 1 MB safety limit",
+                    )
+                raw = json.loads(raw_bytes.decode("utf-8"))
+        except LyraError:
+            raise
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
             safe_err = redact_secret(str(exc), (self.api_key,))
             raise LyraError(
                 ErrorCode.SOURCE_UNAVAILABLE, f"LLM provider request failed: {safe_err}"
@@ -326,6 +374,8 @@ class OpenAICompatibleLLMProvider:
         try:
             content = raw["choices"][0]["message"]["content"]
             parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise TypeError("LLM JSON content must be an object")
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             safe_err = redact_secret(str(exc), (self.api_key,))
             raise LyraError(
@@ -342,12 +392,12 @@ class OpenAICompatibleLLMProvider:
             style = Style(str(parsed.get("style", baseline.style)))
         except ValueError:
             style = baseline.style
-        tr = parsed.get("transpose", baseline.transpose)
-        if tr is not None:
-            tr = max(-48, min(48, int(tr)))
-        delta = max(-48, min(48, int(parsed.get("transpose_delta", baseline.transpose_delta))))
-        sp = max(0.25, min(4.0, float(parsed.get("speed", baseline.speed))))
-        arp = max(0, min(60, int(parsed.get("arpeggiate_ms", baseline.arpeggiate_ms))))
+        tr = _coerce_opt_int(parsed.get("transpose"), baseline.transpose, lo=-48, hi=48)
+        delta = _coerce_int(
+            parsed.get("transpose_delta"), baseline.transpose_delta, lo=-48, hi=48
+        )
+        sp = _coerce_float(parsed.get("speed"), baseline.speed, lo=0.25, hi=4.0)
+        arp = _coerce_int(parsed.get("arpeggiate_ms"), baseline.arpeggiate_ms, lo=0, hi=60)
         return AgentIntent(
             action=action,
             query=str(parsed.get("query", baseline.query)),

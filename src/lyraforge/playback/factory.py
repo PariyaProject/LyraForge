@@ -7,7 +7,7 @@ Defaults to ``DryRunDriver`` on macOS / non-Windows platforms and lazy-loads
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 
 from lyraforge.errors import ErrorCode, LyraError
@@ -53,3 +53,13 @@ def create_playback_backend(
 
     titles = tuple(allowed_window_titles) if allowed_window_titles else DEFAULT_ALLOWED_TITLES
     return WindowsKeyboardDriver(profile), ForegroundWindowGuard(titles)
+
+
+def create_emergency_stop_checker(mode: PlaybackMode) -> Callable[[], bool] | None:
+    """Return a platform-specific emergency stop predicate (Windows Esc key) if applicable."""
+    mode = PlaybackMode(mode)
+    if mode != PlaybackMode.WINDOWS or not is_windows_playback_available():
+        return None
+    from lyraforge.playback.windows import is_escape_pressed_win32
+
+    return is_escape_pressed_win32

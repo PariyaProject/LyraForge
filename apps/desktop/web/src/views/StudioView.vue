@@ -36,10 +36,19 @@ async function onArrangementChange(event: Event): Promise<void> {
         <button
           class="secondary"
           type="button"
+          :disabled="!store.selectedArrId.value || store.busy.value"
+          @click="store.handlePreview"
+        >
+          <StudioIcon name="play" />
+          试听当前版本
+        </button>
+        <button
+          class="secondary"
+          type="button"
           :disabled="!store.arrDetail.value"
           @click="store.setView('playback')"
         >
-          <StudioIcon name="play" />
+          <StudioIcon name="sliders" />
           前往试听与演奏
         </button>
       </div>

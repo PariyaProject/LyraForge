@@ -455,6 +455,14 @@ export class LyraForgeApi {
     return this.request("/v1/playback/status");
   }
 
+  pausePlayback(): Promise<PlaybackStatusResponse> {
+    return this.request("/v1/playback/pause", { method: "POST" });
+  }
+
+  resumePlayback(): Promise<PlaybackStatusResponse> {
+    return this.request("/v1/playback/resume", { method: "POST" });
+  }
+
   stopPlayback(): Promise<PlaybackStatusResponse> {
     return this.request("/v1/playback/stop", { method: "POST" });
   }
@@ -543,5 +551,13 @@ export class LyraForgeApi {
       throw new Error(`备份下载失败 (HTTP ${resp.status})`);
     }
     return await resp.blob();
+  }
+
+  restoreBackupZip(file: File): Promise<{
+    restored: { restored_files: number; song_count: number; schema_version: number };
+  }> {
+    const fd = new FormData();
+    fd.append("file", file);
+    return this.request("/v1/library/restore", { method: "POST", body: fd });
   }
 }

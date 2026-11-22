@@ -13,14 +13,22 @@ class Clock(Protocol):
 
 
 class MonotonicClock:
-    """Wall-clock based on ``time.monotonic_ns`` (never goes backwards)."""
+    """Wall-clock based on ``time.monotonic_ns`` with hybrid precision sleep."""
 
     def now_us(self) -> int:
         return time.monotonic_ns() // 1000
 
     def sleep_us(self, us: int) -> None:
-        if us > 0:
-            time.sleep(us / 1_000_000)
+        if us <= 0:
+            return
+        target_ns = time.monotonic_ns() + us * 1000
+        # Reserve the final ~1.5 ms for monotonic busy-wait so OS timer coarseness
+        # does not skew chord/rhythm precision.
+        coarse_s = (us - 1500) / 1_000_000
+        if coarse_s > 0.0005:
+            time.sleep(coarse_s)
+        while time.monotonic_ns() < target_ns:
+            pass
 
 
 class VirtualClock:

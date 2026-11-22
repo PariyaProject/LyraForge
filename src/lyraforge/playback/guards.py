@@ -36,3 +36,20 @@ class StopToken:
     @property
     def stopped(self) -> bool:
         return self._event.is_set()
+
+
+class PauseToken:
+    """Thread-safe cooperative pause/resume toggle."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def pause(self) -> None:
+        self._event.set()
+
+    def resume(self) -> None:
+        self._event.clear()
+
+    @property
+    def paused(self) -> bool:
+        return self._event.is_set()

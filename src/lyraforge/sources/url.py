@@ -196,6 +196,7 @@ class DirectUrlSourceAdapter:
         self.max_duration_s = max_duration_s
         self.max_redirects = max_redirects
         self._opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
             _PinnedHTTPHandler(),
             _PinnedHTTPSHandler(context=ssl.create_default_context()),
             _SafeRedirectHandler(max_redirects=max_redirects),

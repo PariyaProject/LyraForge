@@ -8,10 +8,11 @@ from lyraforge.playback.clock import Clock, MonotonicClock, VirtualClock
 from lyraforge.playback.driver import DriverLogEntry, DryRunDriver, PlaybackDriver
 from lyraforge.playback.factory import (
     PlaybackMode,
+    create_emergency_stop_checker,
     create_playback_backend,
     is_windows_playback_available,
 )
-from lyraforge.playback.guards import FocusGuard, NullFocusGuard, StopToken
+from lyraforge.playback.guards import FocusGuard, NullFocusGuard, PauseToken, StopToken
 from lyraforge.playback.player import (
     KeyAction,
     PlaybackResult,
@@ -28,6 +29,7 @@ __all__ = [
     "KeyAction",
     "MonotonicClock",
     "NullFocusGuard",
+    "PauseToken",
     "PlaybackDriver",
     "PlaybackMode",
     "PlaybackResult",
@@ -35,6 +37,7 @@ __all__ = [
     "Player",
     "StopToken",
     "VirtualClock",
+    "create_emergency_stop_checker",
     "create_playback_backend",
     "expand_events",
     "is_windows_playback_available",

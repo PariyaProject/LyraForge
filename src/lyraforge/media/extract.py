@@ -27,7 +27,7 @@ FFMPEG_BIN_ENV = "LYRAFORGE_FFMPEG_BIN"
 DEFAULT_AUDIO_SAMPLE_RATE = 22_050
 
 SUPPORTED_MEDIA_EXTENSIONS: frozenset[str] = frozenset(
-    {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".mp4", ".mkv"}
+    {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".mp4", ".mkv", ".webm"}
 )
 
 
@@ -165,6 +165,9 @@ def _run_ffmpeg_extract(
     fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".wav", dir=dest.parent)
     os.close(fd)
     tmp_path = Path(tmp_name)
+    err_fd, err_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".log", dir=dest.parent)
+    os.close(err_fd)
+    stderr_log = Path(err_name)
 
     cmd = [
         ffmpeg,
@@ -183,37 +186,38 @@ def _run_ffmpeg_extract(
         "pcm_s16le",
         str(tmp_path),
     ]
-    proc = subprocess.Popen(  # noqa: S603
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=False,
-    )
-    deadline = time.monotonic() + timeout_s
     try:
-        while proc.poll() is None:
-            if stop_token is not None and stop_token.stopped:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "media extraction cancelled")
-            if time.monotonic() > deadline:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                raise LyraError(
-                    ErrorCode.MEDIA_DECODE_FAILED,
-                    f"FFmpeg timed out after {timeout_s:.1f}s",
-                )
-            time.sleep(0.05)
+        with stderr_log.open("wb") as err_fh:
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=err_fh,
+                shell=False,
+            )
+            deadline = time.monotonic() + timeout_s
+            while proc.poll() is None:
+                if stop_token is not None and stop_token.stopped:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "media extraction cancelled")
+                if time.monotonic() > deadline:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    raise LyraError(
+                        ErrorCode.MEDIA_DECODE_FAILED,
+                        f"FFmpeg timed out after {timeout_s:.1f}s",
+                    )
+                time.sleep(0.05)
 
-        stderr_bytes = proc.stderr.read() if proc.stderr else b""
+        stderr_bytes = stderr_log.read_bytes()[-8192:] if stderr_log.is_file() else b""
         if proc.returncode != 0:
             msg = stderr_bytes.decode("utf-8", errors="replace").strip() or "non-zero exit"
             raise LyraError(
@@ -224,6 +228,8 @@ def _run_ffmpeg_extract(
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        stderr_log.unlink(missing_ok=True)
 
 
 def extract_audio_to_wav(

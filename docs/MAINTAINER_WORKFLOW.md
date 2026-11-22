@@ -90,3 +90,11 @@ uv run python scripts/check_ci.py --sha origin/main
 
 - 须经用户单独批准后再安装 GitHub Scheduled Workflow 或本机定时任务（`launchd`/`cron`）；
 - 必须明确定义：**认证来源**（`GITHUB_TOKEN` 最小权限，严禁放个人 OAuth Session 至公开 CI）、**安全边界**（仅诊断或开草稿 PR，不自动合并/不改许可证/不发包）、**预算与重试上限**（单次成本与连续失败熔断）及**随时可暂停/关闭的开关**。
+
+---
+
+## 6. Alpha / Stable 发布前门禁与断点续做交接规范
+
+- **Alpha Pre-Flight Gate**：合并或标记 Alpha 预发行前，必须同时满足 `make check` 全绿、Chrome CDP 无交互报错/溢出、双平台 CI（含 Windows `LyraForge.exe --self-check`）全绿，且 `README.md` / [PROGRESS.md](PROGRESS.md) 如实标明真机未验证项。
+- **Stable Release Gate**：公开标称稳定版前，除全部自动 CI 外，还必须在 Windows 10/11 实体机按 [TEST_REPORT.md](TEST_REPORT.md) §5 完成真机《原神》21 键校准、切窗/ESC 松键与独立多音识别联调，并经项目所有者明确批准后方可打 Tag / 发 Release。
+- **断点交接（Resumable Handoff）**：跨会话持续推进时，[PROGRESS.md](PROGRESS.md) 仅写入真实已观测提交 SHA、PR/CI URL 与命令原始结果；严禁根据记忆补全未运行检查项。

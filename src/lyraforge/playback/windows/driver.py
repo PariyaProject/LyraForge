@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable
 
 from lyraforge.errors import ErrorCode, LyraError
@@ -44,7 +45,12 @@ class WindowsKeyboardDriver:
         self.profile = profile
         self._send = send_input_fn or send_key_input_win32
         self._max_release_retries = max_release_retries
+        self._lock = threading.Lock()
         self.pressed: set[str] = set()
+
+    def pressed_snapshot(self) -> list[str]:
+        with self._lock:
+            return sorted(self.pressed)
 
     def _binding_for(self, key_id: str) -> str:
         key_def = self.profile.key_by_id(key_id)
@@ -67,32 +73,39 @@ class WindowsKeyboardDriver:
         raise last_exc
 
     def key_down(self, key_id: str) -> None:
-        binding = self._binding_for(key_id)
-        if key_id in self.pressed:
-            self.key_up(key_id)
-        spec = build_key_input_spec(binding, key_up=False)
-        self._send(spec)
-        self.pressed.add(key_id)
+        with self._lock:
+            binding = self._binding_for(key_id)
+            if key_id in self.pressed:
+                self._key_up_locked(key_id, binding)
+            spec = build_key_input_spec(binding, key_up=False)
+            self._send(spec)
+            self.pressed.add(key_id)
 
-    def key_up(self, key_id: str) -> None:
-        if key_id not in self.pressed:
-            return
-        binding = self._binding_for(key_id)
+    def _key_up_locked(self, key_id: str, binding: str) -> None:
         spec = build_key_input_spec(binding, key_up=True)
         self._send_release_with_retry(spec)
         # Update software state ONLY after OS key-up delivery succeeded
         self.pressed.discard(key_id)
 
+    def key_up(self, key_id: str) -> None:
+        with self._lock:
+            if key_id not in self.pressed:
+                return
+            binding = self._binding_for(key_id)
+            self._key_up_locked(key_id, binding)
+
     def release_all(self) -> list[str]:
-        keys = sorted(self.pressed)
-        released: list[str] = []
-        errors: list[str] = []
-        for k in keys:
-            try:
-                self.key_up(k)
-                released.append(k)
-            except Exception as exc:
-                errors.append(f"{k}: {exc}")
-        if errors:
-            raise RuntimeError(f"failed releasing key(s): {'; '.join(errors)}")
-        return released
+        with self._lock:
+            keys = sorted(self.pressed)
+            released: list[str] = []
+            errors: list[str] = []
+            for k in keys:
+                try:
+                    binding = self._binding_for(k)
+                    self._key_up_locked(k, binding)
+                    released.append(k)
+                except Exception as exc:
+                    errors.append(f"{k}: {exc}")
+            if errors:
+                raise RuntimeError(f"failed releasing key(s): {'; '.join(errors)}")
+            return released

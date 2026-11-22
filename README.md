@@ -21,13 +21,13 @@ LyraForge 是一款开源的桌面音乐转谱与游戏乐器编曲工作台，�
 
 ## 核心功能
 
-- **6 视图 Studio Dark 桌面工作台**：采用分离式左侧导航栏（支持图标模式与移动横栏折返），划分首页快速检索/拖拽导入、本地曲库、AI 转谱流水线、Piano Roll 工作室、两段授权演奏控制台与设置/MCP 接入页。
-- **多格式导入**：支持本地标准 `.mid`/`.midi` 与 `.wav`；配置系统 `ffmpeg` 后可扩展提取常见音视频格式；支持经用户明确授权的开放许可曲库（Internet Archive CC0 / PDM / CC-BY）或公开直链导入。
+- **6 视图 Studio Dark 桌面工作台**：固定底部全局试听传输栏跨视图连续播放 WAV 与暂停/恢复/紧急停止，划分首页快速检索与 3 步引导、本地曲库、AI 转谱流水线、Piano Roll 工作室、两段授权演奏控制台与设置/MCP 接入页。
+- **多格式导入**：支持本地标准 `.mid`/`.midi` 与 `.wav`；配置系统 `ffmpeg` 后可扩展提取 `.mp3`/`.flac`/`.m4a`/`.ogg`/`.mp4`/`.mkv`/`.webm` 等常见音视频格式；支持经用户明确授权的开放许可曲库（Internet Archive CC0 / PDM / CC-BY）或公开直链导入。
 - **游戏乐器智能编曲**：内置**风物之诗琴**（21 键）与**镜花之琴**（21 键）预设，支持主旋律识别优先保留、自动移调寻优、八度折叠、半音处理与柱式和弦琶音。
 - **分离式质量评估与 A/B 对比**：区分“**编曲对输入 MIDI 的可演奏适配度**”与“**音频转录对原曲的还原忠实度**”，避免无真值情况下的虚假高分误导。
-- **DAW 级 Piano Roll 与离线试听**：交互式 21 键热力图、时间轴缩放（`50%–250%`）与网格吸附（`0–250 ms`）、指针直接拖拽调音与节拍、点击插音、键盘快捷键、撤销重做与纯 Python 拨弦 WAV 离线试听。
-- **本地曲库与安全分享备份**：SQLite 曲库支持标签收藏与版本管理；支持导出 MIDI、`performance.json`、强制版权确认且不带原始音频的 `.lyrapack` 分享包，以及分阶段校验、故障自动回滚的全库 ZIP 备份恢复。
-- **无需 API Key 的三层 AI / MCP 能力**：默认离线运行，无需购买大模型 API Key；提供标准 `stdio` MCP Server 接入用户自有已登录客户端。
+- **DAW 级 Piano Roll 与离线试听**：交互式 21 键热力图、时间轴缩放（`50%–250%`）与网格吸附（`0–250 ms`）、指针直接拖拽调音与节拍、点击插音、撤销重做与纯 Python 拨弦 WAV 离线试听。
+- **本地曲库与安全分享备份**：SQLite 曲库支持精确标签检索、收藏与版本管理；支持导出 MIDI、`performance.json`、强制版权确认且不带原始音频的 `.lyrapack` 分享包，以及桌面端/CLI（`lyraforge library restore`）分阶段校验、故障自动回滚的全库 ZIP 备份恢复。
+- **无需 API Key 的三层 AI / MCP 能力**：默认离线运行，无需购买大模型 API Key；提供标准 `stdio` MCP Server（支持协议版本协商与并发请求取消）接入用户自有已登录客户端。
 
 ### 音频转谱能做到什么？（真实边界）
 
@@ -73,7 +73,7 @@ uv run lyraforge desktop
 | 平台 | 音乐处理、编辑、曲库与 MCP | 游戏内键盘模拟演奏 |
 |---|---|---|
 | **macOS Apple Silicon** | 已实现，并通过本地及 GitHub CI 验证 | 仅支持 **DryRun** 模拟验证（不发送系统按键） |
-| **Windows 10/11 x64** | 跨平台核心、凭据隔离与 PyInstaller 构建已通过 Windows CI 检验 | **实验性隔离实现（`calibration.status = unverified`），真机《原神》校准与焦点守卫实音演奏待验证** |
+| **Windows 10/11 x64** | 跨平台核心、凭据隔离与 PyInstaller 构建（含 `LyraForge.exe --self-check` 自检）已通过 Windows CI 检验 | **实验性隔离实现（`calibration.status = unverified`），真机《原神》校准与焦点守卫实音演奏待验证** |
 
 ---
 
@@ -100,7 +100,7 @@ uv run lyraforge desktop
 - [开发进度与五态成熟度](docs/PROGRESS.md) — 各模块真实已测/未验证/外部阻塞清单
 - [AI 与 MCP 集成手册](docs/AI_INTEGRATION.md) — 无需 API Key 的 MCP/Skill 配置与客户端条款矩阵
 - [项目维护工作流](docs/MAINTAINER_WORKFLOW.md) — 分支、PR、CI 诊断与自主推进规范
-- [产品需求规格 (PROJECT_SPEC)](docs/PROJECT_SPEC.md) · [系统架构](docs/ARCHITECTURE.md) · [测试计划](docs/TEST_PLAN.md) · [第一轮 Fix 报告](docs/REVIEW_FIX_REPORT.md) · [第二轮复核报告](docs/SECOND_REVIEW_REPORT.md) · [第三轮审查与 UI 重设计报告](docs/THIRD_REVIEW_UI_REPORT.md)
+- [产品需求规格 (PROJECT_SPEC)](docs/PROJECT_SPEC.md) · [系统架构](docs/ARCHITECTURE.md) · [测试计划](docs/TEST_PLAN.md) · [第四轮全面审查报告](docs/FOURTH_REVIEW_REPORT.md) · [第四轮测试与基准报告](docs/TEST_REPORT.md) · [第四轮 UI/UX 审查报告](docs/UI_REVIEW.md) · [第三轮 UI 报告](docs/THIRD_REVIEW_UI_REPORT.md) · [第一/二轮复核报告](docs/SECOND_REVIEW_REPORT.md)
 
 ---
 

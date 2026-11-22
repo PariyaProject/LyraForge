@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -55,7 +57,7 @@ class LyraMCPServer:
             proto = (
                 req_ver
                 if req_ver in SUPPORTED_PROTOCOL_VERSIONS
-                else SUPPORTED_PROTOCOL_VERSIONS[-1]
+                else SUPPORTED_PROTOCOL_VERSIONS[0]
             )
             self._initialized = True
             return {
@@ -132,11 +134,74 @@ class LyraMCPServer:
                 self.executor.tasks.cancel(str(target))
 
     def serve_streams(self, stdin: TextIO, stdout: TextIO) -> int:
-        for line in stdin:
-            resp = self.handle_message(line)
-            if resp is not None:
-                stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+        write_lock = threading.Lock()
+
+        def _emit(payload: dict[str, Any]) -> None:
+            raw = json.dumps(payload, ensure_ascii=False) + "\n"
+            with write_lock:
+                stdout.write(raw)
                 stdout.flush()
+
+        def _run_tool_call(req_id: Any, tool_name: str, arguments: dict[str, Any]) -> None:
+            payload, is_error = self.executor.call(
+                tool_name,
+                arguments,
+                request_id=req_id,
+            )
+            _emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(payload, ensure_ascii=False),
+                            }
+                        ],
+                        "structuredContent": payload,
+                        "isError": is_error,
+                    },
+                }
+            )
+
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="lyraforge-mcp") as pool:
+            pending: list[Future[None]] = []
+            for line in stdin:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    msg = json.loads(text)
+                except json.JSONDecodeError:
+                    resp = self.handle_message(line)
+                    if resp is not None:
+                        _emit(resp)
+                    continue
+                if (
+                    isinstance(msg, dict)
+                    and msg.get("jsonrpc") == "2.0"
+                    and "id" in msg
+                    and msg.get("method") == "tools/call"
+                    and isinstance(msg.get("params"), dict)
+                    and isinstance(msg["params"].get("name"), str)
+                    and msg["params"]["name"].strip()
+                ):
+                    params = msg["params"]
+                    arguments = params.get("arguments")
+                    fut = pool.submit(
+                        _run_tool_call,
+                        msg.get("id"),
+                        params["name"].strip(),
+                        arguments if isinstance(arguments, dict) else {},
+                    )
+                    pending.append(fut)
+                    continue
+                resp = self.handle_message(line)
+                if resp is not None:
+                    _emit(resp)
+            for fut in pending:
+                fut.result()
         return 0
 
 

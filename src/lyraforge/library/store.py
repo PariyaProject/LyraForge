@@ -37,7 +37,7 @@ from lyraforge.music_core.midi_export import (
     performance_to_midi_bytes,
     score_to_midi_bytes,
 )
-from lyraforge.music_core.midi_import import load_midi_file, parse_midi_bytes
+from lyraforge.music_core.midi_import import ImportLimits, load_midi_file, parse_midi_bytes
 from lyraforge.music_core.performance import (
     build_performance,
     build_report,
@@ -59,6 +59,10 @@ from lyraforge.transcribers import (
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,12 +418,23 @@ class LibraryStore:
     ) -> ImportResult:
         """Validate, copy, and index a local MIDI file with SHA256 deduplication."""
         src_path = Path(path)
-        score = load_midi_file(src_path)  # validates file size, SMF header, limits before DB writes
+        limits = ImportLimits()
+        if not src_path.is_file():
+            raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, f"MIDI file not found: {src_path.name}")
+        size = src_path.stat().st_size
+        if size > limits.max_file_bytes:
+            raise LyraError(
+                ErrorCode.LIMIT_EXCEEDED,
+                f"MIDI file too large ({size} bytes > {limits.max_file_bytes})",
+                {"size": size, "limit": limits.max_file_bytes},
+            )
+        raw_bytes = src_path.read_bytes()
+        score = parse_midi_bytes(raw_bytes, limits)
         return self._import_validated_source(
             src_path=src_path,
             kind="midi",
             sha256=score.source_sha256,
-            raw_bytes=src_path.read_bytes(),
+            raw_bytes=raw_bytes,
             ext=".mid",
             title=title,
             artist=artist,
@@ -478,16 +493,17 @@ class LibraryStore:
         params: list[Any] = []
         q = query.strip()
         if q:
-            like = f"%{q}%"
+            like = f"%{_escape_like(q)}%"
             conditions.append(
-                "(s.title LIKE ? COLLATE NOCASE OR s.artist LIKE ? COLLATE NOCASE "
-                "OR s.tags_json LIKE ? COLLATE NOCASE)"
+                "(s.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR s.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR s.tags_json LIKE ? ESCAPE '\\' COLLATE NOCASE)"
             )
             params.extend((like, like, like))
         t = (tag or "").strip()
         if t:
-            conditions.append("s.tags_json LIKE ? COLLATE NOCASE")
-            params.append(f"%{t}%")
+            conditions.append("s.tags_json LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(f"%{_escape_like(t)}%")
         if favorites_only:
             conditions.append(
                 "EXISTS (SELECT 1 FROM arrangements a WHERE a.song_id = s.id AND a.is_favorite = 1)"
@@ -503,7 +519,11 @@ class LibraryStore:
             """,
             params,
         ).fetchall()
-        return [self._row_to_song_summary(r) for r in rows]
+        summaries = [self._row_to_song_summary(r) for r in rows]
+        if t:
+            t_low = t.lower()
+            summaries = [s for s in summaries if any(st.lower() == t_low for st in s.tags)]
+        return summaries
 
     def get_song(self, song_id: str) -> SongDetail:
         song = self._fetch_song_summary(song_id)
@@ -781,6 +801,28 @@ class LibraryStore:
             })
 
         normalized.sort(key=lambda e: (e["at_ms"], e["mapped_pitch"], e["key_id"]))
+        dedup_map: dict[tuple[int, str], dict[str, Any]] = {}
+        for ev in normalized:
+            dkey = (int(ev["at_ms"]), str(ev["key_id"]))
+            prev = dedup_map.get(dkey)
+            if prev is None or (int(ev["velocity"]), int(ev["hold_ms"])) > (
+                int(prev["velocity"]),
+                int(prev["hold_ms"]),
+            ):
+                dedup_map[dkey] = ev
+        normalized = sorted(
+            dedup_map.values(),
+            key=lambda e: (e["at_ms"], e["mapped_pitch"], e["key_id"]),
+        )
+        next_same_key: dict[str, int] = {}
+        for idx in range(len(normalized) - 1, -1, -1):
+            ev = normalized[idx]
+            kid = str(ev["key_id"])
+            if kid in next_same_key:
+                max_hold = max(1, next_same_key[kid] - int(ev["at_ms"]))
+                ev["hold_ms"] = min(int(ev["hold_ms"]), max_hold)
+            next_same_key[kid] = int(ev["at_ms"])
+
         duration_ms = max(e["at_ms"] + e["hold_ms"] for e in normalized)
         arr_id = str(uuid.uuid4())
         perf = json.loads(json.dumps(parent_perf))

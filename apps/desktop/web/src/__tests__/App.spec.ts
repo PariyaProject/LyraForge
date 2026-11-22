@@ -152,6 +152,24 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       risk_notice: "Dry-run mode",
     }),
     startPlayback: vi.fn().mockResolvedValue({ session_id: "sess-1", status: "running" }),
+    pausePlayback: vi.fn().mockResolvedValue({
+      state: "paused",
+      session_id: "sess-1",
+      arrangement_id: "arr-1",
+      mode: "dry-run",
+      sends_os_input: false,
+      keys_still_pressed: [],
+      last_result: null,
+    }),
+    resumePlayback: vi.fn().mockResolvedValue({
+      state: "running",
+      session_id: "sess-1",
+      arrangement_id: "arr-1",
+      mode: "dry-run",
+      sends_os_input: false,
+      keys_still_pressed: [],
+      last_result: null,
+    }),
     stopPlayback: vi.fn().mockResolvedValue({
       state: "stopped",
       session_id: "sess-1",
@@ -245,6 +263,9 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       arrangement: arr,
     }),
     downloadBackupZip: vi.fn().mockResolvedValue(new Blob(["PK"])),
+    restoreBackupZip: vi.fn().mockResolvedValue({
+      restored: { restored_files: 4, song_count: 1, schema_version: 3 },
+    }),
   } as unknown as LyraForgeApi;
 }
 
@@ -285,12 +306,46 @@ describe("App", () => {
     await flushPromises();
     expect(stub.startPlayback).toHaveBeenCalledWith("tok-1");
 
+    // Simulate running -> pause -> resume transitions via unified transport
+    vi.mocked(stub.playbackStatus).mockResolvedValueOnce({
+      state: "running",
+      session_id: "sess-1",
+      arrangement_id: "arr-1",
+      mode: "dry-run",
+      sends_os_input: false,
+      keys_still_pressed: [],
+      last_result: null,
+    });
+    const prepBtn2 = wrapper.findAll("button").find((b) => b.text().includes("1. 准备演奏"))!;
+    await prepBtn2.trigger("click");
+    await flushPromises();
+    const startBtn2 = wrapper.findAll("button").find((b) => b.text().includes("2. 确认授权开始"))!;
+    await startBtn2.trigger("click");
+    await flushPromises();
+
+    const pauseBtn = wrapper.findAll("button").find((b) => b.text().includes("暂停演奏"))!;
+    await pauseBtn.trigger("click");
+    await flushPromises();
+    expect(stub.pausePlayback).toHaveBeenCalledTimes(1);
+
+    const resumeBtn = wrapper.findAll("button").find((b) => b.text().includes("继续演奏"))!;
+    await resumeBtn.trigger("click");
+    await flushPromises();
+    expect(stub.resumePlayback).toHaveBeenCalledTimes(1);
+
+    // Persistent WAV preview stays loaded across tab changes
+    const previewQuickBtn = wrapper.findAll("button").find((b) => b.text().includes("快速试听"))!;
+    await previewQuickBtn.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('footer audio[src="blob:http://127.0.0.1/preview"]').exists()).toBe(true);
+
     const stopBtn = wrapper.findAll("button").find((b) => b.text().includes("紧急停止"))!;
     await stopBtn.trigger("click");
     await flushPromises();
     expect(stub.stopPlayback).toHaveBeenCalledTimes(1);
 
     await clickNav(wrapper, "设置与模型");
+    expect(wrapper.find('footer audio[src="blob:http://127.0.0.1/preview"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("uv");
     expect(wrapper.text()).toContain("lyraforge");
     const codexTab = wrapper.findAll('[role="tab"]').find((b) => b.text().includes("Codex"))!;

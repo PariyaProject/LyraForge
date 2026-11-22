@@ -31,6 +31,7 @@ from lyraforge.library import (
     export_backup_zip,
     export_lyrapack,
     import_lyrapack,
+    restore_backup_zip,
 )
 from lyraforge.music_core.arranger import ArrangeOptions, SemitonePolicy, Style, arrange
 from lyraforge.music_core.canonical import pretty_json
@@ -343,6 +344,20 @@ def cmd_library_backup(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_library_restore(args: argparse.Namespace) -> int:
+    src = Path(args.file)
+    if not src.is_file():
+        raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, f"backup not found: {src.name}")
+    target_dir = Path(args.data_dir) if args.data_dir else None
+    if target_dir is None:
+        from lyraforge.library import default_data_dir
+
+        target_dir = default_data_dir()
+    summary = restore_backup_zip(target_dir, src.read_bytes())
+    print(pretty_json(summary), end="")
+    return EXIT_OK
+
+
 def cmd_pack_export(args: argparse.Namespace) -> int:
     with LibraryStore(args.data_dir) as store:
         data = export_lyrapack(
@@ -456,7 +471,57 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _desktop_self_check(args: argparse.Namespace) -> int:
+    import importlib
+
+    from lyraforge.api import create_app
+    from lyraforge.api.app import default_web_dist_dir
+
+    static_dir = (
+        Path(args.static_dir).expanduser().resolve()
+        if args.static_dir
+        else default_web_dist_dir()
+    )
+    if static_dir is None or not (static_dir / "index.html").is_file():
+        raise LyraError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            "built desktop web UI not found; run 'pnpm --dir apps/desktop/web build'",
+        )
+
+    importlib.import_module("multipart")
+    importlib.import_module("uvicorn")
+    profiles = [load_builtin_profile(pid).id for pid in list_profile_ids()]
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="lyraforge-selfcheck-") as tmp:
+        app = create_app(data_dir=Path(tmp), session_token="selfcheck-token", static_dir=static_dir)
+        assert app.title
+
+    win_ok = sys.platform == "win32"
+    if win_ok:
+        importlib.import_module("lyraforge.secrets_win32")
+        importlib.import_module("lyraforge.playback.windows.driver")
+
+    print(
+        pretty_json(
+            {
+                "ok": True,
+                "platform": sys.platform,
+                "version": __version__,
+                "web_dist": str(static_dir),
+                "profiles": profiles,
+                "windows_modules_loaded": win_ok,
+            }
+        ),
+        end="",
+    )
+    return EXIT_OK
+
+
 def cmd_desktop(args: argparse.Namespace) -> int:
+    if getattr(args, "self_check", False):
+        return _desktop_self_check(args)
     from lyraforge.desktop import launch_desktop
 
     return launch_desktop(
@@ -619,6 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", default=None)
     p.set_defaults(func=cmd_library_backup)
 
+    p = pls.add_parser("restore", help="safely restore a backup ZIP archive with rollback")
+    p.add_argument("file", help="path to backup.zip")
+    p.add_argument("--data-dir", default=None)
+    p.set_defaults(func=cmd_library_restore)
+
     pk = sub.add_parser("pack", help="export or import shareable .lyrapack archives")
     pks = pk.add_subparsers(dest="pack_command", required=True)
     p = pks.add_parser("export", help="export arrangement as .lyrapack (omits source audio)")
@@ -662,6 +732,11 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--data-dir", default=None)
     pd.add_argument("--static-dir", default=None, help="override built Vue frontend dist dir")
     pd.add_argument("--dev-url", default=None, help="Vite dev server URL for hot-reload dev")
+    pd.add_argument(
+        "--self-check",
+        action="store_true",
+        help="verify bundled assets, schemas, and server startup without opening a GUI window",
+    )
     pd.set_defaults(func=cmd_desktop)
 
     pe = sub.add_parser("engines", help="audio-to-MIDI transcription engines")

@@ -14,6 +14,7 @@ from lyraforge.errors import ErrorCode, LyraError
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+VK_ESCAPE = 0x1B
 
 QWERTY_SCAN_CODES: dict[str, int] = {
     "1": 0x02,
@@ -92,7 +93,7 @@ def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Wind
     import ctypes
     from ctypes import wintypes
 
-    ulong_ptr = ctypes.POINTER(ctypes.c_ulong)
+    ulong_ptr = ctypes.c_size_t
 
     class _MOUSEINPUT(ctypes.Structure):
         _fields_ = [
@@ -141,12 +142,26 @@ def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Wind
                 wScan=spec.scan_code,
                 dwFlags=spec.flags,
                 time=0,
-                dwExtraInfo=None,
+                dwExtraInfo=0,
             )
         ),
     )
     user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
     sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
     if sent != 1:
         err = ctypes.get_last_error()
         raise OSError(f"Win32 SendInput failed for {spec.binding!r} (sent={sent}, win32_err={err})")
+
+
+def is_escape_pressed_win32() -> bool:  # pragma: no cover - Windows-only OS call
+    """Return True if the physical ESC key is currently down on Windows."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
