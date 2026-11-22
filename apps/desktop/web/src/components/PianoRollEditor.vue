@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { PerformanceEventItem, ProfileKeyDef } from "../api";
 
 const props = defineProps<{
@@ -11,6 +11,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   save: [payload: { events: PerformanceEventItem[]; label: string }];
 }>();
+
+const ROW_HEIGHT_PX = 28;
+const BASE_PX_PER_MS = 0.08;
 
 function cloneEvents(items: PerformanceEventItem[]): PerformanceEventItem[] {
   return items
@@ -32,6 +35,23 @@ const selectedIndex = ref<number | null>(workingEvents.value.length > 0 ? 0 : nu
 const newKeyId = ref("mid_1");
 const newAtMs = ref(0);
 const versionLabel = ref("Piano Roll 编辑版");
+
+// DAW toolbar state
+const zoomPct = ref(100);
+const snapMs = ref(50);
+const editorMode = ref<"select" | "add">("select");
+
+// Live drag preview state
+const dragState = ref<{
+  idx: number;
+  startX: number;
+  startY: number;
+  origAtMs: number;
+  origRowIdx: number;
+  previewAtMs: number;
+  previewRowIdx: number;
+  moved: boolean;
+} | null>(null);
 
 watch(
   () => props.events,
@@ -57,23 +77,59 @@ watch(
 const canUndo = computed(() => historyIndex.value > 0);
 const canRedo = computed(() => historyIndex.value < history.value.length - 1);
 const isDirty = computed(() => historyIndex.value > 0);
+const pxPerMs = computed(() => BASE_PX_PER_MS * (zoomPct.value / 100));
 
 const totalDurationMs = computed(() => {
-  if (workingEvents.value.length === 0) return 2000;
+  if (workingEvents.value.length === 0) return 2400;
   return Math.max(
-    2000,
+    2400,
     ...workingEvents.value.map((e) => e.at_ms + Math.max(40, e.hold_ms)),
   );
 });
 
-const pxPerMs = 0.08;
 const timelineWidthPx = computed(() =>
-  Math.max(540, Math.min(2800, Math.ceil(totalDurationMs.value * pxPerMs) + 60)),
+  Math.max(540, Math.min(4800, Math.ceil(totalDurationMs.value * pxPerMs.value) + 80)),
 );
+
+const rulerTicks = computed(() => {
+  const stepMs = zoomPct.value >= 160 ? 250 : zoomPct.value <= 75 ? 1000 : 500;
+  const maxMs = Math.ceil(totalDurationMs.value / stepMs) * stepMs;
+  const ticks: Array<{ ms: number; label: string; leftPx: number }> = [];
+  for (let ms = 0; ms <= maxMs; ms += stepMs) {
+    ticks.push({
+      ms,
+      label: `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 2)}s`,
+      leftPx: Math.round(ms * pxPerMs.value),
+    });
+  }
+  return ticks;
+});
+
+const snapBackgroundSize = computed(() => {
+  const step = Math.max(12, Math.round((snapMs.value || 50) * pxPerMs.value));
+  return `${step}px 100%`;
+});
+
+function snapTime(ms: number): number {
+  const clamped = Math.max(0, ms);
+  if (snapMs.value <= 0) return Math.round(clamped);
+  return Math.max(0, Math.round(clamped / snapMs.value) * snapMs.value);
+}
 
 const eventsByKey = computed(() => {
   const map: Record<string, Array<{ idx: number; ev: PerformanceEventItem }>> = {};
   workingEvents.value.forEach((ev, idx) => {
+    const d = dragState.value;
+    if (d && d.idx === idx) {
+      const targetKey = orderedKeys.value[d.previewRowIdx] ?? orderedKeys.value[0];
+      const kid = targetKey ? targetKey.key_id : ev.key_id;
+      if (!map[kid]) map[kid] = [];
+      map[kid].push({
+        idx,
+        ev: { ...ev, key_id: kid, at_ms: d.previewAtMs },
+      });
+      return;
+    }
     if (!map[ev.key_id]) map[ev.key_id] = [];
     map[ev.key_id].push({ idx, ev });
   });
@@ -81,6 +137,14 @@ const eventsByKey = computed(() => {
 });
 
 const selectedEvent = computed(() => {
+  const d = dragState.value;
+  if (d) {
+    const k = orderedKeys.value[d.previewRowIdx];
+    const base = workingEvents.value[d.idx];
+    if (base && k) {
+      return { ...base, key_id: k.key_id, at_ms: d.previewAtMs };
+    }
+  }
   if (selectedIndex.value === null) return null;
   return workingEvents.value[selectedIndex.value] ?? null;
 });
@@ -156,12 +220,9 @@ function deleteSelected() {
   commitChange(next, null);
 }
 
-function addNote() {
-  const key = props.keys.find((k) => k.key_id === newKeyId.value);
-  if (!key) return;
-  const atMs = Math.max(0, Math.round(Number(newAtMs.value) || 0));
+function createNoteFor(key: ProfileKeyDef, atMs: number) {
   const created: PerformanceEventItem = {
-    at_ms: atMs,
+    at_ms: Math.max(0, Math.round(atMs)),
     key_id: key.key_id,
     action: "tap",
     hold_ms: 40,
@@ -175,6 +236,114 @@ function addNote() {
   commitChange([...workingEvents.value, created], created);
 }
 
+function addNote() {
+  const key = props.keys.find((k) => k.key_id === newKeyId.value);
+  if (!key) return;
+  createNoteFor(key, Number(newAtMs.value) || 0);
+}
+
+function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false) {
+  if (!forceAdd && editorMode.value !== "add") return;
+  const target = event.target as HTMLElement;
+  if (target.closest(".pr-note")) return;
+  const lane = event.currentTarget as HTMLElement;
+  const rect = lane.getBoundingClientRect();
+  const relX = Math.max(0, event.clientX - rect.left);
+  const rawMs = relX / pxPerMs.value;
+  createNoteFor(key, snapTime(rawMs));
+}
+
+function onWindowPointerMove(ev: PointerEvent) {
+  const d = dragState.value;
+  if (!d) return;
+  const dx = ev.clientX - d.startX;
+  const dy = ev.clientY - d.startY;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+    d.moved = true;
+  }
+  const nextAtMs = snapTime(d.origAtMs + dx / pxPerMs.value);
+  const rowDelta = Math.round(dy / ROW_HEIGHT_PX);
+  const nextRow = Math.max(0, Math.min(orderedKeys.value.length - 1, d.origRowIdx + rowDelta));
+  d.previewAtMs = nextAtMs;
+  d.previewRowIdx = nextRow;
+}
+
+function stopDragListeners() {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("pointermove", onWindowPointerMove);
+    window.removeEventListener("pointerup", onWindowPointerUp);
+  }
+}
+
+function onWindowPointerUp() {
+  stopDragListeners();
+  const d = dragState.value;
+  dragState.value = null;
+  if (!d || !d.moved) return;
+  const ev = workingEvents.value[d.idx];
+  const targetKey = orderedKeys.value[d.previewRowIdx];
+  if (!ev || !targetKey) return;
+  if (ev.at_ms === d.previewAtMs && ev.key_id === targetKey.key_id) return;
+  const updated: PerformanceEventItem = {
+    ...ev,
+    at_ms: d.previewAtMs,
+    key_id: targetKey.key_id,
+    mapped_pitch: targetKey.pitch,
+  };
+  const next = workingEvents.value.map((item, i) => (i === d.idx ? updated : item));
+  commitChange(next, updated);
+}
+
+function onNotePointerDown(idx: number, keyId: string, evItem: PerformanceEventItem, event: PointerEvent) {
+  selectedIndex.value = idx;
+  if (event.button !== 0) return;
+  const rowIdx = Math.max(
+    0,
+    orderedKeys.value.findIndex((k) => k.key_id === keyId),
+  );
+  dragState.value = {
+    idx,
+    startX: event.clientX,
+    startY: event.clientY,
+    origAtMs: evItem.at_ms,
+    origRowIdx: rowIdx,
+    previewAtMs: evItem.at_ms,
+    previewRowIdx: rowIdx,
+    moved: false,
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("pointermove", onWindowPointerMove);
+    window.addEventListener("pointerup", onWindowPointerUp);
+  }
+}
+
+function onEditorKeydown(event: KeyboardEvent) {
+  const tag = (event.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    if (event.shiftKey) redo();
+    else undo();
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    shiftSelectedPitch(1);
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    shiftSelectedPitch(-1);
+  } else if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    nudgeSelectedTime(-(snapMs.value || 50));
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    nudgeSelectedTime(snapMs.value || 50);
+  } else if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    deleteSelected();
+  }
+}
+
 function emitSave() {
   if (workingEvents.value.length === 0) return;
   emit("save", {
@@ -182,10 +351,14 @@ function emitSave() {
     label: versionLabel.value.trim() || "Piano Roll 编辑版",
   });
 }
+
+onBeforeUnmount(() => {
+  stopDragListeners();
+});
 </script>
 
 <template>
-  <div class="piano-roll-editor">
+  <div class="piano-roll-editor" tabindex="0" @keydown="onEditorKeydown">
     <div class="pr-toolbar">
       <div class="button-row">
         <button type="button" class="btn-secondary" :disabled="!canUndo" @click="undo">
@@ -194,9 +367,54 @@ function emitSave() {
         <button type="button" class="btn-secondary" :disabled="!canRedo" @click="redo">
           重做
         </button>
-        <span class="badge">
+        <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
           {{ isDirty ? "有未保存修改" : "已同步" }} · {{ workingEvents.length }} 音符
         </span>
+
+        <div class="segmented" role="group" aria-label="画布操作模式">
+          <button
+            type="button"
+            :class="{ active: editorMode === 'select' }"
+            @click="editorMode = 'select'"
+          >
+            选择/拖动
+          </button>
+          <button
+            type="button"
+            :class="{ active: editorMode === 'add' }"
+            @click="editorMode = 'add'"
+          >
+            点击添加
+          </button>
+        </div>
+
+        <div class="button-row" aria-label="缩放与吸附">
+          <button
+            type="button"
+            class="ghost"
+            aria-label="缩小时间轴"
+            @click="zoomPct = Math.max(50, zoomPct - 25)"
+          >
+            -
+          </button>
+          <span class="badge tabular">{{ zoomPct }}%</span>
+          <button
+            type="button"
+            class="ghost"
+            aria-label="放大时间轴"
+            @click="zoomPct = Math.min(250, zoomPct + 25)"
+          >
+            +
+          </button>
+          <label for="pr-snap-select" class="muted">吸附</label>
+          <select id="pr-snap-select" v-model.number="snapMs" style="inline-size: auto">
+            <option :value="0">关闭</option>
+            <option :value="25">25ms</option>
+            <option :value="50">50ms</option>
+            <option :value="100">100ms</option>
+            <option :value="250">250ms</option>
+          </select>
+        </div>
       </div>
 
       <div class="button-row" v-if="selectedEvent">
@@ -255,21 +473,44 @@ function emitSave() {
     </div>
 
     <div class="pr-scroll" role="region" aria-label="MIDI Piano Roll 可视化编辑器">
-      <div class="pr-canvas" :style="{ width: `${timelineWidthPx + 96}px` }">
+      <div class="pr-canvas" :style="{ width: `${timelineWidthPx + 104}px` }">
+        <div class="pr-ruler" aria-hidden="true">
+          <div class="pr-ruler-corner">键位 \ 时间</div>
+          <div class="pr-ruler-track">
+            <div
+              v-for="tick in rulerTicks"
+              :key="tick.ms"
+              class="pr-tick"
+              :style="{ left: `${tick.leftPx}px` }"
+            >
+              {{ tick.label }}
+            </div>
+          </div>
+        </div>
+
         <div v-for="k in orderedKeys" :key="k.key_id" class="pr-row">
           <span class="pr-key-label">{{ k.binding }} · {{ k.key_id }}</span>
-          <div class="pr-lane">
+          <div
+            class="pr-lane"
+            :style="{ backgroundSize: snapBackgroundSize }"
+            @click="onLaneClick(k, $event, false)"
+            @dblclick="onLaneClick(k, $event, true)"
+          >
             <button
               v-for="item in eventsByKey[k.key_id] ?? []"
-              :key="`${item.idx}-${item.ev.at_ms}`"
+              :key="`${item.idx}-${item.ev.key_id}`"
               type="button"
               class="pr-note"
-              :class="{ selected: selectedIndex === item.idx }"
+              :class="{
+                selected: selectedIndex === item.idx,
+                dragging: dragState?.idx === item.idx && dragState?.moved,
+              }"
               :style="{
                 left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
-                width: `${Math.max(14, Math.round(item.ev.hold_ms * pxPerMs))}px`,
+                width: `${Math.max(18, Math.round(item.ev.hold_ms * pxPerMs))}px`,
               }"
-              :title="`${k.binding} @ ${item.ev.at_ms}ms (${item.ev.hold_ms}ms)`"
+              :aria-label="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms}ms`"
+              @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
               @click="selectedIndex = item.idx"
             >
               {{ k.binding }}
@@ -278,5 +519,8 @@ function emitSave() {
         </div>
       </div>
     </div>
+    <p class="muted" style="margin: 0">
+      提示：按住音符可直接拖拽改音高与时间；双击音轨或切换“点击添加”即可插入；支持键盘方向键、Delete、Ctrl/Cmd+Z 撤销。
+    </p>
   </div>
 </template>

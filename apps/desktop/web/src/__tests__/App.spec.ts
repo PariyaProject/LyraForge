@@ -248,8 +248,18 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
   } as unknown as LyraForgeApi;
 }
 
+async function clickNav(wrapper: ReturnType<typeof mount>, label: string): Promise<void> {
+  const navBtn = wrapper
+    .findAll("nav button.rail-item")
+    .find((b) => b.text().includes(label));
+  expect(navBtn, `nav item ${label} should exist`).toBeDefined();
+  await navBtn!.trigger("click");
+  await flushPromises();
+}
+
 describe("App", () => {
-  it("loads macOS DryRun badge, disables windows option, and enforces 2-step playback", async () => {
+  it("loads macOS DryRun badge, disables windows option, enforces 2-step playback, and renders MCP setup", async () => {
+    window.history.replaceState(null, "", "/");
     const stub = makeStubApi("midi");
     const wrapper = mount(App, { props: { client: stub } });
     await flushPromises();
@@ -257,12 +267,13 @@ describe("App", () => {
     expect(wrapper.text()).toContain("macOS DryRun 模拟模式");
     expect(wrapper.text()).toContain("C Major Scale");
 
+    await clickNav(wrapper, "试听与演奏");
+
     const winOpt = wrapper.find('option[value="windows"]');
     expect(winOpt.attributes("disabled")).toBeDefined();
 
-    const buttons = wrapper.findAll("button");
-    const prepBtn = buttons.find((b) => b.text().includes("1. 准备演奏"))!;
-    const startBtn = buttons.find((b) => b.text().includes("2. 确认授权开始"))!;
+    const prepBtn = wrapper.findAll("button").find((b) => b.text().includes("1. 准备演奏"))!;
+    const startBtn = wrapper.findAll("button").find((b) => b.text().includes("2. 确认授权开始"))!;
     expect(startBtn.attributes("disabled")).toBeDefined();
 
     await prepBtn.trigger("click");
@@ -274,21 +285,32 @@ describe("App", () => {
     await flushPromises();
     expect(stub.startPlayback).toHaveBeenCalledWith("tok-1");
 
-    const stopBtn = buttons.find((b) => b.text().includes("紧急停止"))!;
+    const stopBtn = wrapper.findAll("button").find((b) => b.text().includes("紧急停止"))!;
     await stopBtn.trigger("click");
     await flushPromises();
     expect(stub.stopPlayback).toHaveBeenCalledTimes(1);
 
-    const saveBtn = buttons.find((b) => b.text().includes("保存设置"))!;
+    await clickNav(wrapper, "设置与模型");
+    expect(wrapper.text()).toContain("uv");
+    expect(wrapper.text()).toContain("lyraforge");
+    const codexTab = wrapper.findAll('[role="tab"]').find((b) => b.text().includes("Codex"))!;
+    await codexTab.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("[mcp_servers.lyraforge]");
+
+    const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("保存设置"))!;
     await saveBtn.trigger("click");
     await flushPromises();
     expect(stub.saveSetting).toHaveBeenCalledWith("default_style", "balanced");
   });
 
   it("shows audio transcription controls and supports starting and cancelling a job", async () => {
+    window.history.replaceState(null, "", "/");
     const stub = makeStubApi("audio");
     const wrapper = mount(App, { props: { client: stub } });
     await flushPromises();
+
+    await clickNav(wrapper, "AI 转谱");
 
     expect(wrapper.text()).toContain("音频转 MIDI 转录");
     const bpOpt = wrapper.find('option[value="basic-pitch"]');
@@ -305,13 +327,29 @@ describe("App", () => {
     expect(stub.cancelJob).toHaveBeenCalledWith("job-1");
   });
 
-  it("supports M3 profile selection, A/B arrange, favorites/votes, and Piano Roll save", async () => {
+  it("supports M3/M4/M5 flows across Studio, Agent, Library, and Playback views", async () => {
+    window.history.replaceState(null, "", "/");
     const stub = makeStubApi("midi");
     const wrapper = mount(App, { props: { client: stub } });
     await flushPromises();
 
+    // Home IME-safe search jump: composition Enter must NOT submit
+    const homeInput = wrapper.find("#home-quick-search");
+    await homeInput.setValue("千本");
+    await homeInput.trigger("keydown", { key: "Enter", isComposing: true, keyCode: 229 });
+    await flushPromises();
+    expect(wrapper.find("h1").text()).toContain("LyraForge 编曲与演奏工作台");
+
+    // Non-composing Enter jumps to library and queries backend
+    await homeInput.trigger("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+    await flushPromises();
+    expect(wrapper.find("h1").text()).toContain("本地曲库");
+    expect(stub.listSongs).toHaveBeenCalledWith("千本");
+
+    // Studio view: metrics, profile change, favorite, vote, A/B arrange, Piano Roll save
+    await clickNav(wrapper, "编曲工作室");
     expect(wrapper.text()).toContain("92.5 / 100");
-    expect(wrapper.text()).toContain("Piano Roll 可视化编辑与版本保存");
+    expect(wrapper.text()).toContain("MIDI Piano Roll 可视化编辑器");
 
     await wrapper.find("#profile-select").setValue("genshin.floral_zither.v1");
     await flushPromises();
@@ -331,13 +369,15 @@ describe("App", () => {
     await abBtn.trigger("click");
     await flushPromises();
     expect(stub.arrangeAB).toHaveBeenCalledTimes(1);
-    expect(wrapper.text()).toContain("A/B 编曲质量对比");
+    expect(wrapper.text()).toContain("A/B 编曲对比结果");
 
     const prSaveBtn = wrapper.findAll("button").find((b) => b.text().includes("保存为新版本"))!;
     await prSaveBtn.trigger("click");
     await flushPromises();
     expect(stub.editArrangement).toHaveBeenCalledTimes(1);
 
+    // Transcribe view: Agent natural language automation
+    await clickNav(wrapper, "AI 转谱");
     await wrapper.find("#agent-prompt").setValue("转成风物之诗琴主旋律并优化");
     const agentBtn = wrapper.findAll("button").find((b) => b.text().includes("执行智能编曲"))!;
     await agentBtn.trigger("click");
@@ -346,13 +386,15 @@ describe("App", () => {
     expect(wrapper.text()).toContain("Agent 已完成《C Major Scale》编曲");
     expect(wrapper.text()).toContain("arrange.run");
 
-    // M5 library filters & .lyrapack rights confirmation gate + export + backup
+    // Library & Playback M5 flows: filter, backup, rights-gated .lyrapack export
     const originalCreateObjectURL = globalThis.URL.createObjectURL;
     const originalRevokeObjectURL = globalThis.URL.revokeObjectURL;
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     globalThis.URL.createObjectURL = vi.fn(() => "blob:mock");
     globalThis.URL.revokeObjectURL = vi.fn();
     try {
+      await clickNav(wrapper, "本地曲库");
+      await wrapper.find("#library-search").setValue("");
       await wrapper.find("#library-tag-filter").setValue("demo");
       const searchBtn = wrapper.findAll("button").find((b) => b.text().trim() === "搜索")!;
       await searchBtn.trigger("click");
@@ -364,6 +406,7 @@ describe("App", () => {
       await flushPromises();
       expect(stub.downloadBackupZip).toHaveBeenCalledTimes(1);
 
+      await clickNav(wrapper, "试听与演奏");
       const packExportBtn = wrapper.findAll("button").find((b) => b.text().includes("导出分享包"))!;
       await packExportBtn.trigger("click");
       await flushPromises();
@@ -371,7 +414,7 @@ describe("App", () => {
 
       const rightsBox = wrapper
         .findAll("label")
-        .find((l) => l.text().includes("我确认拥有分享授权"))!
+        .find((l) => l.text().includes("分享授权"))!
         .find("input[type='checkbox']");
       await rightsBox.setValue(true);
       await packExportBtn.trigger("click");

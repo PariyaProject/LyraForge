@@ -1,0 +1,110 @@
+@layer tokens {
+  :root {
+    color-scheme: dark;
+
+    /* Tier 1 — Palette literals (Studio Dark Obsidian + Cyan/Gold) */
+    --palette-obsidian-950: #0a0d14;
+    --palette-obsidian-900: #101521;
+    --palette-obsidian-850: #151b2b;
+    --palette-obsidian-800: #1b2336;
+    --palette-obsidian-750: #222c42;
+
+    --palette-slate-100: #f1f5fb;
+    --palette-slate-200: #d5dfef;
+    --palette-slate-300: #a8b7d0;
+    --palette-slate-400: #8796b2;
+    --palette-slate-500: #5a6a8a;
+    --palette-slate-600: #394661;
+    --palette-slate-700: #273248;
+
+    --palette-cyan-400: #38bdf8;
+    --palette-cyan-300: #7dd3fc;
+    --palette-cyan-950: #07283c;
+
+    --palette-gold-400: #f5b942;
+    --palette-gold-950: #382406;
+
+    --palette-emerald-400: #34d399;
+    --palette-emerald-950: #063022;
+
+    --palette-rose-400: #f87171;
+    --palette-rose-950: #450d12;
+
+    /* Tier 2 — Semantic tokens */
+    --bg-canvas: var(--palette-obsidian-950);
+    --bg-rail: var(--palette-obsidian-900);
+    --bg-panel: var(--palette-obsidian-850);
+    --bg-elevated: var(--palette-obsidian-800);
+    --bg-interactive: var(--palette-obsidian-750);
+
+    --border-subtle: var(--palette-slate-700);
+    --border-default: var(--palette-slate-600);
+    --border-control: var(--palette-slate-500);
+
+    --text-primary: var(--palette-slate-100);
+    --text-secondary: var(--palette-slate-200);
+    --text-muted: var(--palette-slate-300);
+
+    --accent-primary: var(--palette-cyan-400);
+    --accent-primary-hover: var(--palette-cyan-300);
+    --accent-primary-fg: #051b29;
+    --accent-tint: rgba(56, 189, 248, 0.14);
+
+    --status-ok: var(--palette-emerald-400);
+    --status-ok-bg: var(--palette-emerald-950);
+    --status-warn: var(--palette-gold-400);
+    --status-warn-bg: var(--palette-gold-950);
+    --status-danger: var(--palette-rose-400);
+    --status-danger-bg: var(--palette-rose-950);
+    --status-danger-fg: #2b0609;
+
+    --focus-ring: #f5b942;
+    --sb-thumb: #4b5b7a;
+    --sb-track: #121826;
+
+    /* Tier 3 — Layout & rhythm tokens */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+      system-ui, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+
+    --shadow-panel: 0 8px 24px rgba(3, 6, 14, 0.35);
+    --shadow-toast: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+}
+
+@media (forced-colors: active) {
+  @layer tokens {
+    :root {
+      --bg-canvas: Canvas;
+      --bg-rail: Canvas;
+      --bg-panel: Canvas;
+      --bg-elevated: Canvas;
+      --bg-interactive: ButtonFace;
+      --border-subtle: CanvasText;
+      --border-default: CanvasText;
+      --border-control: ButtonText;
+      --text-primary: CanvasText;
+      --text-secondary: CanvasText;
+      --text-muted: GrayText;
+      --accent-primary: Highlight;
+      --accent-primary-fg: HighlightText;
+      --status-danger: Highlight;
+      --status-danger-fg: HighlightText;
+      --focus-ring: Highlight;
+      --shadow-panel: none;
+      --shadow-toast: none;
+    }
+  }
+}
