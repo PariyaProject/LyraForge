@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,12 +44,22 @@ class LocalLibrarySourceAdapter:
         self._store = store
         self._search_dirs = [Path(d).expanduser().resolve() for d in search_dirs]
 
-    def search(self, query: str, *, limit: int = 10) -> list[SourceCandidate]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> list[SourceCandidate]:
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local search cancelled")
         out: list[SourceCandidate] = []
         q_low = query.strip().lower()
 
         if self._store is not None:
             for song in self._store.search_songs(query)[:limit]:
+                if is_cancelled is not None and is_cancelled():
+                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local search cancelled")
                 detail = self._store.get_song(song.id)
                 fmt = "midi" if any(s.kind == "midi" for s in detail.sources) else "audio"
                 out.append(
@@ -72,9 +82,13 @@ class LocalLibrarySourceAdapter:
                 )
 
         for root in self._search_dirs:
+            if is_cancelled is not None and is_cancelled():
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local search cancelled")
             if len(out) >= limit or not root.is_dir():
                 continue
             for path in sorted(root.iterdir()):
+                if is_cancelled is not None and is_cancelled():
+                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local search cancelled")
                 if len(out) >= limit:
                     break
                 if not path.is_file():
@@ -113,8 +127,11 @@ class LocalLibrarySourceAdapter:
         dest_dir: Path,
         *,
         user_authorized: bool = False,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Path:
         _ = user_authorized
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local fetch cancelled")
         src = Path(location).expanduser()
         if not src.is_file():
             raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, f"local source not found: {src.name}")
@@ -122,5 +139,8 @@ class LocalLibrarySourceAdapter:
         classify_extension(ext)
         safe_name = f"{src.stem[:80]}{ext}"
         target = resolve_under(dest_dir.resolve(), safe_name)
-        atomic_write_bytes(target, src.read_bytes())
+        raw = src.read_bytes()
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "local fetch cancelled")
+        atomic_write_bytes(target, raw)
         return target

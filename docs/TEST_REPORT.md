@@ -103,3 +103,19 @@
    - 注册 `py_lower()` 并采用 `json_valid(tags_json)` + `json_each()` 在 SQL 层精确匹配标签，配合 `LIMIT/OFFSET`、Unicode（`Café`/`原神`）、LIKE 特殊字符（`%`/`_`/`\`）与 600+ 曲目分页压测均一次精确命中且 0 截断。
 5. **LLM 非有限浮点数安全解析（`agent/llm.py`）**：
    - 使用 `math.isfinite()` 强化 `_coerce_float`、`_coerce_int` 与 `_coerce_opt_int`，全面拦截 `"nan"`、`"inf"`、`"-inf"`、`1e308`、`"1e309"`、布尔与越界字符串并安全回退默认值。
+
+---
+
+## 7. 第六轮稳定性收敛专项复核与回归结果（基于 `34f08ce`）
+
+针对第六轮 Code Review 剩余边界问题已完成最小化高可靠改造与全量回归验证（[tests/unit/test_round6_review_fixes.py](tests/unit/test_round6_review_fixes.py)，新增 **4 组专项回归全通**；全库回归共 **132 passed**, 覆盖率 **86.49%**, 前端 Vitest **4 文件 / 6 用例全过**, Vite 构建 **757ms**, 无新增第三方依赖）：
+
+1. **事务型曲库目录切换恢复与断点自动回滚（`library/packaging.py`, `library/store.py`, `library/__init__.py`）**：
+   - 在触碰目标库前执行 `_check_target_files_unlocked()` 与 `_verify_and_quiesce_existing_db()`，先于目录外部准备并校验证明完整的 `prepared_dir` 与 `rollback_dir`，再通过 `.restore-txn.json` + 目录原子重命名（`_rename_dir_with_retry()`）实施无就地删档切换。
+   - 捕获 `BaseException`（含 `KeyboardInterrupt`）执行原子回退；若双重故障（回滚期同样遇锁）发生，设置 `keep_snapshots = True` 完整保留快照并携带 `manual_recovery_steps` 抛出 `LIBRARY_BUSY`，同时 `LibraryStore.__init__` / `recover_interrupted_restore()` 可在重启后自动自愈未完成恢复事务。
+2. **MCP `MCPTaskRegistry` 活动任务零驱逐保护（`mcp/tools.py`）**：
+   - 引入 `MCPTaskRecord.finished`（取消中至多等待工线程 `finish()` 才标完成）、`active_count()` 与 `_reclaim_finished_locked()`，严禁驱逐未完成活动任务；满载时返回可恢复错误 `ErrorCode.LIMIT_EXCEEDED` 并保持已有活动任务的进度查询与取消关联完整，淘汰已完结记录时同步清理过期 `_request_to_task` 映射。
+3. **非转录 MCP 工具与底层业务协作式取消（`mcp/tools.py`, `music_core/arranger.py`, `preview/synth.py`, `sources/{local,url,online}.py`, `library/store.py`）**：
+   - 移除 `lambda ...: _st` 忽略路径，将 `search_music`/`import_media`/`transcribe`/`arrange`/`evaluate`/`preview`/`save_to_library`/`export_score` 纳入统一 `_run_tracked()` 追踪与 `StopToken`/`is_cancelled` 检查，确保执行前、流式下载/移调搜索/波形合成中途以及写数据库提交前取消均可清理新建孤儿产物并返回 `PLAYBACK_ABORTED`，且已提交事务或原子写入后的迟到取消绝不错误标记为失败。
+4. **外部子进程及其派生进程树生命周期（`media/subprocess_utils.py`, `media/{extract.py}`, `transcribers/_subprocess.py`）**：
+   - 隔离会话/进程组启动（`start_new_session=True` / `CREATE_NEW_PROCESS_GROUP`、`stdin=DEVNULL`、`close_fds=True`），终止时使用 POSIX `os.killpg` 与 Windows `taskkill /F /T` + `Win32_Process` 后代递归清扫；即使父进程已退出而孙进程仍继承持有 `stdout`/`stderr` 管道亦能识别并安全回收，并在所有排空线程完全结束及管道关闭后再执行轮转日志清理，避免 Windows 句柄竞争与跨线程并发关闭隐患。

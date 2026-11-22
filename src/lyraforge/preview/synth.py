@@ -11,7 +11,7 @@ import io
 import math
 import sys
 import wave
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -69,12 +69,19 @@ def _render_note(
         buf[start_idx + offset] += amp * env * wave_val
 
 
+def _check_cancel(is_cancelled: Callable[[], bool] | None) -> None:
+    if is_cancelled is not None and is_cancelled():
+        raise LyraError(ErrorCode.PLAYBACK_ABORTED, "preview synthesis cancelled")
+
+
 def synthesize_performance(
     doc: Mapping[str, Any],
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> bytes:
     """Render a performance document to mono 16-bit PCM WAV bytes."""
+    _check_cancel(is_cancelled)
     if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or not (
         MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE
     ):
@@ -94,6 +101,7 @@ def synthesize_performance(
     buf = [0.0] * total_samples
 
     for e in events:
+        _check_cancel(is_cancelled)
         start_idx = int(round((e["at_ms"] / 1000.0) * sample_rate))
         if 0 <= start_idx < total_samples:
             _render_note(
@@ -105,6 +113,7 @@ def synthesize_performance(
                 sample_rate=sample_rate,
             )
 
+    _check_cancel(is_cancelled)
     peak = max((abs(x) for x in buf), default=0.0)
     scale = (_TARGET_PEAK / peak) if peak > 1e-9 else 1.0
     pcm = array.array("h", (max(-32767, min(32767, round(x * scale * 32767.0))) for x in buf))
@@ -125,9 +134,11 @@ def synthesize_performance_to_wav(
     out_path: str | Path,
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> Path:
     """Render ``doc`` and atomically write the resulting WAV to ``out_path``."""
-    wav_bytes = synthesize_performance(doc, sample_rate=sample_rate)
+    wav_bytes = synthesize_performance(doc, sample_rate=sample_rate, is_cancelled=is_cancelled)
+    _check_cancel(is_cancelled)
     dest = Path(out_path)
     atomic_write_bytes(dest, wav_bytes)
     return dest

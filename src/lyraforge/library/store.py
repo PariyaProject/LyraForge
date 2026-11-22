@@ -70,6 +70,11 @@ def _escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _check_stop(stop_token: StopToken | None, message: str) -> None:
+    if stop_token is not None and stop_token.stopped:
+        raise LyraError(ErrorCode.PLAYBACK_ABORTED, stop_token.reason or message)
+
+
 @dataclass(frozen=True, slots=True)
 class SongSummary:
     id: str
@@ -230,8 +235,18 @@ class LibraryStore:
         data_dir: str | Path | None = None,
         *,
         secret_store: SecretStore | None = None,
+        _check_pending_restore: bool = True,
     ) -> None:
-        self.data_dir = Path(data_dir).expanduser() if data_dir is not None else default_data_dir()
+        resolved_dir = (
+            Path(data_dir).expanduser() if data_dir is not None else default_data_dir()
+        ).resolve()
+        if _check_pending_restore:
+            txn_marker = resolved_dir.parent / f".{resolved_dir.name}.restore-txn.json"
+            if txn_marker.is_file():
+                from lyraforge.library.packaging import recover_interrupted_restore
+
+                recover_interrupted_restore(resolved_dir)
+        self.data_dir = resolved_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "library.db"
         self._secrets = secret_store or default_secret_store(self.data_dir)
@@ -359,7 +374,9 @@ class LibraryStore:
         title: str | None,
         artist: str,
         tags: list[str] | tuple[str, ...] | None,
+        stop_token: StopToken | None = None,
     ) -> ImportResult:
+        _check_stop(stop_token, "media import cancelled")
         existing = self._conn.execute(
             "SELECT * FROM sources WHERE sha256 = ?", (sha256,)
         ).fetchone()
@@ -371,6 +388,7 @@ class LibraryStore:
                 deduplicated=True,
             )
 
+        _check_stop(stop_token, "media import cancelled")
         song_id = str(uuid.uuid4())
         source_id = str(uuid.uuid4())
         clean_title = (title or "").strip() or src_path.stem
@@ -378,6 +396,12 @@ class LibraryStore:
         clean_tags = sorted({t.strip() for t in (tags or ()) if t.strip()})
         rel_path = f"songs/{song_id}/source/{sha256}{ext}"
         atomic_write_bytes(resolve_under(self.data_dir, rel_path), raw_bytes)
+
+        if stop_token is not None and stop_token.stopped:
+            shutil.rmtree(resolve_under(self.data_dir, f"songs/{song_id}"), ignore_errors=True)
+            raise LyraError(
+                ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "media import cancelled"
+            )
 
         now = _utc_now_iso()
         try:
@@ -446,8 +470,10 @@ class LibraryStore:
         title: str | None = None,
         artist: str = "",
         tags: list[str] | tuple[str, ...] | None = None,
+        stop_token: StopToken | None = None,
     ) -> ImportResult:
         """Validate, copy, and index a local MIDI file with SHA256 deduplication."""
+        _check_stop(stop_token, "media import cancelled")
         src_path = Path(path)
         limits = ImportLimits()
         if not src_path.is_file():
@@ -460,6 +486,7 @@ class LibraryStore:
                 {"size": size, "limit": limits.max_file_bytes},
             )
         raw_bytes = src_path.read_bytes()
+        _check_stop(stop_token, "media import cancelled")
         score = parse_midi_bytes(raw_bytes, limits)
         return self._import_validated_source(
             src_path=src_path,
@@ -470,6 +497,7 @@ class LibraryStore:
             title=title,
             artist=artist,
             tags=tags,
+            stop_token=stop_token,
         )
 
     def import_audio(
@@ -480,8 +508,10 @@ class LibraryStore:
         artist: str = "",
         tags: list[str] | tuple[str, ...] | None = None,
         limits: MediaLimits | None = None,
+        stop_token: StopToken | None = None,
     ) -> ImportResult:
         """Validate, copy, and index a local audio/video file with SHA256 deduplication."""
+        _check_stop(stop_token, "media import cancelled")
         src_path = Path(path)
         limits = limits or MediaLimits()
         if not src_path.is_file():
@@ -500,6 +530,7 @@ class LibraryStore:
                 f"media file exceeds size limit ({size} bytes > {limits.max_file_bytes})",
             )
         raw_bytes = src_path.read_bytes()
+        _check_stop(stop_token, "media import cancelled")
         sha256 = hashlib.sha256(raw_bytes).hexdigest()
         return self._import_validated_source(
             src_path=src_path,
@@ -510,6 +541,7 @@ class LibraryStore:
             title=title,
             artist=artist,
             tags=tags,
+            stop_token=stop_token,
         )
 
     def search_songs(
@@ -621,12 +653,22 @@ class LibraryStore:
         raw_score = parse_midi_bytes(res.midi_bytes)
         cleaned_score, _ = clean_score(raw_score)
         cleaned_bytes = score_to_midi_bytes(cleaned_score)
+        _check_stop(stop_token, "transcription cancelled")
 
         tr_id = str(uuid.uuid4())
         rel_raw = f"songs/{song_id}/midis/{tr_id}/raw.mid"
         rel_cleaned = f"songs/{song_id}/midis/{tr_id}/cleaned.mid"
         atomic_write_bytes(resolve_under(self.data_dir, rel_raw), res.midi_bytes)
         atomic_write_bytes(resolve_under(self.data_dir, rel_cleaned), cleaned_bytes)
+
+        if stop_token is not None and stop_token.stopped:
+            shutil.rmtree(
+                resolve_under(self.data_dir, f"songs/{song_id}/midis/{tr_id}"),
+                ignore_errors=True,
+            )
+            raise LyraError(
+                ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "transcription cancelled"
+            )
 
         now = _utc_now_iso()
         with self._conn:
@@ -712,8 +754,10 @@ class LibraryStore:
         options: ArrangeOptions | None = None,
         parent_id: str | None = None,
         label: str | None = None,
+        stop_token: StopToken | None = None,
     ) -> ArrangementRecord:
         """Create (or return existing identical) arrangement version for a song."""
+        _check_stop(stop_token, "arrangement cancelled")
         detail = self.get_song(song_id)
         if not detail.sources:
             raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, f"song {song_id} has no sources")
@@ -729,9 +773,16 @@ class LibraryStore:
                 ErrorCode.SOURCE_UNAVAILABLE,
                 f"song {song_id} has no MIDI source or completed transcription",
             )
+        _check_stop(stop_token, "arrangement cancelled")
         score = load_midi_file(src_file)
         profile = load_builtin_profile(profile_id)
-        arr = arrange(score, profile, options)
+        arr = arrange(
+            score,
+            profile,
+            options,
+            is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
+        )
+        _check_stop(stop_token, "arrangement cancelled")
         perf = build_performance(score, profile, arr)
         validate_performance(perf, profile)
         report = build_report(score, profile, arr)
@@ -741,6 +792,7 @@ class LibraryStore:
             hash((str(self.data_dir.resolve()), arr_id)) % len(_ARRANGE_PERSIST_STRIPES)
         ]
         with stripe:
+            _check_stop(stop_token, "arrangement cancelled")
             existing = self._conn.execute(
                 "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
             ).fetchone()
@@ -754,12 +806,20 @@ class LibraryStore:
             rel_perf = f"songs/{song_id}/performance/{arr_id}.json"
             rel_rep = f"songs/{song_id}/reports/{arr_id}.json"
             rel_arr_mid = f"songs/{song_id}/midis/{arr_id}/arrangement.mid"
-            atomic_write_text(resolve_under(self.data_dir, rel_perf), pretty_json(perf))
-            atomic_write_text(resolve_under(self.data_dir, rel_rep), pretty_json(report))
-            atomic_write_bytes(
-                resolve_under(self.data_dir, rel_arr_mid),
-                arrangement_to_midi_bytes(arr),
-            )
+            perf_abs = resolve_under(self.data_dir, rel_perf)
+            rep_abs = resolve_under(self.data_dir, rel_rep)
+            mid_abs = resolve_under(self.data_dir, rel_arr_mid)
+            atomic_write_text(perf_abs, pretty_json(perf))
+            atomic_write_text(rep_abs, pretty_json(report))
+            atomic_write_bytes(mid_abs, arrangement_to_midi_bytes(arr))
+
+            if stop_token is not None and stop_token.stopped:
+                perf_abs.unlink(missing_ok=True)
+                rep_abs.unlink(missing_ok=True)
+                shutil.rmtree(mid_abs.parent, ignore_errors=True)
+                raise LyraError(
+                    ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "arrangement cancelled"
+                )
 
             now = _utc_now_iso()
             opts = arr.options
@@ -1060,6 +1120,87 @@ class LibraryStore:
             )
         return self.get_arrangement(arrangement_id)
 
+    def save_library_updates(
+        self,
+        *,
+        song_id: str | None = None,
+        title: str | None = None,
+        artist: str | None = None,
+        tags: list[str] | None = None,
+        arrangement_id: str | None = None,
+        label: str | None = None,
+        is_favorite: bool | None = None,
+        user_vote: int | None = None,
+        stop_token: StopToken | None = None,
+    ) -> dict[str, Any]:
+        """Atomically persist song and/or arrangement metadata updates with pre-commit cancel."""
+        _check_stop(stop_token, "save_to_library cancelled")
+        clean_song_id = song_id.strip() if isinstance(song_id, str) and song_id.strip() else None
+        clean_arr_id = (
+            arrangement_id.strip()
+            if isinstance(arrangement_id, str) and arrangement_id.strip()
+            else None
+        )
+        if not clean_song_id and not clean_arr_id:
+            raise LyraError(
+                ErrorCode.INVALID_ARGUMENT, "provide 'song_id' and/or 'arrangement_id'"
+            )
+        if user_vote is not None and user_vote not in (-1, 0, 1):
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, "user vote must be -1, 0, or 1")
+
+        summary = self._fetch_song_summary(clean_song_id) if clean_song_id else None
+        if clean_arr_id:
+            self.get_arrangement(clean_arr_id)
+
+        _check_stop(stop_token, "save_to_library cancelled")
+        now = _utc_now_iso()
+        with self._conn:
+            if summary is not None and clean_song_id is not None:
+                new_title = title.strip() if title is not None and title.strip() else summary.title
+                new_artist = artist.strip() if artist is not None else summary.artist
+                new_tags = (
+                    [t.strip() for t in tags if t.strip()]
+                    if tags is not None
+                    else list(summary.tags)
+                )
+                self._conn.execute(
+                    """
+                    UPDATE songs
+                    SET title = ?, artist = ?, tags_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        new_title,
+                        new_artist,
+                        json.dumps(new_tags, ensure_ascii=False),
+                        now,
+                        clean_song_id,
+                    ),
+                )
+            if clean_arr_id is not None:
+                if label is not None:
+                    self._conn.execute(
+                        "UPDATE arrangements SET label = ? WHERE id = ?",
+                        (label.strip(), clean_arr_id),
+                    )
+                if is_favorite is not None:
+                    self._conn.execute(
+                        "UPDATE arrangements SET is_favorite = ? WHERE id = ?",
+                        (1 if is_favorite else 0, clean_arr_id),
+                    )
+                if user_vote is not None:
+                    self._conn.execute(
+                        "UPDATE arrangements SET user_vote = ? WHERE id = ?",
+                        (user_vote, clean_arr_id),
+                    )
+
+        out: dict[str, Any] = {}
+        if clean_song_id is not None:
+            out["song"] = self._fetch_song_summary(clean_song_id).to_json()
+        if clean_arr_id is not None:
+            out["arrangement"] = self.get_arrangement(clean_arr_id).to_json()
+        return out
+
     def compare_arrangements(
         self,
         arrangement_a_id: str,
@@ -1146,13 +1287,28 @@ class LibraryStore:
         arrangement_id: str,
         *,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
+        stop_token: StopToken | None = None,
     ) -> Path:
         """Synthesize an offline WAV preview for a stored arrangement."""
+        _check_stop(stop_token, "preview synthesis cancelled")
         rec = self.get_arrangement(arrangement_id)
         doc = self.load_arrangement_performance(arrangement_id)
         rel_wav = f"songs/{rec.song_id}/previews/{rec.id}.wav"
         wav_path = resolve_under(self.data_dir, rel_wav)
-        synthesize_performance_to_wav(doc, wav_path, sample_rate=sample_rate)
+        existed_before = wav_path.exists()
+        _check_stop(stop_token, "preview synthesis cancelled")
+        synthesize_performance_to_wav(
+            doc,
+            wav_path,
+            sample_rate=sample_rate,
+            is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
+        )
+        if stop_token is not None and stop_token.stopped:
+            if not existed_before:
+                wav_path.unlink(missing_ok=True)
+            raise LyraError(
+                ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "preview synthesis cancelled"
+            )
         now = _utc_now_iso()
         with self._conn:
             self._conn.execute(

@@ -4,6 +4,7 @@ from lyraforge.library.packaging import (
     export_backup_zip,
     export_lyrapack,
     import_lyrapack,
+    recover_interrupted_restore,
     restore_backup_zip,
 )
 from lyraforge.library.paths import (
@@ -40,6 +41,7 @@ __all__ = [
     "export_backup_zip",
     "export_lyrapack",
     "import_lyrapack",
+    "recover_interrupted_restore",
     "resolve_under",
     "restore_backup_zip",
 ]

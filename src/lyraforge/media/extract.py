@@ -205,6 +205,8 @@ def _run_ffmpeg_extract(
                 ErrorCode.MEDIA_DECODE_FAILED,
                 f"FFmpeg failed extracting {src.name}: {msg}",
             )
+        if stop_token is not None and stop_token.stopped:
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "media extraction cancelled")
         os.replace(tmp_path, dest)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
@@ -279,6 +281,10 @@ def extract_audio_to_wav(
             stop_token=stop_token,
         )
         info = probe_wav(dest)
+
+    if stop_token is not None and stop_token.stopped:
+        dest.unlink(missing_ok=True)
+        raise LyraError(ErrorCode.PLAYBACK_ABORTED, "media extraction cancelled")
 
     if info.duration_s > limits.max_duration_s:
         dest.unlink(missing_ok=True)

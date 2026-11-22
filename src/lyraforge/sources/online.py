@@ -8,7 +8,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -225,7 +225,11 @@ class OpenMusicCatalogSourceAdapter:
         )
         self._url_fetcher = DirectUrlSourceAdapter(timeout_s=timeout_s, opener=self._opener)
 
-    def _fetch_json(self, url: str) -> dict[str, Any]:
+    def _fetch_json(
+        self, url: str, *, is_cancelled: Callable[[], bool] | None = None
+    ) -> dict[str, Any]:
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "online catalog search cancelled")
         parsed, pinned_ip = resolve_public_http_url(url)
         _ = parsed
         req = urllib.request.Request(
@@ -241,6 +245,8 @@ class OpenMusicCatalogSourceAdapter:
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
                 raw_bytes = resp.read(2_000_001)
+                if is_cancelled is not None and is_cancelled():
+                    raise LyraError(ErrorCode.PLAYBACK_ABORTED, "online catalog search cancelled")
                 if len(raw_bytes) > 2_000_000:
                     raise LyraError(
                         ErrorCode.LIMIT_EXCEEDED,
@@ -257,7 +263,15 @@ class OpenMusicCatalogSourceAdapter:
             raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, "online catalog returned non-object JSON")
         return data
 
-    def search(self, query: str, *, limit: int = 10) -> list[SourceCandidate]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> list[SourceCandidate]:
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "online catalog search cancelled")
         clean_q = query.strip()
         if not clean_q:
             return []
@@ -274,13 +288,15 @@ class OpenMusicCatalogSourceAdapter:
             ("output", "json"),
         ])
         search_url = f"https://archive.org/advancedsearch.php?{params}"
-        payload = self._fetch_json(search_url)
+        payload = self._fetch_json(search_url, is_cancelled=is_cancelled)
         docs = (payload.get("response") or {}).get("docs") or []
         fetched_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         candidates: list[SourceCandidate] = []
         inspected = 0
         for doc in docs:
+            if is_cancelled is not None and is_cancelled():
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "online catalog search cancelled")
             if not isinstance(doc, dict):
                 continue
             ident = str(doc.get("identifier") or "").strip()
@@ -297,7 +313,7 @@ class OpenMusicCatalogSourceAdapter:
                 break
 
             meta_url = f"https://archive.org/metadata/{urllib.parse.quote(ident)}/files"
-            files_doc = self._fetch_json(meta_url)
+            files_doc = self._fetch_json(meta_url, is_cancelled=is_cancelled)
             files_list = files_doc.get("result") or []
             if not isinstance(files_list, list):
                 continue
