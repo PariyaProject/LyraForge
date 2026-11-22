@@ -7,6 +7,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -60,6 +61,9 @@ from lyraforge.transcribers import (
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+_ARRANGE_PERSIST_STRIPES = [threading.Lock() for _ in range(64)]
 
 
 def _escape_like(text: str) -> str:
@@ -733,64 +737,68 @@ class LibraryStore:
         report = build_report(score, profile, arr)
 
         arr_id = str(perf["arrangement_id"])
-        existing = self._conn.execute(
-            "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
-        ).fetchone()
-        if existing is not None:
-            return self._row_to_arrangement(existing)
+        stripe = _ARRANGE_PERSIST_STRIPES[
+            hash((str(self.data_dir.resolve()), arr_id)) % len(_ARRANGE_PERSIST_STRIPES)
+        ]
+        with stripe:
+            existing = self._conn.execute(
+                "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
+            ).fetchone()
+            if existing is not None:
+                return self._row_to_arrangement(existing)
 
-        quality_doc = report.get("quality") or {}
-        quality_score = (
-            float(quality_doc["overall_score"]) if "overall_score" in quality_doc else None
-        )
-        rel_perf = f"songs/{song_id}/performance/{arr_id}.json"
-        rel_rep = f"songs/{song_id}/reports/{arr_id}.json"
-        rel_arr_mid = f"songs/{song_id}/midis/{arr_id}/arrangement.mid"
-        atomic_write_text(resolve_under(self.data_dir, rel_perf), pretty_json(perf))
-        atomic_write_text(resolve_under(self.data_dir, rel_rep), pretty_json(report))
-        atomic_write_bytes(
-            resolve_under(self.data_dir, rel_arr_mid),
-            arrangement_to_midi_bytes(arr),
-        )
-
-        now = _utc_now_iso()
-        opts = arr.options
-        with self._conn:
-            cur = self._conn.execute(
-                """
-                INSERT OR IGNORE INTO arrangements(
-                    id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
-                    playable_ratio, event_count, duration_ms, performance_path, report_path,
-                    preview_path, is_favorite, parent_id, score, user_vote, label, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
-                """,
-                (
-                    arr_id,
-                    song_id,
-                    source.id,
-                    profile.id,
-                    profile.hash,
-                    str(opts.style),
-                    arr.transpose,
-                    float(opts.speed),
-                    float(arr.stats["playable_ratio"]),
-                    len(arr.events),
-                    int(arr.stats["duration_ms"]),
-                    rel_perf,
-                    rel_rep,
-                    None,
-                    parent_id,
-                    quality_score,
-                    label,
-                    now,
-                ),
+            quality_doc = report.get("quality") or {}
+            quality_score = (
+                float(quality_doc["overall_score"]) if "overall_score" in quality_doc else None
             )
-            if cur.rowcount > 0:
-                self._conn.execute(
-                    "UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id)
+            rel_perf = f"songs/{song_id}/performance/{arr_id}.json"
+            rel_rep = f"songs/{song_id}/reports/{arr_id}.json"
+            rel_arr_mid = f"songs/{song_id}/midis/{arr_id}/arrangement.mid"
+            atomic_write_text(resolve_under(self.data_dir, rel_perf), pretty_json(perf))
+            atomic_write_text(resolve_under(self.data_dir, rel_rep), pretty_json(report))
+            atomic_write_bytes(
+                resolve_under(self.data_dir, rel_arr_mid),
+                arrangement_to_midi_bytes(arr),
+            )
+
+            now = _utc_now_iso()
+            opts = arr.options
+            with self._conn:
+                cur = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO arrangements(
+                        id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
+                        playable_ratio, event_count, duration_ms, performance_path, report_path,
+                        preview_path, is_favorite, parent_id, score, user_vote, label, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        arr_id,
+                        song_id,
+                        source.id,
+                        profile.id,
+                        profile.hash,
+                        str(opts.style),
+                        arr.transpose,
+                        float(opts.speed),
+                        float(arr.stats["playable_ratio"]),
+                        len(arr.events),
+                        int(arr.stats["duration_ms"]),
+                        rel_perf,
+                        rel_rep,
+                        None,
+                        parent_id,
+                        quality_score,
+                        label,
+                        now,
+                    ),
                 )
-        return self.get_arrangement(arr_id)
+                if cur.rowcount > 0:
+                    self._conn.execute(
+                        "UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id)
+                    )
+            return self.get_arrangement(arr_id)
 
     def save_edited_arrangement(
         self,

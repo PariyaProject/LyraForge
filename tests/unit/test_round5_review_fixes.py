@@ -324,7 +324,7 @@ def test_mcp_concurrency_queue_limits_cancellation_phases_and_disconnect(tmp_pat
             for r in stress_resps
             if r.get("id") != 1 and r.get("result", {}).get("isError") is not False
         ]
-        assert not stress_errs, stress_errs
+        assert not stress_errs, json.dumps(stress_errs, ensure_ascii=False)
 
         # 5a. Abrupt EOF disconnect while slow task is running -> cancels task cleanly on shutdown
         entered_long = threading.Event()
