@@ -24,7 +24,11 @@ from lyraforge.music_core.performance import build_performance, validate_perform
 from lyraforge.music_core.profile import InstrumentProfile, KeyDef, profile_from_dict
 from lyraforge.music_core.scoring import (
     QualityBreakdown,
+    TranscriptionAccuracy,
     compare_arrangements,
+    evaluate_arrangement_against_reference,
+    evaluate_events_against_reference,
+    evaluate_transcription_against_reference,
     score_arrangement,
 )
 from lyraforge.music_core.tempo import TempoChange, TempoMap
@@ -44,12 +48,16 @@ __all__ = [
     "TempoMap",
     "TimeSignature",
     "TrackInfo",
+    "TranscriptionAccuracy",
     "arrange",
     "arrangement_to_midi_bytes",
     "build_performance",
     "clean_score",
     "compare_arrangements",
     "detect_melody_track",
+    "evaluate_arrangement_against_reference",
+    "evaluate_events_against_reference",
+    "evaluate_transcription_against_reference",
     "load_midi_file",
     "parse_midi_bytes",
     "performance_to_midi_bytes",

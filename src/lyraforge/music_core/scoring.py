@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
@@ -71,6 +72,8 @@ class QualityBreakdown:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "score_scope": "arrangement_vs_input_midi",
+            "arrangement_playability_score": self.overall_score,
             "overall_score": self.overall_score,
             "melody_preservation": self.melody_preservation,
             "rhythmic_fidelity": self.rhythmic_fidelity,
@@ -80,6 +83,7 @@ class QualityBreakdown:
             "dense_key_conflict_penalty": self.dense_key_conflict_penalty,
             "large_leap_penalty": self.large_leap_penalty,
             "melody_track": self.melody_track,
+            "subjective_listening_status": "unrated_manual_preview_required",
             "warnings": list(self.warnings),
         }
 
@@ -355,3 +359,158 @@ def compare_arrangements(
             else f"Tie ({score_a:.1f} vs {score_b:.1f})"
         ),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptionAccuracy:
+    """Reference-grounded audio->MIDI transcription fidelity metrics (separate from playability)."""
+
+    reference_note_count: int
+    detected_note_count: int
+    true_positives: int
+    precision: float
+    recall: float
+    f1: float
+    onset_alignment_rate: float
+    mean_onset_error_ms: float
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "reference_note_count": self.reference_note_count,
+            "detected_note_count": self.detected_note_count,
+            "true_positives": self.true_positives,
+            "precision": self.precision,
+            "recall": self.recall,
+            "f1": self.f1,
+            "onset_alignment_rate": self.onset_alignment_rate,
+            "mean_onset_error_ms": self.mean_onset_error_ms,
+        }
+
+
+def evaluate_transcription_against_reference(
+    ref_notes: Sequence[tuple[int, int]],
+    detected_notes: Sequence[Note],
+    *,
+    onset_tol_ms: int = 50,
+    pitch_tol_semitones: int = 0,
+) -> TranscriptionAccuracy:
+    """Measure pitch+onset F1 and rhythm onset alignment against known ground-truth notes."""
+    pred_list = [(round(n.start_us / 1000.0), n.pitch) for n in detected_notes]
+    used_pitch_pred: set[int] = set()
+    used_onset_pred: set[int] = set()
+    tp = 0
+    onset_hits = 0
+    onset_errors: list[int] = []
+
+    for ref_ms, ref_pitch in ref_notes:
+        best_idx: int | None = None
+        best_key: tuple[int, int] | None = None
+        for idx, (pred_ms, pred_pitch) in enumerate(pred_list):
+            if idx in used_pitch_pred:
+                continue
+            dt = abs(pred_ms - ref_ms)
+            dp = abs(pred_pitch - ref_pitch)
+            if dt <= onset_tol_ms and dp <= pitch_tol_semitones:
+                cand_key = (dt, dp)
+                if best_key is None or cand_key < best_key:
+                    best_key = cand_key
+                    best_idx = idx
+        if best_idx is not None:
+            used_pitch_pred.add(best_idx)
+            tp += 1
+
+        best_onset_idx: int | None = None
+        best_dt = onset_tol_ms + 1
+        for idx, (pred_ms, _pred_pitch) in enumerate(pred_list):
+            if idx in used_onset_pred:
+                continue
+            dt = abs(pred_ms - ref_ms)
+            if dt <= onset_tol_ms and dt < best_dt:
+                best_dt = dt
+                best_onset_idx = idx
+        if best_onset_idx is not None:
+            used_onset_pred.add(best_onset_idx)
+            onset_hits += 1
+            onset_errors.append(best_dt)
+
+    precision = tp / len(pred_list) if pred_list else 0.0
+    recall = tp / len(ref_notes) if ref_notes else 0.0
+    f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    onset_alignment = onset_hits / len(ref_notes) if ref_notes else 0.0
+    mean_err = sum(onset_errors) / len(onset_errors) if onset_errors else 0.0
+    return TranscriptionAccuracy(
+        reference_note_count=len(ref_notes),
+        detected_note_count=len(pred_list),
+        true_positives=tp,
+        precision=round(precision, 4),
+        recall=round(recall, 4),
+        f1=round(f1, 4),
+        onset_alignment_rate=round(onset_alignment, 4),
+        mean_onset_error_ms=round(mean_err, 2),
+    )
+
+
+def evaluate_events_against_reference(
+    ref_notes: Sequence[tuple[int, int]],
+    events: Sequence[tuple[int, int]],
+    *,
+    transpose: int = 0,
+    onset_tol_ms: int = 75,
+) -> dict[str, Any]:
+    """Compare arranged ``(at_ms, mapped_pitch)`` pairs against original reference notes."""
+    used_pitch_evs: set[int] = set()
+    used_onset_evs: set[int] = set()
+    pitch_hits = 0
+    onset_hits = 0
+
+    for ref_ms, ref_pitch in ref_notes:
+        target_pitch = ref_pitch + transpose
+        best_idx: int | None = None
+        best_dt = onset_tol_ms + 1
+        for idx, (at_ms, mapped_pitch) in enumerate(events):
+            if idx in used_pitch_evs:
+                continue
+            dt = abs(at_ms - ref_ms)
+            if dt <= onset_tol_ms and mapped_pitch in {target_pitch, ref_pitch} and dt < best_dt:
+                best_dt = dt
+                best_idx = idx
+        if best_idx is not None:
+            used_pitch_evs.add(best_idx)
+            pitch_hits += 1
+
+        best_onset_idx: int | None = None
+        best_onset_dt = onset_tol_ms + 1
+        for idx, (at_ms, _mapped_pitch) in enumerate(events):
+            if idx in used_onset_evs:
+                continue
+            dt = abs(at_ms - ref_ms)
+            if dt <= onset_tol_ms and dt < best_onset_dt:
+                best_onset_dt = dt
+                best_onset_idx = idx
+        if best_onset_idx is not None:
+            used_onset_evs.add(best_onset_idx)
+            onset_hits += 1
+
+    n_ref = len(ref_notes)
+    return {
+        "reference_note_count": n_ref,
+        "arranged_event_count": len(events),
+        "matched_reference_notes": pitch_hits,
+        "reference_pitch_recall": round(pitch_hits / n_ref, 4) if n_ref else 0.0,
+        "reference_onset_coverage": round(onset_hits / n_ref, 4) if n_ref else 0.0,
+    }
+
+
+def evaluate_arrangement_against_reference(
+    ref_notes: Sequence[tuple[int, int]],
+    arr: Arrangement,
+    *,
+    onset_tol_ms: int = 75,
+) -> dict[str, Any]:
+    """Compare final playable arrangement events against original reference notes."""
+    return evaluate_events_against_reference(
+        ref_notes,
+        [(ev.at_ms, ev.mapped_pitch) for ev in arr.events],
+        transpose=arr.transpose,
+        onset_tol_ms=onset_tol_ms,
+    )

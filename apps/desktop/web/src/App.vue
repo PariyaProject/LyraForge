@@ -780,9 +780,13 @@ onBeforeUnmount(() => {
             <label for="setting-window-titles">Windows 允许焦点窗口标题（逗号分隔）</label>
             <input id="setting-window-titles" v-model="allowedTitlesSetting" type="text" />
           </div>
-          <label class="checkbox-row" style="margin-top: 8px">
+          <p class="muted" style="margin: 8px 0 4px">
+            基础转谱、编曲与规则指令<strong>无需 API Key</strong>；订阅用户推荐直接通过
+            <code>lyraforge mcp</code> 以 MCP/Skill 接入自带客户端。以下 HTTP 接口仅为可选高级配置。
+          </p>
+          <label class="checkbox-row" style="margin-top: 4px">
             <input v-model="llmEnabledSetting" type="checkbox" />
-            <span>启用外部 LLM（默认离线规则解析）</span>
+            <span>启用可选 HTTP LLM 接口（默认使用离线规则解析，无需 API Key）</span>
           </label>
           <div v-if="llmEnabledSetting" class="field" style="margin-top: 6px">
             <label for="setting-llm-url">LLM Base URL (OpenAI 兼容)</label>
@@ -818,6 +822,11 @@ onBeforeUnmount(() => {
 
         <section class="agent-panel">
           <h2>AI Agent 智能编曲助手</h2>
+          <p class="muted" style="margin: 0 0 8px">
+            默认离线规则解析即可完成搜索、转谱与编曲优化，无需 API Key；如需通过已登录的 Claude Code /
+            Codex / Antigravity 调用 LyraForge，可运行 <code>uv run lyraforge mcp</code>（详见
+            docs/AI_INTEGRATION.md）。
+          </p>
           <div class="row">
             <div class="field" style="flex: 1">
               <label for="agent-prompt">自然语言指令（检索、转谱、优化、试听）</label>
@@ -1045,7 +1054,7 @@ onBeforeUnmount(() => {
         <section v-if="arrDetail">
           <div class="stats-grid">
             <div class="stat-card" v-if="arrDetail.report?.quality">
-              <div class="label">综合评分</div>
+              <div class="label">编曲适配分 (相对输入 MIDI)</div>
               <div class="value">{{ arrDetail.report.quality.overall_score.toFixed(1) }} / 100</div>
             </div>
             <div class="stat-card">

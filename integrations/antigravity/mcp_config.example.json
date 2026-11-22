@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "lyraforge": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/ABSOLUTE/PATH/TO/LyraForge",
+        "lyraforge",
+        "mcp"
+      ]
+    }
+  }
+}

@@ -146,6 +146,19 @@ def test_secrets_cross_platform_has_no_win32_imports() -> None:
     assert not hits, f"secrets.py imports forbidden Windows/input modules: {sorted(hits)}"
 
 
+def test_mcp_has_no_windows_input_imports() -> None:
+    for py_file in (SRC / "mcp").rglob("*.py"):
+        imps = _imported_roots(py_file)
+        hits = imps & FORBIDDEN_WIN_INPUT
+        assert not hits, (
+            f"{py_file.relative_to(ROOT)} imports forbidden Windows/input modules: {sorted(hits)}"
+        )
+        bad_pb = [i for i in imps if i == "lyraforge.playback.windows" or ".windows" in i]
+        assert not bad_pb, (
+            f"{py_file.relative_to(ROOT)} must never import Windows playback drivers: {bad_pb}"
+        )
+
+
 def test_pyproject_core_dependencies_have_no_windows_only_packages() -> None:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     deps = data["project"]["dependencies"]
