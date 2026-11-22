@@ -22,7 +22,7 @@
 | **Round 2 P1** | 规范化开放曲库许可分类器（`classify_license_url()`：剔除 `mit`/`gpl`/`local` 弱子串，拒收 `NoDerivatives` 与混合私有文件）及完整权利 provenance | **已实现且已测试** | `src/lyraforge/sources/{base,local,online}.py`, `tests/unit/test_license_and_quality.py` |
 | **Round 2 P1** | 转录准确率（`TranscriptionAccuracy`）与编曲可演奏性（`score_scope=arrangement_vs_input_midi`）严格分离评价 | **已实现且已测试** | `src/lyraforge/music_core/scoring.py`, `scripts/eval_transcribers.py`, `apps/desktop/web/src/App.vue`, `tests/unit/test_license_and_quality.py` |
 | **Round 2 P1** | 零依赖 `stdio` MCP Server（`lyraforge mcp`，10 工具、`MCPTaskRegistry` 取消与 `play_in_game` 强制门禁）与客户端 Skill/配置 | **已实现且已测试**（Codex / 独立 Antigravity CLI 待目标客户端环境运行验证） | `src/lyraforge/mcp/*`, `integrations/{claude-code,codex,antigravity}/*`, [AI_INTEGRATION.md](AI_INTEGRATION.md), `tests/unit/test_mcp_server.py`（含真实子进程 `stdio` 全链路测试 + 本机 `claude 2.1.267` `mcp add`/`get` 校验） |
-| **Round 2 P1** | 公开产品主页版 [README.md](../README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[MAINTAINER_WORKFLOW.md](MAINTAINER_WORKFLOW.md) 与 [AGENTS.md](../AGENTS.md) 规则持久化 | **已实现且已测试** | 已清除文档内全部绝对 `file:///` 本地路径，`AGENTS.md` 为 38 行（≤120 行） |
+| **Round 2 P1** | 公开产品主页版 [README.md](../README.md)、[DEVELOPMENT.md](DEVELOPMENT.md)、[MAINTAINER_WORKFLOW.md](MAINTAINER_WORKFLOW.md)、[SECOND_REVIEW_REPORT.md](SECOND_REVIEW_REPORT.md) 与 [AGENTS.md](../AGENTS.md) 规则持久化 | **已实现且已测试** | 已清除文档内全部本地目录绝对路径，`AGENTS.md` 为 38 行（≤120 行） |
 | **M2 / 音频** | 原生 WAV 提取标准化 + 内置单音 YIN 转谱（`builtin-mono`） | **部分实现** | 核心与任务取消可用；单音旋律 `F1=1.0`，多声部钢琴和弦 `F1=0.0`，真实复杂音频受纯单音算法限制 |
 | **M2 / 外部 ML** | `ffmpeg` 非 WAV 音视频提取 + 隔离进程 `basic-pitch` / `dettato` 多音转录 | **因外部环境阻塞** | 适配器和环境变量协议已实现并通过 Mock 测试；当前开发机未安装 `ffmpeg`、`basic-pitch`、`dettato` |
 | **M5 / 发行** | Windows 实体机运行 `LyraForge.exe` 冒烟、`原神` 21 键校准与正式 Stable Release | **未实现** | 需下载 CI 产物 `LyraForge-windows-x64` 后在 Windows 10/11 实体机完成验收 |
@@ -31,8 +31,9 @@
 
 ## 2. 最新实测结果
 
-1. **GitHub Actions `main` 基准（`1f2b34db8dc6911d33ddd4fc9b4f56f7b25475db`）**
-   - [Run #44980488436](https://github.com/PariyaProject/LyraForge/actions/runs/44980488436)：**`success`**（`Test (windows-latest)` `1m48s`、`Test (macos-latest)` `1m6s`、`Build Windows Bundle (PyInstaller)` `1m19s` 上传 `LyraForge-windows-x64`）。
+1. **GitHub Actions CI 验收**
+   - `main` 基线（`1f2b34db8dc6911d33ddd4fc9b4f56f7b25475db`）→ [Run #44980488436](https://github.com/PariyaProject/LyraForge/actions/runs/44980488436)：**`success`**（三作业全绿并产出 `LyraForge-windows-x64`）。
+   - [PR #1](https://github.com/PariyaProject/LyraForge/pull/1) 分支主提交（`a86a52f0cf8e0628d234314888266b10c4dc2605`）→ [Run #45002653088](https://github.com/PariyaProject/LyraForge/actions/runs/45002653088)：**`success`**（`Test (macos-latest)` `49s`、`Test (windows-latest)` `1m47s`、`Build Windows Bundle (PyInstaller)` `1m8s`）。
 2. **本地完整门禁（`pnpm --dir apps/desktop/web install --frozen-lockfile && make check`）**
    - `pnpm v12.6.0` frozen-lockfile 一致（`60ms`）
    - `uv run ruff check .` → `All checks passed!`
