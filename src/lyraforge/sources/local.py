@@ -62,6 +62,12 @@ class LocalLibrarySourceAdapter:
                         location=song.id,
                         license_note="Imported by user into local LyraForge library.",
                         requires_authorization=False,
+                        license_id="user_local",
+                        license_status="user_local",
+                        rights_scope_note=(
+                            "User-supplied local library asset; user retains copyright "
+                            "responsibility."
+                        ),
                     )
                 )
 
@@ -91,6 +97,12 @@ class LocalLibrarySourceAdapter:
                         location=str(resolved),
                         license_note="User local file; confirm ownership/rights before sharing.",
                         requires_authorization=False,
+                        license_id="user_local",
+                        license_status="user_local",
+                        rights_scope_note=(
+                            "User local file; confirm work/recording/arrangement rights "
+                            "before sharing."
+                        ),
                     )
                 )
         return out[:limit]

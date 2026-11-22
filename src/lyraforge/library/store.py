@@ -909,6 +909,40 @@ class LibraryStore:
             )
         return self.get_arrangement(arr_id)
 
+    def update_song_metadata(
+        self,
+        song_id: str,
+        *,
+        title: str | None = None,
+        artist: str | None = None,
+        tags: list[str] | None = None,
+    ) -> SongSummary:
+        summary = self._fetch_song_summary(song_id)
+        new_title = title.strip() if title is not None and title.strip() else summary.title
+        new_artist = artist.strip() if artist is not None else summary.artist
+        new_tags = (
+            [t.strip() for t in tags if t.strip()] if tags is not None else list(summary.tags)
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE songs
+                SET title = ?, artist = ?, tags_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (new_title, new_artist, json.dumps(new_tags), _utc_now_iso(), song_id),
+            )
+        return self._fetch_song_summary(song_id)
+
+    def set_arrangement_label(self, arrangement_id: str, label: str) -> ArrangementRecord:
+        self.get_arrangement(arrangement_id)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE arrangements SET label = ? WHERE id = ?",
+                (label.strip(), arrangement_id),
+            )
+        return self.get_arrangement(arrangement_id)
+
     def set_favorite(self, arrangement_id: str, is_favorite: bool) -> ArrangementRecord:
         self.get_arrangement(arrangement_id)
         with self._conn:

@@ -473,6 +473,16 @@ def cmd_engines_list(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_mcp(args: argparse.Namespace) -> int:
+    from lyraforge.mcp import run_stdio_server
+
+    return run_stdio_server(
+        data_dir=args.data_dir,
+        search_dirs=args.search_dir or (),
+        allow_network=bool(args.allow_network),
+    )
+
+
 def cmd_transcribe(args: argparse.Namespace) -> int:
     import tempfile
 
@@ -681,6 +691,16 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--allow-network", action="store_true")
     pa.add_argument("--data-dir", default=None)
     pa.set_defaults(func=cmd_agent)
+
+    pm = sub.add_parser("mcp", help="run stdio MCP server for subscribed AI clients")
+    pm.add_argument("--data-dir", default=None)
+    pm.add_argument("--search-dir", action="append", default=None, help="local media folder")
+    pm.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="allow online catalog/URL calls when invoked by MCP tools",
+    )
+    pm.set_defaults(func=cmd_mcp)
 
     return ap
 

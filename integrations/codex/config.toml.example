@@ -1,0 +1,6 @@
+# Add to ~/.codex/config.toml (replace /ABSOLUTE/PATH/TO/LyraForge)
+[mcp_servers.lyraforge]
+command = "uv"
+args = ["run", "--directory", "/ABSOLUTE/PATH/TO/LyraForge", "lyraforge", "mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120

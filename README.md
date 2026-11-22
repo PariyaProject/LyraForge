@@ -1,171 +1,98 @@
 # LyraForge
 
-> AI 音乐转谱与游戏乐器自动演奏一体化工作台（以 **GNU GPL-3.0** 开源；**macOS Apple Silicon 可验证范围已完成并经过安全/可靠性加固**：跨平台音乐核心与多维质量评分、风物之诗琴/镜花之琴、SQLite v3 曲库与 Piano Roll 编辑、System Keychain/凭据隔离、分阶段原子备份恢复、DNS 固定防 SSRF 开放曲库检索与离线/LLM Agent 编排、`.lyrapack` 分享包、Vue 3 + PyWebView 桌面端；**Windows 10/11 真机《原神》校准实音演奏、Windows 便携包真机运行、GitHub Actions 修复后远端重跑及可选外部 FFmpeg/Basic Pitch/dettato 模型实测待在对应环境验收**）
+**将 MIDI 和音频转换为游戏内乐器可以演奏的曲谱。**
 
-- **主要开发环境**：macOS Apple Silicon（Mac mini M4）
-- **首发目标运行平台**：Windows 10/11 x64（支持《原神》PC 版大世界自由演奏；核心模块、曲库、Agent 与 Vue 3 + PyWebView 桌面壳跨平台兼容 macOS 与 Windows）
-- **重要安全声明**：本软件不读取、不注入、不修改任何游戏内存或进程，不使用任何反作弊绕过手段；macOS 仅提供零系统按键的 `DryRunDriver`。第三方自动按键操作可能违反游戏条款，Windows 实音演奏强制要求用户两步显式授权、焦点窗校验与急停全松键，不可消除账号风险。
+LyraForge 是一款开源的桌面音乐转谱与游戏乐器编曲工作台，面向《原神》PC 版大世界中的**自由乐器演奏界面**（非下落式音游脚本）。你可以导入 MIDI 或音频、适配游戏乐器键位、在 Piano Roll 中试听微调并保存到本地曲库。
+
+> **当前版本状态：Alpha / 正在积极开发。**  
+> 跨平台核心转谱、编曲、Piano Roll 编辑、本地曲库、`.lyrapack` 分享与 MCP 工具链已在 macOS/Windows CI 通过自动化验证；但 **Windows 10/11《原神》真机 21 键实音校准与前景切窗演奏**、**正式稳定安装包发布** 以及 **Basic Pitch / dettato / FFmpeg 外置识别** 尚未在真机/全环境完成实测，请勿将其视为已完成真机验收的稳定版。
+
+![LyraForge 工作台实时渲染截图](docs/assets/lyraforge-workbench.png)
 
 ---
 
-## 快速开始（macOS Apple Silicon / Windows 通用）
+## 核心功能
 
-前置要求：Python `3.11`（或 `3.12`）、[`uv`](https://docs.astral.sh/uv/)，以及前端测试/打包所需的 Node.js + `pnpm`（`apps/desktop/web/package.json` 已通过 `packageManager` 固定为 `pnpm@12.6.0`）。
+- **多格式导入**：支持本地标准 `.mid`/`.midi` 与 `.wav`；配置系统 `ffmpeg` 后可扩展提取常见音视频格式；支持经用户明确授权的开放许可曲库（Internet Archive CC0 / PDM / CC-BY）或公开直链导入。
+- **游戏乐器智能编曲**：内置**风物之诗琴**（21 键）与**镜花之琴**（21 键）预设，支持主旋律识别优先保留、自动移调寻优、八度折叠、半音处理与柱式和弦琶音。
+- **分离式质量评估与 A/B 对比**：区分“**编曲对输入 MIDI 的可演奏适配度**”与“**音频转录对原曲的还原忠实度**”，避免无真值情况下的虚假高分误导。
+- **Piano Roll 可视化编辑与离线试听**：交互式键位热力图、网格音符增删/移音/移拍、撤销重做与纯 Python 拨弦 WAV 离线试听。
+- **本地曲库与安全分享备份**：SQLite 曲库支持标签收藏与版本管理；支持导出 MIDI、`performance.json`、强制版权确认且不带原始音频的 `.lyrapack` 分享包，以及分阶段校验、故障自动回滚的全库 ZIP 备份恢复。
+- **无需 API Key 的三层 AI / MCP 能力**：默认离线运行，无需购买大模型 API Key；提供标准 `stdio` MCP Server 接入用户自有已登录客户端。
+
+### 音频转谱能做到什么？（真实边界）
+
+- 内置 `builtin-mono`（纯 Python YIN）在**干净单音旋律**合成基准中可达到 `F1 = 1.0000`，但在**多声部和弦**（如合成钢琴三和弦基准 `F1 = 0.0`）或双声部密集混音下存在算法上限。
+- 真实流行歌、多乐器编配或人声伴奏混合音频无法只靠内置单音引擎直接“一比一还原”，通常需要在本地另行安装隔离的 Apache-2.0 多音转录模型（`basic-pitch` 或 `dettato`）+ `ffmpeg` 并在 Piano Roll 手动修音。
+
+### 无需 API Key 的三层 AI / MCP 集成
+
+LyraForge **不强制配置任何 OpenAI / Anthropic / Gemini API Key**：
+
+1. **离线零 Key 模式**：所有导入、转谱、编曲、对比、试听、导出和内置规则指令解析（`RuleBasedLLMProvider`）均完全离线使用。
+2. **MCP + Skill 模式（推荐给已订阅 AI 工具的用户）**：通过 `uv run lyraforge mcp` 启动本地 `stdio` MCP Server，向用户自己已登录的 **Claude Code**、**Codex CLI** 或 **Antigravity** 提供类型化工具与 [integrations/](integrations/) Skill；安全敏感工具 `play_in_game` 强制返回确认门禁，不会越权向游戏发送按键。详细合规矩阵见 [docs/AI_INTEGRATION.md](docs/AI_INTEGRATION.md)。
+3. **可选 HTTP LLM 接口（高级设置）**：如需连接自托管 Ollama 或私有 OpenAI-compatible 端点，可在设置中开启；API Key 优先存入系统 Keychain / 凭据管理器，绝不明文保存在 SQLite 或备份/分享包中。
+
+---
+
+## 三步快速上手（源码运行）
+
+前置环境：Python `3.11` 或 `3.12`、[`uv`](https://docs.astral.sh/uv/)；运行桌面前端还需 Node.js `22+` 与 `pnpm`（`12.6.0`）。
 
 ```bash
-# 1. 安装/同步依赖（macOS 与 Windows 均适用，核心不含 Windows 专属依赖）
+# 1. 克隆仓库并安装 Python 依赖
+git clone https://github.com/PariyaProject/LyraForge.git
+cd LyraForge
 uv sync
-pnpm --dir apps/desktop/web install --frozen-lockfile
 
-# 2. 一键运行全量质检门禁（ruff + pytest 覆盖率>=80% + vitest + vite build + make smoke）
-make check
-
-# 或者分步运行：
-uv run ruff check .
-uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80
-```
-
----
-
-## M0 CLI 使用示例
-
-> 以下示例使用本项目自制的无版权测试 MIDI（`tests/fixtures/midi/`）。
-
-```bash
-# 查看内置乐器配置
+# 2. 尝试查看内置乐器，或直接导入 MIDI 生成编曲与离线 WAV 试听
 uv run lyraforge profiles list
-uv run lyraforge profiles show genshin.windsong_lyre.v1
+uv run lyraforge import tests/fixtures/midi/chords_type1.mid --title "Chords Demo"
 
-# 解析并检查 MIDI 摘要（支持 Type 0/1、多轨、Tempo 变化、损坏诊断）
-uv run lyraforge inspect tests/fixtures/midi/chords_type1.mid
-
-# 适配为风物之诗琴可演奏事件 JSON（可选输出质量分析报告）
-uv run lyraforge arrange tests/fixtures/midi/chords_type1.mid \
-  -o /tmp/chords_perf.json \
-  --report /tmp/chords_report.json \
-  --style balanced
-
-# 校验生成的 performance.json Schema 与语义一致性
-uv run lyraforge validate /tmp/chords_perf.json
-
-# DryRun 模拟演奏（macOS/Windows 均不发送任何系统按键，可模拟中途停止释放全部按键）
-uv run lyraforge playback dry-run /tmp/chords_perf.json --log /tmp/dryrun.jsonl
-uv run lyraforge playback dry-run /tmp/chords_perf.json --stop-after-ms 1500
-
-# M1-A / M1-B：导入本地曲库、生成多版本改编、离线 WAV 试听与记录 DryRun 会话
-uv run lyraforge import tests/fixtures/midi/chords_type1.mid --title "Chords Demo" --tags demo,lyre
-uv run lyraforge library list
-uv run lyraforge library search "Chords"
-uv run lyraforge library arrange <song_id> --style balanced
-uv run lyraforge preview <arrangement_id> -o /tmp/preview.wav
-uv run lyraforge playback dry-run <arrangement_id>
-
-# 启动本地回环 FastAPI 服务（127.0.0.1 + 会话 Token）
-uv run lyraforge serve --host 127.0.0.1 --port 8765 --token dev-token
-
-# 构建前端并启动 PyWebView 双平台桌面应用（macOS WKWebView / Windows WebView2）
-make web-setup
-make desktop
-
-# M2：查看转录引擎、评估合成基准、导入音频或转录为 MIDI
-uv run lyraforge engines list
-uv run python scripts/eval_transcribers.py
-uv run lyraforge import /path/to/solo.wav --title "Solo WAV"
-uv run lyraforge transcribe /path/to/solo.wav --engine builtin-mono -o /tmp/raw.mid --cleaned-out /tmp/cleaned.mid --arrange-out /tmp/perf.json
-uv run lyraforge export <arrangement_id> --format midi -o /tmp/arrangement.mid
-
-# M4：AI Agent 自然语言检索与自动编曲优化（默认离线规则解析，无需 Antigravity CLI；联网搜索开放曲库需 --allow-network）
-uv run lyraforge agent "搜索《Chords Demo》转成镜花之琴主旋律并优化"
-uv run lyraforge agent "搜索开放曲库 Clair de Lune 转成风物之诗琴曲谱" --allow-network
-
-# M5：.lyrapack 分享包导出/导入（默认剔除原始音频与凭据）与全库备份（自动清洗敏感密钥与原子回滚恢复）
-uv run lyraforge pack export <arrangement_id> -o /tmp/demo.lyrapack --confirm-rights
-uv run lyraforge pack import /tmp/demo.lyrapack
-uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
+# 3. 构建前端并启动桌面工作台（或通过 stdio MCP 连接 AI 客户端）
+pnpm --dir apps/desktop/web install --frozen-lockfile
+pnpm --dir apps/desktop/web build
+uv run lyraforge desktop
 ```
 
-### 安全存储、合法联网搜索与音频转谱说明
-
-- **API Key 安全存储**：OpenAI-compatible LLM API Key 支持环境变量 `LYRAFORGE_LLM_API_KEY`，或通过 UI/API 保存至系统安全凭据库（macOS Keychain / Windows Credential Manager，无系统密钥环时回落至 `0o600` 权限独立密钥文件），不再明文保存于 SQLite。旧版明文配置会在初始化时自动迁移并清除，且完整库备份（`backup.zip`）、日志、错误堆栈与 `.lyrapack` 分享包均会剥离/脱敏敏感凭据。
-- **合法联网检索与直链导入**：启用 `allow_network=True` 后，Agent 可通过 `OpenMusicCatalogSourceAdapter` 检索 **Internet Archive** 中的开放许可/公共领域音乐元数据（优先挑选 MIDI 并对其候选排序，缺失 MIDI 时下载音频自动转谱），或导入用户提供的外部直链；所有出站请求均经过 DNS 解析固定（防 DNS 重绑定 SSRF）、私有/回环/CGNAT IP 段拦截、重定向跳数上限与总耗时/体量上限保护，不绕过版权或 DRM。
-- **音频转谱能力边界与可选外部引擎**：内置 `builtin-mono` 为纯 Python 离线 YIN 单音算法，在单音旋律基准下达到 `F1=1.0000`，但在复调和弦与双声部下准确率受限（见 `uv run python scripts/eval_transcribers.py` 实测）。如需处理非 WAV 视频（MP3/MP4/MKV）或复杂多声部混音，请按需安装 `ffmpeg` 以及独立的隔离转录环境并配置环境变量：
-  - `LYRAFORGE_BASIC_PITCH_PYTHON` 或 `LYRAFORGE_BASIC_PITCH_BIN`（Spotify Basic Pitch, Apache-2.0）
-  - `LYRAFORGE_DETTATO_PYTHON` 或 `LYRAFORGE_DETTATO_BIN`（dettato 多乐器转录, Apache-2.0）
-
-### Windows 10/11 独立桌面版打包与运行
-
-```powershell
-# 在 Windows 10/11（无需管理员权限）生成便携目录 dist/LyraForge/LyraForge.exe
-./scripts/build_windows.ps1
-```
-
-也可推送代码至 GitHub，触发 [ci.yml](file:///Users/wuzhao/Program/Github/lyraforge_starter/.github/workflows/ci.yml) 中的 `package-windows` 作业下载 `LyraForge-windows-x64` 构建产物（CI 构建结束后会显式校验 `dist/LyraForge/LyraForge.exe` 是否生成）。启动后进入《原神》大世界**自由演奏乐器界面**，先通过两步授权检查并完成 21 键校准后再开启真实按键演奏；切换窗口或按 Stop / ESC 会立即终止并释放所有按键（`WindowsKeyboardDriver` 仅在收到 `SendInput` 成功反馈或重试恢复后才移除按下状态）。
-
-也可用 `make smoke` 一键运行完整 CLI 端到端冒烟流程。
+> 完整 CLI 命令大全、测试门禁、Windows PyInstaller 打包及外置 ML 引擎接入请查看 [开发者文档](docs/DEVELOPMENT.md)。
 
 ---
 
-## 仓库结构
+## 支持平台与真实状态
 
-```text
-lyraforge_starter/
-├─ AGENTS.md                  # Antigravity CLI 工作区规则
-├─ pyproject.toml / uv.lock   # 跨平台锁定依赖 (mido, jsonschema, pytest, ruff)
-├─ Makefile                   # macOS POSIX 优先开发常用命令
-├─ .github/workflows/ci.yml   # GitHub Actions: macos-latest + windows-latest 测试与 Windows 打包
-├─ packaging/lyraforge.spec   # PyInstaller Windows 便携桌面打包配置
-├─ docs/
-│  ├─ PROJECT_SPEC.md         # 产品需求与技术规格总纲
-│  ├─ ARCHITECTURE.md         # 跨平台分层架构与 Windows 隔离边界
-│  ├─ PROGRESS.md             # 实时进度、实测记录与环境边界清单
-│  ├─ ROADMAP.md              # M0-M5 里程碑与下一步计划
-│  ├─ LICENSE_AUDIT.md        # 上游参考仓库/模型权重/依赖许可证审计
-│  ├─ REVIEW_FIX_REPORT.md    # 首轮 Code Review 修复与回归验收报告 (FIX-001 ~ FIX-009)
-│  ├─ TEST_PLAN.md            # 自动测试与 Windows 真机验收清单
-│  └─ adr/                    # 架构决策记录 (ADR-0001, ADR-0002)
-├─ src/lyraforge/
-│  ├─ errors.py               # 统一错误码 ErrorCode / LyraError
-│  ├─ fs.py                   # 跨平台原子文件写与路径穿越防护
-│  ├─ secrets.py              # 跨平台系统凭据存取（macOS Keychain / CredMan / 0o600 / Env）与脱敏
-│  ├─ secrets_win32.py        # 隔离的 Windows Credential Manager (advapi32) 封装
-│  ├─ cli.py                  # 命令行入口（转谱/编曲/Agent/分享包/服务/桌面）
-│  ├─ music_core/             # 无头纯 Python 核心（MIDI 导入/清理/导出、TempoMap、Arranger、质量评分与 A/B 对比、Performance）
-│  ├─ instruments/            # 内置乐器配置 JSON（风物之诗琴、镜花之琴，当前 unverified 待 Windows 校准）
-│  ├─ media/                  # 跨平台 WAV 标准化与受控 FFmpeg 音视频提取
-│  ├─ transcribers/           # 插件化音频转 MIDI（内置 YIN 单音引擎 + Basic Pitch / dettato 隔离适配器）
-│  ├─ sources/                # 来源适配器（本地库/目录 + Internet Archive 开放曲库 + DNS 固定防 SSRF 直链下载）
-│  ├─ agent/                  # 离线规则与可选 LLM Provider、Tool Allowlist、自动编曲自优 Agent
-│  ├─ library/                # SQLite (WAL, v3) 曲库索引、`.lyrapack` 分享包、分阶段原子备份恢复与回滚
-│  ├─ preview/                # 零外部依赖离线 WAV 试听合成器
-│  ├─ api/                    # 本地 127.0.0.1 FastAPI 服务 + 会话 Token + 静态资源托管 + 授权播放控制
-│  ├─ desktop/                # PyWebView 双平台桌面壳启动器
-│  └─ playback/               # 跨平台调度器、DryRunDriver 与隔离的 windows/ SendInput 子包
-├─ apps/desktop/
-│  ├─ main.py                 # 桌面端 Python 启动入口
-│  └─ web/                    # Vue 3 + TypeScript + Vite 工作台（Piano Roll、A/B 对比、Agent、分享包）
-├─ scripts/
-│  ├─ make_fixtures.py        # 重新生成自制回归 MIDI 测试集
-│  ├─ eval_transcribers.py    # 转录引擎可用性探测与多场景合成音频基准评估
-│  └─ build_windows.ps1       # Windows 便携端一键构建脚本
-└─ tests/
-   ├─ fixtures/               # 12 份有效 + 5 份损坏/不支持自制 MIDI 样例
-   ├─ unit/                   # 单元测试 + AST 分层静态门禁测试
-   └─ integration/            # Fixture 一致性与 CLI 端到端集成测试
-```
-
----
-
-## 平台分工与验收边界
-
-| 能力模块 | macOS Apple Silicon (Dev) | Windows 10/11 x64 (Target) |
+| 平台 | 音乐处理、编辑、曲库与 MCP | 游戏内键盘模拟演奏 |
 |---|---|---|
-| `music_core` / MIDI / 编曲 / 曲库 / Agent | 原生运行 & 全量测试 | 原生运行 & CI 全量测试 |
-| 桌面 UI (Vue 3 + PyWebView, M1+) | WKWebView / Cocoa 本地联调 | WebView2 目标发布 & CI 构建 |
-| 自动演奏输出 | `DryRunDriver` 模拟与试听 | 独立 `lyraforge.playback.windows` (`SendInput`) |
-| 《原神》21 键校准与真机演奏 | **不适用** | **需单独在 Windows 真机完成手动验收** |
+| **macOS Apple Silicon** | 已实现，并通过本地及 GitHub CI 验证 | 仅支持 **DryRun** 模拟验证（不发送系统按键） |
+| **Windows 10/11 x64** | 跨平台核心、凭据隔离与 PyInstaller 构建已通过 Windows CI 检验 | **实验性隔离实现（`calibration.status = unverified`），真机《原神》校准与焦点守卫实音演奏待验证** |
 
 ---
 
-## 开源许可（License）
+## 常见问题（FAQ）
 
-本项目以 **GNU General Public License v3.0 (GPL-3.0)** 开源发布，完整许可文本见 [LICENSE](LICENSE)，第三方依赖与参考项目审计见 [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md)。
+- **必须购买 API Key 才能使用吗？**  
+  不需要。本地工作台与全部音乐核心完全离线可用；如已登录 Claude Code / Codex CLI / Antigravity，直接挂载 `lyraforge mcp` 即可通过现有客户端会话编排，无需另外填 Key。
+- **可以用它自动打音游或后台静默演奏吗？**  
+  不可以。LyraForge 仅面向《原神》大世界**自由演奏界面**，采用显式两步用户授权和前景窗口焦点守卫，切窗立即停键并全松键；不读写/注入游戏内存，也不使用反作弊绕过手段。
+- **使用第三方自动按键是否绝对安全？**  
+  没有任何第三方键盘自动化软件能保证 100% 账号零风险，请自行评估风险并遵守游戏服务条款与本地法律法规。
+
+---
+
+## 安全声明、开源许可与贡献
+
+- **隐私与版权责任**：请仅导入、转谱与分享你拥有合法使用权限的音乐素材；开放平台的自填许可元数据不代表音乐词曲、录音与改编权全部自动授权。
+- **开源许可证**：本项目采用 **GNU General Public License v3.0 (GPL-3.0)** 开源，完整文本见 [LICENSE](LICENSE)，第三方组件与参考项目审计见 [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md)。
+- **开发与贡献**：欢迎通过 [Issues](https://github.com/PariyaProject/LyraForge/issues) 反馈问题或提交 Pull Request。提交前请阅读 [AGENTS.md](AGENTS.md) 与 [docs/MAINTAINER_WORKFLOW.md](docs/MAINTAINER_WORKFLOW.md)，切勿附带 API Key、OAuth 凭据或受版权保护的原始音频。
+
+### 文档导航
+
+- [开发者文档](docs/DEVELOPMENT.md) — 完整 CLI 命令、目录结构、Windows 打包与外置模型配置
+- [开发进度与五态成熟度](docs/PROGRESS.md) — 各模块真实已测/未验证/外部阻塞清单
+- [AI 与 MCP 集成手册](docs/AI_INTEGRATION.md) — 无需 API Key 的 MCP/Skill 配置与客户端条款矩阵
+- [项目维护工作流](docs/MAINTAINER_WORKFLOW.md) — 分支、PR、CI 诊断与自主推进规范
+- [产品需求规格 (PROJECT_SPEC)](docs/PROJECT_SPEC.md) · [系统架构](docs/ARCHITECTURE.md) · [测试计划](docs/TEST_PLAN.md) · [第一轮 Fix 报告](docs/REVIEW_FIX_REPORT.md)
+
+---
+
+*LyraForge 是独立开源社区项目，与米哈游 / HoYoverse 及各 AI 模型提供商无官方关联。*
