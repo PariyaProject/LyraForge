@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lyraforge.local/schemas/instrument_profile.v1.schema.json",
+  "title": "LyraForge InstrumentProfile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "version", "display_name", "game_id", "kind",
+    "key_count", "keys", "polyphony_limit", "timing", "supports_sustain", "calibration"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$", "maxLength": 128},
+    "version": {"type": "integer", "minimum": 1},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "display_name_en": {"type": "string", "maxLength": 128},
+    "game_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "kind": {"enum": ["pitched_diatonic", "pitched_chromatic"]},
+    "key_count": {"type": "integer", "minimum": 1, "maximum": 128},
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key_id", "pitch", "binding"],
+        "properties": {
+          "key_id": {"type": "string", "pattern": "^[a-z0-9_]+$", "maxLength": 32},
+          "pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+          "binding": {"type": "string", "pattern": "^[A-Z0-9]$"},
+          "row": {"type": "string", "maxLength": 32},
+          "degree": {"type": "integer", "minimum": 1, "maximum": 12}
+        }
+      }
+    },
+    "polyphony_limit": {"type": ["integer", "null"], "minimum": 1},
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_same_key_interval_ms", "min_key_hold_ms", "default_key_hold_ms", "max_key_hold_ms"],
+      "properties": {
+        "min_same_key_interval_ms": {"type": "integer", "minimum": 1, "maximum": 2000},
+        "min_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 2000},
+        "default_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 2000},
+        "max_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+        "provisional": {"type": "boolean"}
+      }
+    },
+    "supports_sustain": {"type": "boolean"},
+    "calibration": {
+      "type": "object",
+      "required": ["status", "calibration_version"],
+      "properties": {
+        "status": {"enum": ["unverified", "partially_verified", "verified"]},
+        "calibration_version": {"type": "integer", "minimum": 0},
+        "verified_keys": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

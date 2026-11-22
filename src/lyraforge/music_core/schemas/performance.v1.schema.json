@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lyraforge.local/schemas/performance.v1.schema.json",
+  "title": "LyraForge performance.json v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "song_id", "arrangement_id", "instrument_profile_id",
+    "instrument_profile_hash", "tempo_map", "duration_ms", "events", "transform", "provenance"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "lyraforge.performance"},
+    "song_id": {"type": "string", "pattern": "^[0-9a-f-]{36}$"},
+    "arrangement_id": {"type": "string", "pattern": "^[0-9a-f-]{36}$"},
+    "instrument_profile_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "instrument_profile_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "tempo_map": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tick", "at_ms", "us_per_beat", "bpm"],
+        "properties": {
+          "tick": {"type": "integer", "minimum": 0},
+          "at_ms": {"type": "integer", "minimum": 0},
+          "us_per_beat": {"type": "integer", "minimum": 1},
+          "bpm": {"type": "number", "exclusiveMinimum": 0}
+        }
+      }
+    },
+    "duration_ms": {"type": "integer", "minimum": 0, "maximum": 14400000},
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at_ms", "key_id", "action", "hold_ms", "source_pitch", "mapped_pitch",
+                     "source_track", "source_channel", "velocity", "adjustments"],
+        "properties": {
+          "at_ms": {"type": "integer", "minimum": 0},
+          "key_id": {"type": "string", "pattern": "^[a-z0-9_]+$", "maxLength": 32},
+          "action": {"const": "tap"},
+          "hold_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+          "source_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+          "mapped_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+          "source_track": {"type": "integer", "minimum": 0},
+          "source_channel": {"type": "integer", "minimum": 0, "maximum": 15},
+          "velocity": {"type": "integer", "minimum": 1, "maximum": 127},
+          "adjustments": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"enum": ["octave_folded", "semitone_substituted"]}
+          }
+        }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "required": ["strategy", "transpose_semitones", "speed"],
+      "properties": {
+        "strategy": {"enum": ["melody", "balanced", "rich"]},
+        "transpose_semitones": {"type": "integer", "minimum": -48, "maximum": 48},
+        "speed": {"type": "number", "minimum": 0.25, "maximum": 4.0}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["input_sha256", "transcriber", "arranger_version"],
+      "properties": {
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "transcriber": {"type": "string"},
+        "arranger_version": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/web/pnpm-lock.yaml
+
+      - name: Install Python dependencies (frozen lockfile)
+        run: uv sync --frozen
+
+      - name: Install, test, and build Vue 3 frontend
+        run: |
+          pnpm --dir apps/desktop/web install --frozen-lockfile
+          pnpm --dir apps/desktop/web test
+          pnpm --dir apps/desktop/web build
+
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Run pytest with coverage gate (>=80%)
+        run: uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80
+
+      - name: Verify fixture generation determinism
+        run: |
+          uv run python scripts/make_fixtures.py
+          git diff --exit-code -- tests/fixtures/midi/
+
+      - name: CLI DryRun smoke test (cross-platform)
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run lyraforge profiles list
+          uv run lyraforge inspect tests/fixtures/midi/chords_type1.mid > /dev/null
+          uv run lyraforge arrange tests/fixtures/midi/chords_type1.mid -o "${RUNNER_TEMP}/perf.json" --report "${RUNNER_TEMP}/report.json"
+          uv run lyraforge validate "${RUNNER_TEMP}/perf.json"
+          uv run lyraforge playback dry-run "${RUNNER_TEMP}/perf.json" --log "${RUNNER_TEMP}/actions.jsonl"
+
+  package-windows:
+    name: Build Windows Bundle (PyInstaller)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.11
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/web/pnpm-lock.yaml
+
+      - name: Build Vue 3 frontend
+        run: |
+          pnpm --dir apps/desktop/web install --frozen-lockfile
+          pnpm --dir apps/desktop/web build
+
+      - name: Sync runtime & package LyraForge Windows portable bundle
+        shell: pwsh
+        run: |
+          uv sync --frozen --extra desktop
+          uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/lyraforge.spec
+          Test-Path dist/LyraForge/LyraForge.exe
+
+      - name: Upload Windows bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyraForge-windows-x64
+          path: dist/LyraForge/
+          retention-days: 14

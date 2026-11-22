@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+.venv/
+build/
+dist/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend (M1+)
+node_modules/
+.pnpm-store/
+
+# macOS / Editors
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+.vscode/
+.idea/
+
+# Runtime / Local data
+LyraForgeData/
+*.log
+/tmp/
