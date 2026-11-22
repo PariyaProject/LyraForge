@@ -9,14 +9,23 @@ LyraForge 是一款开源的桌面音乐转谱与游戏乐器编曲工作台，�
 
 ![LyraForge 工作台实时渲染截图](docs/assets/lyraforge-workbench.png)
 
+> 查看全套 6 视图实机截图：
+> [首页](docs/assets/ui/home.png) ·
+> [本地曲库](docs/assets/ui/library.png) ·
+> [AI 转谱](docs/assets/ui/transcribe.png) ·
+> [编曲工作室 & Piano Roll](docs/assets/ui/studio.png) ·
+> [试听与演奏](docs/assets/ui/playback.png) ·
+> [设置与 MCP 接入](docs/assets/ui/settings.png)
+
 ---
 
 ## 核心功能
 
+- **6 视图 Studio Dark 桌面工作台**：采用分离式左侧导航栏（支持图标模式与移动横栏折返），划分首页快速检索/拖拽导入、本地曲库、AI 转谱流水线、Piano Roll 工作室、两段授权演奏控制台与设置/MCP 接入页。
 - **多格式导入**：支持本地标准 `.mid`/`.midi` 与 `.wav`；配置系统 `ffmpeg` 后可扩展提取常见音视频格式；支持经用户明确授权的开放许可曲库（Internet Archive CC0 / PDM / CC-BY）或公开直链导入。
 - **游戏乐器智能编曲**：内置**风物之诗琴**（21 键）与**镜花之琴**（21 键）预设，支持主旋律识别优先保留、自动移调寻优、八度折叠、半音处理与柱式和弦琶音。
 - **分离式质量评估与 A/B 对比**：区分“**编曲对输入 MIDI 的可演奏适配度**”与“**音频转录对原曲的还原忠实度**”，避免无真值情况下的虚假高分误导。
-- **Piano Roll 可视化编辑与离线试听**：交互式键位热力图、网格音符增删/移音/移拍、撤销重做与纯 Python 拨弦 WAV 离线试听。
+- **DAW 级 Piano Roll 与离线试听**：交互式 21 键热力图、时间轴缩放（`50%–250%`）与网格吸附（`0–250 ms`）、指针直接拖拽调音与节拍、点击插音、键盘快捷键、撤销重做与纯 Python 拨弦 WAV 离线试听。
 - **本地曲库与安全分享备份**：SQLite 曲库支持标签收藏与版本管理；支持导出 MIDI、`performance.json`、强制版权确认且不带原始音频的 `.lyrapack` 分享包，以及分阶段校验、故障自动回滚的全库 ZIP 备份恢复。
 - **无需 API Key 的三层 AI / MCP 能力**：默认离线运行，无需购买大模型 API Key；提供标准 `stdio` MCP Server 接入用户自有已登录客户端。
 
@@ -91,7 +100,7 @@ uv run lyraforge desktop
 - [开发进度与五态成熟度](docs/PROGRESS.md) — 各模块真实已测/未验证/外部阻塞清单
 - [AI 与 MCP 集成手册](docs/AI_INTEGRATION.md) — 无需 API Key 的 MCP/Skill 配置与客户端条款矩阵
 - [项目维护工作流](docs/MAINTAINER_WORKFLOW.md) — 分支、PR、CI 诊断与自主推进规范
-- [产品需求规格 (PROJECT_SPEC)](docs/PROJECT_SPEC.md) · [系统架构](docs/ARCHITECTURE.md) · [测试计划](docs/TEST_PLAN.md) · [第一轮 Fix 报告](docs/REVIEW_FIX_REPORT.md)
+- [产品需求规格 (PROJECT_SPEC)](docs/PROJECT_SPEC.md) · [系统架构](docs/ARCHITECTURE.md) · [测试计划](docs/TEST_PLAN.md) · [第一轮 Fix 报告](docs/REVIEW_FIX_REPORT.md) · [第二轮复核报告](docs/SECOND_REVIEW_REPORT.md) · [第三轮审查与 UI 重设计报告](docs/THIRD_REVIEW_UI_REPORT.md)
 
 ---
 
