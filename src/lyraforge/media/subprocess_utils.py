@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.playback.guards import StopToken
@@ -46,6 +47,7 @@ class _BoundedRotatingLog:
         self.total_written = 0
         self.truncated = False
         self.peak_disk_bytes = 0
+        self._closed = False
         self._lock = threading.Lock()
         self._fh: IO[bytes] | None = self._curr_path.open("wb")
 
@@ -53,7 +55,7 @@ class _BoundedRotatingLog:
         if not chunk:
             return
         with self._lock:
-            if self._fh is None:
+            if self._closed or self._fh is None:
                 return
             self.total_written += len(chunk)
             data = chunk
@@ -79,6 +81,7 @@ class _BoundedRotatingLog:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             if self._fh is not None:
                 with contextlib.suppress(OSError):
                     self._fh.flush()
@@ -99,8 +102,15 @@ class _BoundedRotatingLog:
 
     def cleanup(self) -> None:
         self.close()
-        self._curr_path.unlink(missing_ok=True)
-        self._prev_path.unlink(missing_ok=True)
+        for p in (self._curr_path, self._prev_path):
+            for idx in range(5):
+                try:
+                    p.unlink(missing_ok=True)
+                    break
+                except PermissionError:
+                    if idx + 1 >= 5:
+                        break
+                    time.sleep(0.03)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,21 +125,155 @@ class BoundedSubprocessResult:
     peak_disk_bytes: int
 
 
-def _terminate_proc(proc: subprocess.Popen[bytes]) -> None:
-    if proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+def _popen_isolation_kwargs() -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "shell": False,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        create_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if create_group:
+            kwargs["creationflags"] = create_group
+    else:
+        kwargs["start_new_session"] = True
+    return kwargs
 
 
-def _drain_pipe(pipe: IO[bytes] | None, log: _BoundedRotatingLog) -> None:
+def _pgid_has_live_processes(pgid: int) -> bool:
+    if os.name == "nt" or pgid <= 0:
+        return False
+    killpg_fn = getattr(os, "killpg", None)
+    if not callable(killpg_fn):
+        return False
+    try:
+        killpg_fn(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _kill_windows_descendants(pid: int, *, created_after_epoch: float | None = None) -> None:
+    if os.name != "nt" or pid <= 0:
+        return
+    cutoff_unix = int((created_after_epoch or time.time()) - 5.0)
+    ps_script = (
+        "$q = New-Object System.Collections.Generic.Queue[int];"
+        f"$q.Enqueue({pid});"
+        "$seen = New-Object System.Collections.Generic.HashSet[int];"
+        "$all = Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ParentProcessId,CreationDate;"
+        f"$cutoff = [DateTimeOffset]::FromUnixTimeSeconds({cutoff_unix}).UtcDateTime;"
+        "while ($q.Count -gt 0) {"
+        "$p = $q.Dequeue();"
+        "foreach ($c in $all) {"
+        "if ($c.ParentProcessId -eq $p -and "
+        "(-not $c.CreationDate -or $c.CreationDate.ToUniversalTime() -ge $cutoff) -and "
+        "$seen.Add([int]$c.ProcessId)) {"
+        "$q.Enqueue([int]$c.ProcessId);"
+        "Stop-Process -Id $c.ProcessId -Force -ErrorAction SilentlyContinue;"
+        "}}}"
+    )
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            timeout=8.0,
+            check=False,
+        )
+
+
+def _terminate_process_tree(
+    proc: Any,
+    *,
+    pgid: int | None = None,
+    created_after_epoch: float | None = None,
+    grace_s: float = 0.8,
+) -> None:
+    poll_fn = getattr(proc, "poll", None)
+    term_fn = getattr(proc, "terminate", None)
+    wait_fn = getattr(proc, "wait", None)
+    kill_fn = getattr(proc, "kill", None)
+    pid = getattr(proc, "pid", None)
+    is_mock_or_dead = not (isinstance(pid, int) and pid > 0)
+
+    if os.name == "nt":
+        tk_res: subprocess.CompletedProcess[bytes] | None = None
+        if not is_mock_or_dead:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                tk_res = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    timeout=5.0,
+                    check=False,
+                )
+        if callable(poll_fn) and poll_fn() is None:
+            if callable(term_fn):
+                with contextlib.suppress(OSError):
+                    term_fn()
+            if callable(wait_fn):
+                try:
+                    wait_fn(timeout=grace_s)
+                except (subprocess.TimeoutExpired, TypeError):
+                    if callable(kill_fn):
+                        with contextlib.suppress(OSError):
+                            kill_fn()
+                    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                        wait_fn(timeout=2.0)
+        if not is_mock_or_dead and (tk_res is None or tk_res.returncode != 0):
+            _kill_windows_descendants(pid, created_after_epoch=created_after_epoch)
+        return
+
+    killpg_fn = getattr(os, "killpg", None)
+    if pgid is not None and callable(killpg_fn):
+        with contextlib.suppress(ProcessLookupError, OSError):
+            killpg_fn(pgid, signal.SIGTERM)
+
+    if callable(poll_fn) and poll_fn() is None and callable(term_fn):
+        with contextlib.suppress(OSError):
+            term_fn()
+
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        proc_alive = callable(poll_fn) and poll_fn() is None
+        pg_alive = pgid is not None and _pgid_has_live_processes(pgid)
+        if not proc_alive and not pg_alive:
+            if callable(wait_fn):
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired, TypeError):
+                    wait_fn(timeout=0.5)
+            return
+        time.sleep(0.02)
+
+    if pgid is not None and callable(killpg_fn):
+        with contextlib.suppress(ProcessLookupError, OSError):
+            killpg_fn(pgid, signal.SIGKILL)
+    if callable(poll_fn) and poll_fn() is None and callable(kill_fn):
+        with contextlib.suppress(OSError):
+            kill_fn()
+    if callable(wait_fn):
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired, TypeError):
+            wait_fn(timeout=2.0)
+
+
+def _drain_pipe(
+    pipe: IO[bytes] | None,
+    log: _BoundedRotatingLog,
+    stop_event: threading.Event,
+) -> None:
     if pipe is None:
         return
     try:
-        while True:
+        while not stop_event.is_set():
             try:
                 chunk = pipe.read(_PIPE_READ_CHUNK_BYTES)
             except TypeError:
@@ -145,7 +289,7 @@ def _drain_pipe(pipe: IO[bytes] | None, log: _BoundedRotatingLog) -> None:
     finally:
         close_fn = getattr(pipe, "close", None)
         if callable(close_fn):
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(OSError, ValueError):
                 close_fn()
 
 
@@ -179,33 +323,38 @@ def run_bounded_subprocess(
     timeout_message: str,
     max_log_bytes: int = MAX_SUBPROCESS_LOG_BYTES,
     tail_bytes: int = DEFAULT_LOG_TAIL_BYTES,
+    drain_grace_s: float = 0.5,
 ) -> BoundedSubprocessResult:
-    """Run subprocess with concurrent pipe drains and rotating disk-bounded logs."""
+    """Run subprocess with process-tree isolation, pipe drains, and rotating logs."""
     work_dir.mkdir(parents=True, exist_ok=True)
     out_log = _BoundedRotatingLog(work_dir / f".{prefix}.stdout.log", max_bytes=max_log_bytes)
     err_log = _BoundedRotatingLog(work_dir / f".{prefix}.stderr.log", max_bytes=max_log_bytes)
     t_out: threading.Thread | None = None
     t_err: threading.Thread | None = None
+    stop_drain = threading.Event()
     proc: subprocess.Popen[bytes] | None = None
+    pgid: int | None = None
+    spawn_epoch = time.time()
 
     try:
         proc = subprocess.Popen(  # noqa: S603
             list(cmd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
+            **_popen_isolation_kwargs(),
         )
+        raw_pid = getattr(proc, "pid", None)
+        if os.name != "nt" and isinstance(raw_pid, int) and raw_pid > 0:
+            pgid = raw_pid
         stdout_pipe = getattr(proc, "stdout", None)
         stderr_pipe = getattr(proc, "stderr", None)
         t_out = threading.Thread(
             target=_drain_pipe,
-            args=(stdout_pipe, out_log),
+            args=(stdout_pipe, out_log, stop_drain),
             name=f"{prefix}-stdout-drain",
             daemon=True,
         )
         t_err = threading.Thread(
             target=_drain_pipe,
-            args=(stderr_pipe, err_log),
+            args=(stderr_pipe, err_log, stop_drain),
             name=f"{prefix}-stderr-drain",
             daemon=True,
         )
@@ -215,15 +364,33 @@ def run_bounded_subprocess(
         deadline = time.monotonic() + float(timeout_s)
         while proc.poll() is None:
             if stop_token is not None and stop_token.stopped:
-                _terminate_proc(proc)
+                _terminate_process_tree(
+                    proc, pgid=pgid, created_after_epoch=spawn_epoch
+                )
                 raise LyraError(ErrorCode.PLAYBACK_ABORTED, cancel_message)
             if time.monotonic() > deadline:
-                _terminate_proc(proc)
+                _terminate_process_tree(
+                    proc, pgid=pgid, created_after_epoch=spawn_epoch
+                )
                 raise LyraError(timeout_code, timeout_message)
             time.sleep(0.05)
 
-        t_out.join(timeout=2.0)
-        t_err.join(timeout=2.0)
+        t_out.join(timeout=drain_grace_s)
+        t_err.join(timeout=drain_grace_s)
+
+        # If a detached grandchild inherited pipes or stayed alive in the session/group,
+        # reap the process tree so pipe EOF closes cleanly without hanging.
+        if (
+            t_out.is_alive()
+            or t_err.is_alive()
+            or (pgid is not None and _pgid_has_live_processes(pgid))
+        ):
+            _terminate_process_tree(
+                proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
+            )
+            t_out.join(timeout=3.0)
+            t_err.join(timeout=3.0)
+
         stdout_tail, stdout_trunc, stdout_total = out_log.read_tail(tail_bytes)
         stderr_tail, stderr_trunc, stderr_total = err_log.read_tail(tail_bytes)
         return BoundedSubprocessResult(
@@ -238,17 +405,39 @@ def run_bounded_subprocess(
         )
     finally:
         if proc is not None:
-            if proc.poll() is None:
-                _terminate_proc(proc)
-            for pipe_attr in ("stdout", "stderr"):
-                pipe_obj = getattr(proc, pipe_attr, None)
-                close_fn = getattr(pipe_obj, "close", None)
-                if callable(close_fn):
-                    with contextlib.suppress(OSError):
-                        close_fn()
+            still_running = callable(getattr(proc, "poll", None)) and proc.poll() is None
+            drainers_alive = (t_out is not None and t_out.is_alive()) or (
+                t_err is not None and t_err.is_alive()
+            )
+            pg_alive = pgid is not None and _pgid_has_live_processes(pgid)
+            if still_running or drainers_alive or pg_alive:
+                _terminate_process_tree(
+                    proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
+                )
+
+        # Wait briefly for drain threads to observe EOF naturally after process-tree cleanup;
+        # avoid closing pipe objects concurrently while a drain thread is inside read().
         if t_out is not None and t_out.is_alive():
-            t_out.join(timeout=0.5)
+            t_out.join(timeout=3.0)
         if t_err is not None and t_err.is_alive():
-            t_err.join(timeout=0.5)
+            t_err.join(timeout=3.0)
+        stop_drain.set()
+
+        if proc is not None:
+            if (t_out is None or not t_out.is_alive()) and (
+                stdout_obj := getattr(proc, "stdout", None)
+            ) is not None:
+                close_out = getattr(stdout_obj, "close", None)
+                if callable(close_out):
+                    with contextlib.suppress(OSError, ValueError):
+                        close_out()
+            if (t_err is None or not t_err.is_alive()) and (
+                stderr_obj := getattr(proc, "stderr", None)
+            ) is not None:
+                close_err = getattr(stderr_obj, "close", None)
+                if callable(close_err):
+                    with contextlib.suppress(OSError, ValueError):
+                        close_err()
+
         out_log.cleanup()
         err_log.cleanup()

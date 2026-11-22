@@ -66,6 +66,8 @@ def run_isolated_transcriber(
         if on_progress is not None:
             on_progress(0.1, "extracting wav")
         extract_audio_to_wav(audio_path, wav_in, stop_token=stop_token)
+        if stop_token is not None and stop_token.stopped:
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
 
         cmd = build_cmd(runner, wav_in, out_dir)
         if on_progress is not None:
@@ -81,6 +83,8 @@ def run_isolated_transcriber(
             timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
             timeout_message=f"{display_name} timed out after {opts.timeout_s:.1f}s",
         )
+        if stop_token is not None and stop_token.stopped:
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
         if res.returncode != 0:
             stderr_text = format_log_tail(
                 res.stderr_tail,

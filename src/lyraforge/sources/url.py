@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -234,12 +235,15 @@ class DirectUrlSourceAdapter:
         dest_dir: Path,
         *,
         user_authorized: bool = False,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Path:
         if not user_authorized:
             raise LyraError(
                 ErrorCode.PERMISSION_REQUIRED,
                 "explicit user authorization (allow_network=True) required for external URLs",
             )
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "download cancelled")
         parsed, pinned_ip = resolve_public_http_url(location)
         raw_name = Path(parsed.path).name or "download.mid"
         ext = Path(raw_name).suffix.lower()
@@ -264,6 +268,8 @@ class DirectUrlSourceAdapter:
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
                 while True:
+                    if is_cancelled is not None and is_cancelled():
+                        raise LyraError(ErrorCode.PLAYBACK_ABORTED, "download cancelled")
                     if time.monotonic() - started > self.max_duration_s:
                         raise LyraError(
                             ErrorCode.LIMIT_EXCEEDED,
@@ -286,6 +292,8 @@ class DirectUrlSourceAdapter:
                 ErrorCode.SOURCE_UNAVAILABLE, f"failed to download URL: {exc}"
             ) from exc
 
+        if is_cancelled is not None and is_cancelled():
+            raise LyraError(ErrorCode.PLAYBACK_ABORTED, "download cancelled")
         target = resolve_under(dest_dir.resolve(), safe_name)
         atomic_write_bytes(target, b"".join(chunks))
         return target

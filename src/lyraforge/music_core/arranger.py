@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
@@ -181,14 +182,25 @@ def _transpose_cost(notes: list[Note], k: int, pitch_set: frozenset[int],
     return cost
 
 
-def _search_transpose(notes: list[Note], profile: InstrumentProfile,
-                      search: int) -> tuple[int, tuple[tuple[int, int], ...]]:
+def _check_cancel(is_cancelled: Callable[[], bool] | None) -> None:
+    if is_cancelled is not None and is_cancelled():
+        raise LyraError(ErrorCode.PLAYBACK_ABORTED, "arrangement cancelled")
+
+
+def _search_transpose(
+    notes: list[Note],
+    profile: InstrumentProfile,
+    search: int,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> tuple[int, tuple[tuple[int, int], ...]]:
     pitch_set = frozenset(profile.pitches)
     pcs = frozenset(p % 12 for p in pitch_set)
-    scored = sorted(
-        ((k, _transpose_cost(notes, k, pitch_set, pcs)) for k in range(-search, search + 1)),
-        key=lambda kc: (kc[1], abs(kc[0]), kc[0]),
-    )
+    scored_list: list[tuple[int, int]] = []
+    for k in range(-search, search + 1):
+        _check_cancel(is_cancelled)
+        scored_list.append((k, _transpose_cost(notes, k, pitch_set, pcs)))
+    scored = sorted(scored_list, key=lambda kc: (kc[1], abs(kc[0]), kc[0]))
     return scored[0][0], tuple(scored[:5])
 
 
@@ -249,8 +261,14 @@ def _scale_ms(us: int, speed: Fraction) -> int:
     return round(Fraction(us, 1000) / speed)
 
 
-def arrange(score: NormalizedScore, profile: InstrumentProfile,
-            options: ArrangeOptions | None = None) -> Arrangement:
+def arrange(
+    score: NormalizedScore,
+    profile: InstrumentProfile,
+    options: ArrangeOptions | None = None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> Arrangement:
+    _check_cancel(is_cancelled)
     options = options or ArrangeOptions()
     options.validate()
     speed = Fraction(options.speed).limit_denominator(10_000)
@@ -281,8 +299,11 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
 
     # 2. transposition
     if options.transpose is None:
-        k, candidates = _search_transpose(notes, profile, options.transpose_search)
+        k, candidates = _search_transpose(
+            notes, profile, options.transpose_search, is_cancelled=is_cancelled
+        )
     else:
+        _check_cancel(is_cancelled)
         k = options.transpose
         pitch_set = frozenset(profile.pitches)
         pcs = frozenset(p % 12 for p in pitch_set)
@@ -293,6 +314,7 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
     available = profile.pitches
     cands: list[_Cand] = []
     for n in notes:
+        _check_cancel(is_cancelled)
         at_ms = _scale_ms(n.start_us, speed)
         p = n.pitch + k
         adj: list[str] = []
@@ -332,6 +354,7 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
         groups[(c.at_ms, c.key_id)].append(c)
     deduped: list[_Cand] = []
     for c in cands:
+        _check_cancel(is_cancelled)
         g = groups[(c.at_ms, c.key_id)]
         best = min(
             g,
@@ -355,6 +378,7 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
     limited: list[_Cand] = []
     i = 0
     while i < len(deduped):
+        _check_cancel(is_cancelled)
         start = deduped[i].at_ms
         j = i
         while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
@@ -407,6 +431,7 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
     last_at: dict[str, int] = {}
     kept: list[_Cand] = []
     for c in limited:  # already time-ordered
+        _check_cancel(is_cancelled)
         prev = last_at.get(c.key_id)
         if prev is not None and c.at_ms - prev < timing.min_same_key_interval_ms:
             dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
@@ -425,6 +450,7 @@ def arrange(score: NormalizedScore, profile: InstrumentProfile,
         following[c.key_id] = c.at_ms
     events: list[PerformanceEvent] = []
     for idx, c in enumerate(kept):
+        _check_cancel(is_cancelled)
         hold = min(max(c.dur_ms, timing.min_key_hold_ms), timing.max_key_hold_ms)
         if idx in next_at:
             hold = min(hold, next_at[idx] - c.at_ms)
