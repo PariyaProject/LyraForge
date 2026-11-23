@@ -231,6 +231,7 @@
    - 桌面 UI 的按钮点击流程仅由组件测试与构建覆盖，未做人工可视化点击验收；
    - macOS/Linux 的托管安装路径未在对应实机执行（当前仅 Windows 实测）；
    - 断网/代理失败的用户提示仅由单元测试覆盖，未做真实网络故障演练。
+7. **合入记录**：[PR #12](https://github.com/PariyaProject/LyraForge/pull/12) → `7d6fc48`；合并后 main CI [Run #45144673073](https://github.com/PariyaProject/LyraForge/actions/runs/45144673073) 全绿（含 `windows-latest` 打包与 `--self-check --check-gui` 门禁）。
 
 
 

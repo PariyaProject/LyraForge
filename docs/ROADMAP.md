@@ -47,6 +47,6 @@
 
 优先解决真实用户的安装与上手痛点，而非继续堆积内部工程报告：
 
-1. **开箱体验简化**：优化首次启动引导、常见错误中文提示，以及**应用内一键安装外部工具链**（`ffmpeg`、Basic Pitch、dettato）：应用负责下载 Python 运行时与隔离环境、校验哈希、安装到 `%LOCALAPPDATA%\LyraForge\tools` 并自动注入运行环境，用户无需手工配置环境变量；不把大模型打进发布 ZIP，避免安装包膨胀到 GB 级。
+1. **开箱体验简化**：优化首次启动引导、常见错误中文提示，以及**应用内一键安装外部工具链**（`ffmpeg`、Basic Pitch、dettato）：应用负责下载 Python 运行时与隔离环境、校验哈希、安装到 `%LOCALAPPDATA%\LyraForge\tools` 并自动注入运行环境，用户无需手工配置环境变量；不把大模型打进发布 ZIP，避免安装包膨胀到 GB 级。**v1 已实现**（[PR #12](https://github.com/PariyaProject/LyraForge/pull/12)）：设置页安装卡片 + `lyraforge tools install`；后续补首次启动引导与失败重试提示。
 2. **工作流连贯性**：打磨“导入 / 搜索 → 一键转谱与 A/B 选版 → Piano Roll 快速改音高/拍点 → 试听 → 演奏或导出”操作路径。
 3. **Beta / Release 准备**：完成优先级 A/B 核心实测、补充稳定版签名/打包说明并经所有者确认后，再筹备首个公开预发行或正式版本。
