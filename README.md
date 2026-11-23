@@ -42,9 +42,12 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 ```powershell
 Get-FileHash .\LyraForge-dev-*-windows-x64.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS.txt
-.\LyraForge\LyraForge.exe --self-check
+.\LyraForge\LyraForge.exe --self-check --check-gui
 .\LyraForge\LyraForge.exe
 ```
+
+- 需要 Microsoft Edge WebView2 Runtime（Windows 11 已内置；Windows 10 请安装 Evergreen Runtime）。
+- 若双击后没有出现窗口，启动失败详情会写入 `%LOCALAPPDATA%\LyraForge\logs\startup.log`，同时弹出原生错误对话框；提交 Issue 时请附上该日志。
 
 ### 从源码运行（macOS Apple Silicon / Windows）
 

@@ -12,6 +12,12 @@ All notable user-facing changes to LyraForge are documented in this file.
 - **Zero-API-Key AI & MCP Integration**: Built-in deterministic `RuleBasedLLMProvider`, optional private OpenAI-compatible HTTP endpoint support, and a standard `stdio` MCP server (`lyraforge mcp`, 10 typed tools) with integration templates under `integrations/` and hard confirmation gating on `play_in_game`.
 - **Cross-platform CI & GitHub Releases automation**: Added Windows portable ZIP packaging, post-extraction `LyraForge.exe --self-check`, `SHA256SUMS.txt` checksum generation, rolling `dev-latest` + immutable `dev-YYYYMMDD-<sha7>` experimental pre-releases on `main`, and isolated SemVer (`vX.Y.Z`) release channels (`packaging/lyraforge.spec`, `scripts/build_windows.ps1`, `scripts/release_helper.py`, `.github/workflows/ci.yml`).
 
+### Fixed
+- **Windows portable build could not open its desktop window**: the PyInstaller bundle omitted the dynamically imported PyWebView GUI host (pywebview, pythonnet and the WebView2 interop DLLs), so `LyraForge.exe` exited within a second without showing anything. The frozen bundle now pins `webview`/`clr`/`webview.platforms.edgechromium` and fails the build if the GUI payload is missing (`packaging/lyraforge.spec`).
+- **`--self-check` never exercised the GUI host**: CI now runs `LyraForge.exe --self-check --check-gui`, and a frozen bundle always requires the GUI import, so a packaging regression fails the release gate instead of the user's desktop (`src/lyraforge/cli.py`, `.github/workflows/ci.yml`).
+- **Fatal startup failures are no longer silent**: startup errors are appended with a traceback to `%LOCALAPPDATA%\LyraForge\logs\startup.log` and shown in a native error dialog on Windows/macOS (`src/lyraforge/startup_report.py`, `apps/desktop/main.py`).
+- **Portable ZIP usability**: the release archive now carries `README.txt` with extraction/launch steps and the startup-log location, and packaging validation rejects archives without the WebView2/pythonnet payload (`scripts/release_helper.py`).
+
 ### Reliability & Security Highlights
 - OS-native API key storage (macOS Keychain, Windows Credential Manager, or `0o600` local secret file) with plaintext SQLite migration and redaction across logs, errors, backups, and share packages.
 - DNS-pinned SSRF protections for authorized direct-URL downloads and strict Creative Commons / Public Domain URL classification for open catalog queries (rejecting `NoDerivatives`).
