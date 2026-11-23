@@ -694,20 +694,32 @@ export function createLyraStore(api: LyraForgeApi) {
     busy.value = true;
     errorMessage.value = "";
     try {
-      await api.startPlayback(prepared.value.prepare_token);
+      const started = await api.startPlayback(prepared.value.prepare_token, 10);
       prepared.value = null;
       playbackStatus.value = await api.playbackStatus();
-      reportOk("演奏已启动");
+      reportOk(
+        started.status === "waiting_focus"
+          ? "已进入等待焦点状态：请在 10 秒内切换到游戏窗口，检测到后才会开始发送按键"
+          : "演奏已启动",
+      );
       stopPolling();
       pollTimer = window.setInterval(async () => {
         try {
           playbackStatus.value = await api.playbackStatus();
-          if (
-            playbackStatus.value.state !== "running" &&
-            playbackStatus.value.state !== "paused"
-          ) {
+          const state = playbackStatus.value.state;
+          if (state === "focus_timeout" || state === "permission_required") {
             stopPolling();
-            reportOk(`演奏已结束（状态：${playbackStatus.value.state}）`);
+            const detail = playbackStatus.value.last_result?.error;
+            reportError(
+              typeof detail === "string" && detail
+                ? detail
+                : `演奏未开始：${state}（请切到游戏窗口或检查管理员权限）`,
+            );
+            return;
+          }
+          if (state !== "running" && state !== "paused" && state !== "waiting_focus") {
+            stopPolling();
+            reportOk(`演奏已结束（状态：${state}）`);
           }
         } catch {
           stopPolling();
@@ -764,6 +776,19 @@ export function createLyraStore(api: LyraForgeApi) {
     arpeggiateMs.value = preset.arpeggiate_ms;
     speed.value = preset.speed;
     pushToast("ok", `已应用预设：${preset.name}`);
+  }
+
+  async function handleRelaunchElevated(): Promise<void> {
+    try {
+      const res = await api.relaunchElevated();
+      if (res.relaunched) {
+        pushToast("info", "已请求以管理员身份重启，请在 UAC 提示中确认；随后重新准备并开始演奏");
+      } else {
+        pushToast("error", "无法自动提权，请手动右键 LyraForge.exe → 以管理员身份运行");
+      }
+    } catch (err) {
+      reportError((err as Error).message);
+    }
   }
 
   async function refreshTools(): Promise<void> {
@@ -931,6 +956,7 @@ export function createLyraStore(api: LyraForgeApi) {
     toolBusy,
     refreshTools,
     handleInstallTool,
+    handleRelaunchElevated,
     presets,
     refreshPresets,
     applyPreset,

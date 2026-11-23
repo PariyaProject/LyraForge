@@ -174,7 +174,7 @@ defineProps<{
             @click="store.handleStart"
           >
             <StudioIcon name="play" />
-            2. 确认授权开始
+            2. 确认授权开始（随后切到游戏）
           </button>
           <button
             v-if="store.playbackStatus.value?.state === 'running'"
@@ -210,6 +210,36 @@ defineProps<{
             <span class="muted tabular">
               模式：{{ store.prepared.value.mode }} · 预计 {{ store.prepared.value.event_count }} 个事件
             </span>
+            <span class="muted">
+              开始后会先进入「等待游戏窗口」，请在 10 秒内切到《原神》；检测到游戏前置且权限一致后才会发送按键，超时不会发送任何按键。
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="store.playbackStatus.value?.state === 'waiting_focus'"
+          class="banner-info"
+        >
+          <StudioIcon name="alert" />
+          <span>
+            正在等待《原神》窗口获得前台…请切换到游戏；若超时，会提示当前前台窗口并停止。
+          </span>
+        </div>
+
+        <div
+          v-if="store.playbackStatus.value?.state === 'permission_required'"
+          class="banner-error"
+        >
+          <StudioIcon name="alert" />
+          <div class="view-stack" style="gap: 8px">
+            <span>
+              {{ store.playbackStatus.value.last_result?.error ?? '权限不足：请以管理员身份重启 LyraForge。' }}
+            </span>
+            <div>
+              <button class="secondary" type="button" @click="store.handleRelaunchElevated">
+                以管理员身份重启 LyraForge
+              </button>
+            </div>
           </div>
         </div>
 

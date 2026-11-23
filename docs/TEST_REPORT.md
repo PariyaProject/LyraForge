@@ -257,6 +257,25 @@
    - 鼓（Festive Drum / Djem Djem Drum）、尤克里里、夜风号角、Leaping Spirit Piano、Harmonic Keys 等**不同输入模型**的乐器未纳入；其中鼓/尤克里里需要新的和弦/节奏映射引擎。
 6. **合入记录**：[PR #13](https://github.com/PariyaProject/LyraForge/pull/13) → dc22b0；合并后 main CI [Run #45154608748](https://github.com/PariyaProject/LyraForge/actions/runs/45154608748) 全绿。
 
+---
+
+## 14. Windows 真机演奏 P1：焦点交接、进程识别与提权（2026-11-23）
+
+1. **根因**：旧流程在用户点击「确认授权开始」的瞬间启动播放线程，`Player` 在发送每个按键前检查前台窗口；此时前台是 LyraForge 自己，因此必然 `focus_lost`。且检测仅匹配窗口标题，国服/全屏/本地化标题易误判。
+2. **实现**：
+   - `playback/windows/game_window.py`：公开 Win32 API 读取前台窗口的 PID、进程名、标题与 TokenElevation，不读游戏内存、不装钩子；
+   - `ForegroundWindowGuard` 优先匹配进程名 `GenshinImpact.exe` / `YuanShen.exe`，标题仅作回退；
+   - `PlaybackManager.start()` 增加 `wait_for_focus_s`（默认 10s）：先进入 `waiting_focus`，检测到游戏前台后再发送按键；超时返回 `focus_timeout` 并附带当前前台进程/标题；
+   - UIPI 检测：目标高权限而本进程低权限时进入 `permission_required`，`POST /v1/app/relaunch-elevated` 触发 UAC 重启（`ShellExecuteW("runas")`）；
+   - 前端展示等待焦点/权限错误状态与「以管理员身份重启」按钮。
+3. **自动化验证**：
+   - `uv run pytest --cov=lyraforge --cov-fail-under=80` → **177 passed, 2 warnings in 33.62s**，总覆盖率 **84.40%**（新增 `test_game_window.py`、`test_elevation.py`）；
+   - `uv run ruff check .` → `All checks passed!`；
+   - 前端 `vitest run` → **4 文件 / 6 用例全过**；`vue-tsc --noEmit && vite build` → 成功（`164.30 kB` JS / `20.52 kB` CSS）。
+4. **未覆盖（如实标注）**：
+   - 本会话无《原神》游戏环境，**未进行真实游戏内演奏验证**；管理员/非管理员、国服/国际服、独占全屏/无边框需用户在实机确认；
+   - 全局热键（P2）与播放队列/上一首/下一首（P3）尚未实现。
+
 
 
 
