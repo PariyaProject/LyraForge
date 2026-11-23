@@ -20,8 +20,8 @@ const pipelineStage = computed<number>(() => {
     return 3;
   }
   if (job?.status === "running" || job?.status === "queued") return 2;
-  if (props.store.songTranscriptions.value.some((t) => t.status === "completed")) return 4;
-  if (props.store.hasAudioSource.value) return 1;
+  if (props.store.transcribeTranscriptions.value.some((t) => t.status === "completed")) return 4;
+  if (props.store.transcribeHasAudio.value) return 1;
   return 0;
 });
 
@@ -30,10 +30,30 @@ const jobProgressValue = computed(() => {
   return Math.round(raw <= 1 ? raw * 100 : raw);
 });
 
+const stageLabel = computed(() => {
+  const job = props.store.activeJob.value;
+  if (!job) return "";
+  const labels: Record<string, string> = {
+    queued: "排队中",
+    extracting: "提取音频",
+    running: "识别中",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[job.status] ?? job.status;
+});
+
+const jobSongTitle = computed(() => {
+  const job = props.store.activeJob.value;
+  if (!job) return "";
+  return props.store.songs.value.find((song) => song.id === job.song_id)?.title ?? job.song_id;
+});
+
 async function onSongChange(event: Event): Promise<void> {
   const songId = (event.target as HTMLSelectElement).value;
   if (songId) {
-    await props.store.selectSong(songId);
+    await props.store.selectTranscribeSong(songId);
   }
 }
 
@@ -70,9 +90,9 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <h2>音频转 MIDI 转录</h2>
           <span
             class="pill"
-            :class="store.hasAudioSource.value ? 'pill-ok' : ''"
+            :class="store.transcribeHasAudio.value ? 'pill-ok' : ''"
           >
-            {{ store.hasAudioSource.value ? "含音频来源" : "等待导入音频" }}
+            {{ store.transcribeHasAudio.value ? "含音频来源" : "等待导入音频" }}
           </span>
         </div>
 
@@ -80,7 +100,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <label for="transcribe-song-select">当前处理曲目</label>
           <select
             id="transcribe-song-select"
-            :value="store.selectedSongId.value ?? ''"
+            :value="store.transcribeSongId.value ?? ''"
             :disabled="store.songs.value.length === 0"
             @change="onSongChange"
           >
@@ -139,7 +159,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <button
             class="primary"
             type="button"
-            :disabled="!store.hasAudioSource.value || store.busy.value || !store.selectedEngineInfo.value?.available"
+            :disabled="!store.transcribeHasAudio.value || store.busy.value || !store.selectedEngineInfo.value?.available"
             @click="store.handleStartTranscribe"
           >
             <StudioIcon name="sparkles" />
@@ -162,10 +182,17 @@ function onAgentKeydown(event: KeyboardEvent): void {
           style="gap: 6px; padding: 10px; border-radius: var(--radius-md); background: var(--bg-canvas); border: 1px solid var(--border-subtle)"
         >
           <div class="card-title-row">
-            <strong>任务进度：{{ store.activeJob.value.status }}</strong>
+            <strong>任务进度：{{ stageLabel }}</strong>
             <span class="pill tabular">{{ jobProgressValue }}%</span>
           </div>
           <progress max="100" :value="jobProgressValue" aria-label="音频转谱任务进度" />
+          <p class="muted" style="margin: 0">
+            曲目：{{ jobSongTitle }} · 引擎 {{ store.activeJob.value.engine_id }} · 已运行
+            {{ Math.round(store.activeJob.value.elapsed_s ?? 0) }} 秒
+          </p>
+          <p class="muted" style="margin: 0">
+            切换其他歌曲或去播放不会中断本任务；dettato 首次运行要加载模型，3–4 分钟的歌曲可能需要数分钟到十几分钟。
+          </p>
           <p v-if="store.activeJob.value.transcription" class="muted" style="margin: 0">
             输出音符数：{{ store.activeJob.value.transcription.note_count }}
           </p>
