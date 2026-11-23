@@ -255,6 +255,7 @@
 5. **未覆盖（如实标注）**：
    - 风物之诗琴、镜花之琴、老旧的诗琴的键位与绝对八度命名仍未在游戏内逐键校准（全部 `unverified`）；
    - 鼓（Festive Drum / Djem Djem Drum）、尤克里里、夜风号角、Leaping Spirit Piano、Harmonic Keys 等**不同输入模型**的乐器未纳入；其中鼓/尤克里里需要新的和弦/节奏映射引擎。
+6. **合入记录**：[PR #13](https://github.com/PariyaProject/LyraForge/pull/13) → dc22b0；合并后 main CI [Run #45154608748](https://github.com/PariyaProject/LyraForge/actions/runs/45154608748) 全绿。
 
 
 
