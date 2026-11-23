@@ -67,7 +67,7 @@ uv run python scripts/check_ci.py --sha origin/main
      git checkout main && git pull origin main
      uv run python scripts/check_ci.py --sha HEAD --watch
      ```
-7. **记录真相并继续**：在 [PROGRESS.md](PROGRESS.md) 或报告中记录真实 commit SHA、PR URL、CI Run URL 与实测结果，随后无缝选择下一优先级任务。
+7. **记录真相并继续**：将详细实现进展写入 [PROGRESS.md](PROGRESS.md)，测试与覆盖率指标写入 [TEST_REPORT.md](TEST_REPORT.md)，路线图演进写入 [ROADMAP.md](ROADMAP.md)，面向用户的版本变更写入 [CHANGELOG.md](../CHANGELOG.md)；遵守 [AGENTS.md](../AGENTS.md) 规则，仅在核心产品能力、安装运行方式、兼容范围、截图或关键限制发生实质变化时更新 [README.md](../README.md)，不得向 README 写入例行 Review 流水账、内部 Bug 编号或 CI 日志。随后无缝选择下一优先级任务。
 
 ---
 

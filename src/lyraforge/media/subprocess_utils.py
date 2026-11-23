@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import os
+import selectors
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -79,26 +81,34 @@ class _BoundedRotatingLog:
         self._curr_size = 0
         self._fh = self._curr_path.open("wb")
 
+    def _close_locked(self) -> None:
+        self._closed = True
+        if self._fh is not None:
+            with contextlib.suppress(OSError):
+                self._fh.flush()
+            with contextlib.suppress(OSError):
+                self._fh.close()
+            self._fh = None
+
     def close(self) -> None:
         with self._lock:
-            self._closed = True
-            if self._fh is not None:
-                with contextlib.suppress(OSError):
-                    self._fh.flush()
-                with contextlib.suppress(OSError):
-                    self._fh.close()
-                self._fh = None
+            self._close_locked()
 
     def read_tail(self, tail_bytes: int = DEFAULT_LOG_TAIL_BYTES) -> tuple[bytes, bool, int]:
-        self.close()
-        curr_tail = read_file_tail(self._curr_path, tail_bytes)
-        if len(curr_tail) < tail_bytes and self._prev_path.is_file():
+        with self._lock:
+            self._close_locked()
+            curr_path = self._curr_path
+            prev_path = self._prev_path
+            truncated = self.truncated
+            total_written = self.total_written
+        curr_tail = read_file_tail(curr_path, tail_bytes)
+        if len(curr_tail) < tail_bytes and prev_path.is_file():
             need = tail_bytes - len(curr_tail)
-            prev_tail = read_file_tail(self._prev_path, need)
+            prev_tail = read_file_tail(prev_path, need)
             combined = prev_tail + curr_tail
         else:
             combined = curr_tail
-        return combined, self.truncated, self.total_written
+        return combined, truncated, total_written
 
     def cleanup(self) -> None:
         self.close()
@@ -273,6 +283,55 @@ def _terminate_process_tree(
             wait_fn(timeout=2.0)
 
 
+def _safe_terminate_process_tree(
+    proc: Any,
+    *,
+    pgid: int | None = None,
+    created_after_epoch: float | None = None,
+    grace_s: float = 0.8,
+) -> None:
+    try:
+        _terminate_process_tree(
+            proc,
+            pgid=pgid,
+            created_after_epoch=created_after_epoch,
+            grace_s=grace_s,
+        )
+    except Exception:  # noqa: BLE001
+        killpg_fn = getattr(os, "killpg", None)
+        if os.name != "nt" and pgid is not None and callable(killpg_fn):
+            with contextlib.suppress(OSError):
+                killpg_fn(pgid, signal.SIGKILL)
+        kill_fn = getattr(proc, "kill", None)
+        if callable(kill_fn):
+            with contextlib.suppress(OSError):
+                kill_fn()
+        wait_fn = getattr(proc, "wait", None)
+        if callable(wait_fn):
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired, TypeError):
+                wait_fn(timeout=1.0)
+
+
+def _pipe_selectable_fd(pipe: IO[bytes]) -> int | None:
+    if os.name == "nt":
+        return None
+    fileno_fn = getattr(pipe, "fileno", None)
+    if not callable(fileno_fn):
+        return None
+    try:
+        fd = int(fileno_fn())
+    except (OSError, TypeError, ValueError):
+        return None
+    if fd < 0:
+        return None
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            return None
+    except OSError:
+        return None
+    return fd
+
+
 def _drain_pipe(
     pipe: IO[bytes] | None,
     log: _BoundedRotatingLog,
@@ -281,17 +340,34 @@ def _drain_pipe(
     if pipe is None:
         return
     try:
-        while not stop_event.is_set():
-            try:
-                chunk = pipe.read(_PIPE_READ_CHUNK_BYTES)
-            except TypeError:
-                chunk = pipe.read()
-                if chunk:
-                    log.write(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
-                break
-            if not chunk:
-                break
-            log.write(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
+        fd = _pipe_selectable_fd(pipe)
+        if fd is not None:
+            with selectors.DefaultSelector() as sel:
+                sel.register(fd, selectors.EVENT_READ)
+                while not stop_event.is_set():
+                    if not sel.select(timeout=0.05):
+                        continue
+                    try:
+                        chunk = os.read(fd, _PIPE_READ_CHUNK_BYTES)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        break
+                    log.write(chunk)
+        else:
+            while not stop_event.is_set():
+                try:
+                    chunk = pipe.read(_PIPE_READ_CHUNK_BYTES)
+                except TypeError:
+                    chunk = pipe.read()
+                    if chunk:
+                        log.write(
+                            chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")
+                        )
+                    break
+                if not chunk:
+                    break
+                log.write(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     except (OSError, ValueError):
         pass
     finally:
@@ -373,16 +449,16 @@ def run_bounded_subprocess(
         deadline = time.monotonic() + float(timeout_s)
         while proc.poll() is None:
             if stop_token is not None and stop_token.stopped:
-                reap_attempted = True
                 _terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch
                 )
+                reap_attempted = True
                 raise LyraError(ErrorCode.PLAYBACK_ABORTED, cancel_message)
             if time.monotonic() > deadline:
-                reap_attempted = True
                 _terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch
                 )
+                reap_attempted = True
                 raise LyraError(timeout_code, timeout_message)
             time.sleep(0.05)
 
@@ -395,10 +471,10 @@ def run_bounded_subprocess(
             or t_err.is_alive()
             or (pgid is not None and _pgid_has_live_processes(pgid))
         ):
-            reap_attempted = True
             _terminate_process_tree(
                 proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
             )
+            reap_attempted = True
             _join_threads((t_out, t_err), 2.0)
 
         stdout_tail, stdout_trunc, stdout_total = out_log.read_tail(tail_bytes)
@@ -421,14 +497,16 @@ def run_bounded_subprocess(
             )
             pg_alive = pgid is not None and _pgid_has_live_processes(pgid)
             if still_running or (not reap_attempted and (drainers_alive or pg_alive)):
-                _terminate_process_tree(
+                _safe_terminate_process_tree(
                     proc, pgid=pgid, created_after_epoch=spawn_epoch, grace_s=0.4
                 )
 
-        # Wait briefly for drain threads to observe EOF naturally after process-tree cleanup;
-        # avoid closing pipe objects concurrently while a drain thread is inside read().
-        _join_threads((t_out, t_err), 1.5)
+        # Signal drain loops to exit before final join so POSIX selectors drainers
+        # (and trickling pipes) exit promptly instead of leaking daemon threads.
         stop_drain.set()
+        _join_threads((t_out, t_err), 1.5)
+        out_log.close()
+        err_log.close()
 
         if proc is not None:
             if (t_out is None or not t_out.is_alive()) and (

@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from lyraforge.fs import atomic_write_bytes, atomic_write_text, resolve_under
+from lyraforge.fs import atomic_replace_file, atomic_write_bytes, atomic_write_text, resolve_under
 
 DATA_DIR_ENV = "LYRAFORGE_DATA_DIR"
 APP_DIR_NAME = "LyraForge"
@@ -31,6 +31,7 @@ def default_data_dir() -> Path:
 __all__ = [
     "APP_DIR_NAME",
     "DATA_DIR_ENV",
+    "atomic_replace_file",
     "atomic_write_bytes",
     "atomic_write_text",
     "default_data_dir",
