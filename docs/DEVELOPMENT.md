@@ -141,6 +141,13 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
 > `[Environment]::SetEnvironmentVariable('LYRAFORGE_BASIC_PITCH_PYTHON', '<path>', 'User')` 写入用户环境变量后重新登录。
 > 使用 §3.1 的应用内安装时无需这一步。
 
+### 3.3 内置乐器与一键编曲预设
+
+- 乐器 Profile 位于 `src/lyraforge/instruments/data/*.json`，当前内置：风物之诗琴（C 大调，MIDI 48–83）、镜花之琴（C 大调，48–83）、老旧的诗琴（低/中行 C Dorian、高行 C Phrygian，48–82）。
+- 预设位于 `src/lyraforge/presets.py`：每件乐器 5 套（主旋律优先 / 均衡 / 丰满 / 慢速练习 / 轻快），对应 `style`、移调、琶音与速度。命令行查看：`uv run lyraforge presets list --profile genshin.windsong_lyre.v1`；桌面端在编曲工作室顶部直接点选应用。
+- 新增 21 键乐器：复制现有 JSON，修改 `id`、`display_name`、`keys[].pitch`，在 `calibration` 中写明资料来源并保持 `status: "unverified"`；在 `presets.py` 的 `_PROFILE_IDS` 登记；运行 `uv run pytest tests/unit/test_presets.py`。
+- 校准边界：三件乐器的键位/绝对八度命名在真机逐键核对前均视为未验证；更换键位属于数据修改，不需要改编曲算法。
+
 
 ---
 
@@ -181,7 +188,7 @@ lyraforge_starter/
 │  ├─ errors.py / fs.py       # 统一错误码与原子路径安全写
 │  ├─ secrets.py / secrets_win32.py  # 跨平台凭据管理与日志脱敏
 │  ├─ music_core/             # 无头纯 Python 音乐核心（MIDI/Tempo/编曲/分离式质量评价）
-│  ├─ instruments/            # 乐器预设（风物之诗琴/镜花之琴，unverified 待真机校准）
+│  ├─ instruments/            # 乐器预设（风物之诗琴/镜花之琴/老旧的诗琴，unverified 待真机校准）
 │  ├─ media/ / transcribers/  # WAV 提取、YIN 转录与隔离进程外部 ML 适配器
 │  ├─ sources/                # 本地库/目录 + 规范化许可判定开放曲库 + DNS 固定直链获取
 │  ├─ agent/                  # 离线规则指令解析与可选 OpenAI-compatible HTTP 提供器

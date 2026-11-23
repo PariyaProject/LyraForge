@@ -9,7 +9,7 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 > 查看全套 6 视图实机截图：
 > [首页](docs/assets/ui/home.png) ·
 > [本地曲库](docs/assets/ui/library.png) ·
-> [AI 转谱](docs/assets/ui/transcribe.png) ·
+> [音频转谱](docs/assets/ui/transcribe.png) ·
 > [编曲工作室 & Piano Roll](docs/assets/ui/studio.png) ·
 > [试听与演奏](docs/assets/ui/playback.png) ·
 > [设置与 MCP 接入](docs/assets/ui/settings.png)
@@ -18,17 +18,14 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 
 ## 核心功能
 
-- **六视图 Studio Dark 桌面工作台**：固定底部全局试听传输栏支持跨视图持续试听 WAV 并随时暂停、继续与急停，整合首页向导、本地曲库、AI 转谱、Piano Roll 工作室、演奏控制台与设置/MCP 接入页面。
+- **六视图 Studio Dark 桌面工作台**：固定底部全局试听传输栏支持跨视图持续试听 WAV 并随时暂停、继续与急停，整合首页向导、本地曲库、音频转谱、Piano Roll 工作室、演奏控制台与设置页面。
 - **多格式曲谱与媒体导入**：原生支持本地 `.mid` / `.midi` 与 `.wav`；在本机安装 `ffmpeg` 后可扩展提取 `.mp3` / `.flac` / `.m4a` / `.ogg` / `.mp4` / `.mkv` / `.webm` 等格式；支持由用户明确确认后检索 Internet Archive 开放许可条目或通过公开直链导入合法素材。
 - **音频转谱与独立评价**：内置零外部依赖单音识别引擎（`builtin-mono` YIN）用于干净独奏旋律，并支持接入本地隔离的开源多音转录引擎（`basic-pitch` / `dettato`）；编曲报告将“可演奏适配度”与“转录还原度”严格分开展示，避免无参考真值时产生误导。
-- **面向游戏乐器的智能编曲**：内置**风物之诗琴**（21 键）与**镜花之琴**（21 键）预设，支持主旋律识别与优先保留、自动移调寻优、八度折叠、半音策略调整以及柱式和弦自动琶音。
+- **面向游戏乐器的智能编曲**：内置**风物之诗琴**、**镜花之琴**与**老旧的诗琴**预设（均 21 键），支持主旋律识别与优先保留、自动移调寻优、八度折叠、半音策略调整以及柱式和弦自动琶音；每件乐器提供主旋律 / 均衡 / 丰满 / 慢速练习 / 轻快等**一键预设**，无需任何 Agent 或 API 调用。
 - **DAW 级 Piano Roll 编辑与离线 WAV 试听**：提供 21 键位热力图、时间轴缩放、网格吸附、拖拽调整音高与拍点、点击增删音符、撤销/重做与版本对比，并利用纯 Python 拨弦合成器离线渲染 WAV，在不打开游戏的情况下即可试听效果。
 - **本地曲库、`.lyrapack` 分享与安全备份**：内置 SQLite 曲库，支持精确标签筛选、收藏与版本分支；支持导出标准 MIDI、`performance.json`、强制确认版权且不包含原始音频或个人凭据的 `.lyrapack` 分享包，以及支持原子切换与故障自动回滚的全库 ZIP 备份恢复。
 - **安全游戏演奏控制（Windows 实验性）**：仅面向大世界自由演奏界面，采用准备/授权两步确认机制、前景窗口焦点校验与 `Esc` 紧急停键全松键，不读取、挂钩或修改游戏内存；macOS 下默认使用零按键的 `DryRun` 模拟模式。
-- **无需 API Key 的三层 AI / MCP 集成**：
-  1. **完全离线模式**：所有音乐处理、编曲、试听及内置规则指令解析均可零配置、零联网本地运行，无需购买任何大模型 API Key。
-  2. **MCP + Skill 接入**：通过标准 `stdio` 协议运行 `lyraforge mcp`，供你自己的 Claude Code、Codex CLI 或 Antigravity 会话安全编排转谱与编曲；敏感工具 `play_in_game` 默认拦截，绝不会绕过桌面确认自动向游戏发送按键。配置说明见 [AI 与 MCP 集成手册](docs/AI_INTEGRATION.md)。
-  3. **可选 HTTP LLM 接入**：如需在桌面端连接本地 Ollama 或私有 OpenAI-compatible 接口，可在设置页配置，API Key 优先写入系统凭据库而不落明文。
+- **可选的高级集成（默认不需要）**：默认的导入、转谱、编曲、试听与导出全部离线完成，不需要任何 Agent 或 API Key；如果你已经使用 AI 客户端，可在设置的高级选项中通过本地 `lyraforge mcp` 接入 Claude Code / Codex / Antigravity / DSH，或配置 OpenAI 兼容端点。详见 [AI 与 MCP 集成手册](docs/AI_INTEGRATION.md)（可选功能，非使用前提）。
 
 ---
 

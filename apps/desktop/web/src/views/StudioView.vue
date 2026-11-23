@@ -17,6 +17,12 @@ const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string }> = [
 
 const currentArr = computed(() => props.store.arrDetail.value?.arrangement ?? null);
 
+const profilePresets = computed(() =>
+  props.store.presets.value.filter(
+    (preset) => preset.profile_id === props.store.selectedProfileId.value,
+  ),
+);
+
 async function onArrangementChange(event: Event): Promise<void> {
   const arrId = (event.target as HTMLSelectElement).value;
   await props.store.selectArrangement(arrId);
@@ -55,6 +61,25 @@ async function onArrangementChange(event: Event): Promise<void> {
     </header>
 
     <div class="card">
+      <div class="field" style="margin-block-end: var(--space-3)">
+        <label>一键预设（内置离线，按当前乐器）</label>
+        <div class="button-row" style="flex-wrap: wrap; gap: 8px">
+          <button
+            v-for="preset in profilePresets"
+            :key="preset.id"
+            class="secondary"
+            type="button"
+            :title="preset.description"
+            @click="store.applyPreset(preset.id)"
+          >
+            {{ preset.name }}
+          </button>
+        </div>
+        <span class="muted">
+          点击后自动套用风格 / 移调 / 琶音 / 速度，再点「生成编曲」即可。
+        </span>
+      </div>
+
       <div class="row">
         <div class="field" style="flex: 1 1 210px">
           <label for="profile-select">目标原神乐器</label>

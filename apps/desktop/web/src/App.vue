@@ -21,10 +21,10 @@ const store = createLyraStore(props.api ?? props.client ?? new LyraForgeApi());
 const NAV_ITEMS: Array<{ id: StudioViewId; label: string; icon: StudioIconName }> = [
   { id: "home", label: "首页", icon: "home" },
   { id: "library", label: "本地曲库", icon: "library" },
-  { id: "transcribe", label: "AI 转谱", icon: "sparkles" },
+  { id: "transcribe", label: "音频转谱", icon: "sparkles" },
   { id: "studio", label: "编曲工作室", icon: "sliders" },
   { id: "playback", label: "试听与演奏", icon: "play" },
-  { id: "settings", label: "设置与模型", icon: "settings" },
+  { id: "settings", label: "设置", icon: "settings" },
 ];
 
 const VIEW_COMPONENTS: Record<StudioViewId, Component> = {
@@ -50,7 +50,7 @@ onMounted(() => {
         <div class="brand-mark" aria-hidden="true">LF</div>
         <div class="brand-copy">
           <span class="brand-title">LyraForge</span>
-          <span class="brand-sub">AI 曲谱编曲与自由演奏</span>
+          <span class="brand-sub">MIDI / 音频 → 游戏乐器曲谱</span>
         </div>
       </div>
 

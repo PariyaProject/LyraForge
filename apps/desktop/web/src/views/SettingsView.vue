@@ -49,21 +49,23 @@ async function copyText(text: string): Promise<void> {
 </script>
 
 <template>
-  <section class="view-stack" aria-label="系统设置与 AI 模型集成">
+  <section class="view-stack" aria-label="设置与外部工具">
     <header class="view-header">
       <div>
-        <h1 class="view-title">设置、MCP 接入与转谱引擎诊断</h1>
+        <h1 class="view-title">设置、外部工具与高级集成</h1>
         <p class="view-subtitle">
-          零外部 API Key 本地闭环、用户自有 AI 客户端 MCP 桥接、可选 HTTP 模型与密钥安全保管。
+          默认流程完全离线：转谱引擎、一键预设与本地曲库开箱即用；AI / MCP 客户端接入是可选的高级功能。
         </p>
       </div>
     </header>
 
-    <div class="card">
-      <div class="card-title-row">
-        <h2>本地 MCP & AI 客户端免密钥接入（Layer 1 + Layer 2）</h2>
-        <span class="pill pill-ok">无需重复支付 API Key</span>
-      </div>
+    <details class="advanced-box" style="order: 99">
+      <summary>高级（可选）：AI / MCP 客户端接入</summary>
+      <div class="card">
+        <div class="card-title-row">
+          <h2>MCP 客户端接入（可选）</h2>
+          <span class="pill">仅在你已有 AI 客户端时需要</span>
+        </div>
       <p class="muted" style="margin: 0">
         桌面端默认内置确定性规则引擎 <code>RuleBasedLLMProvider</code>，完全离线可用；若你已订阅 Claude Code、Codex 或 Antigravity，可直接挂载本地 <code>lyraforge mcp</code>，让你的客户端安全调用曲库、转谱、编曲与 Dry-Run（真机 <code>play_in_game</code> 始终在 MCP 中保持门控）。
       </p>
@@ -113,7 +115,8 @@ async function copyText(text: string): Promise<void> {
         <span class="muted">{{ MCP_SNIPPETS[activeMcpTab].title }}</span>
         <pre><code>{{ MCP_SNIPPETS[activeMcpTab].code }}</code></pre>
       </div>
-    </div>
+      </div>
+    </details>
 
     <div class="split-2">
       <div class="card">
@@ -167,7 +170,7 @@ async function copyText(text: string): Promise<void> {
       </div>
 
       <div class="card">
-        <h2>应用设置与安全凭据（Layer 3 可选）</h2>
+        <h2>应用设置与安全凭据</h2>
 
         <div class="field">
           <label for="settings-default-style">默认编曲风格</label>

@@ -233,5 +233,29 @@
    - 断网/代理失败的用户提示仅由单元测试覆盖，未做真实网络故障演练。
 7. **合入记录**：[PR #12](https://github.com/PariyaProject/LyraForge/pull/12) → `7d6fc48`；合并后 main CI [Run #45144673073](https://github.com/PariyaProject/LyraForge/actions/runs/45144673073) 全绿（含 `windows-latest` 打包与 `--self-check --check-gui` 门禁）。
 
+---
+
+## 13. 产品定位收敛、21 键预设与老旧的诗琴（2026-11-23）
+
+1. **AI / Agent 降级为可选项**：
+   - README 删除「三层 AI / MCP 集成」主推段落，改为一条「可选的高级集成（默认不需要）」；截图标题「AI 转谱」改为「音频转谱」。
+   - 侧边栏：`AI 转谱` → `音频转谱`，`设置与模型` → `设置`，品牌副标题改为 `MIDI / 音频 → 游戏乐器曲谱`。
+   - 音频转谱页的 Agent 卡片、设置页的 MCP 卡片均移入 `高级（可选）` 的折叠区，默认流程为转谱 → 预设 → 编曲 → 试听 → 导出。
+2. **一键编曲预设**：
+   - `src/lyraforge/presets.py` 定义 3 件乐器 × 5 套预设（主旋律优先 / 均衡 / 丰满 / 慢速练习 / 轻快），每套都经过 `ArrangeOptions.validate()`；
+   - 新 API `GET /v1/presets`（可选 `profile_id` 过滤）与 CLI `lyraforge presets list --profile`；
+   - 编曲工作室顶部新增预设按钮，点击后写入 style / 移调 / 琶音 / 速度，再点「生成编曲」。
+3. **老旧的诗琴 Profile**：
+   - 新增 `src/lyraforge/instruments/data/genshin.vintage_lyre.v1.json`，21 键：低/中行 C Dorian（48,50,51,53,55,57,58 / 60,62,63,65,67,69,70），高行 C Phrygian（72,73,75,77,79,80,82）；
+   - 数据来源：Genshin Impact Wiki（Fandom）Vintage Lyre 条目；`calibration.status` 保持 `unverified`，需真机逐键核对后才能升级。
+4. **自动化验证**：
+   - `uv run pytest --cov=lyraforge --cov-fail-under=80` → **169 passed, 2 warnings in 34.88s**，总覆盖率 **85.11%**（新增 `test_presets.py`：预设数量/唯一性/参数校验、Vintage Lyre 音高映射与编曲、`/v1/presets` API）；
+   - `uv run ruff check .` → `All checks passed!`；
+   - 前端 `vitest run` → **4 文件 / 6 用例全过**；`vue-tsc --noEmit && vite build` → 成功（`162.36 kB` JS / `20.52 kB` CSS）。
+5. **未覆盖（如实标注）**：
+   - 风物之诗琴、镜花之琴、老旧的诗琴的键位与绝对八度命名仍未在游戏内逐键校准（全部 `unverified`）；
+   - 鼓（Festive Drum / Djem Djem Drum）、尤克里里、夜风号角、Leaping Spirit Piano、Harmonic Keys 等**不同输入模型**的乐器未纳入；其中鼓/尤克里里需要新的和弦/节奏映射引擎。
+
+
 
 
