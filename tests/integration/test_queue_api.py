@@ -84,3 +84,11 @@ def test_queue_api_set_step_add_and_clear(tmp_path: Path) -> None:
     assert cleared.status_code == 200
     assert cleared.json()["items"] == []
     client.post("/v1/playback/stop", headers=headers)
+
+    renamed = client.post(
+        f"/v1/arrangements/{arrangement_ids[0]}/label",
+        headers=headers,
+        json={"label": "我的版本"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["arrangement"]["label"] == "我的版本"

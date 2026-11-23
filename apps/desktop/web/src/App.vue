@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, type Component } from "vue";
+import { onMounted, ref, type Component } from "vue";
 import { LyraForgeApi } from "./api";
+import AboutDialog from "./components/AboutDialog.vue";
+import QueueDrawer from "./components/QueueDrawer.vue";
 import StudioIcon, { type StudioIconName } from "./components/StudioIcon.vue";
 import ToastStack from "./components/ToastStack.vue";
-import { createLyraStore, type StudioViewId } from "./composables/useLyraStore";
+import { createLyraStore, arrangementTitle, type StudioViewId } from "./composables/useLyraStore";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
 import PlaybackView from "./views/PlaybackView.vue";
@@ -17,6 +19,8 @@ const props = defineProps<{
 }>();
 
 const store = createLyraStore(props.api ?? props.client ?? new LyraForgeApi());
+const queueOpen = ref(false);
+const aboutOpen = ref(false);
 
 const NAV_ITEMS: Array<{ id: StudioViewId; label: string; icon: StudioIconName }> = [
   { id: "home", label: "首页", icon: "home" },
@@ -70,8 +74,25 @@ onMounted(() => {
       </nav>
 
       <div class="rail-footer">
-        <strong>GNU GPL-3.0</strong>
-        <span>离线可运行 · 零绑架 API Key</span>
+        <button
+          type="button"
+          style="
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
+            padding: 0;
+            color: inherit;
+            text-align: start;
+            cursor: pointer;
+            background: none;
+            border: 0;
+          "
+          @click="aboutOpen = true"
+        >
+          <strong>LyraForge {{ store.health.value?.version ?? "" }}</strong>
+          <span>GPL-3.0 · 关于与第三方许可</span>
+        </button>
         <span>{{ store.health.value?.windows_playback_available ? "Windows" : "DRY-RUN" }}</span>
       </div>
     </aside>
@@ -86,7 +107,7 @@ onMounted(() => {
           {{ store.profile.value.display_name }}
         </span>
         <span v-if="store.arrDetail.value" class="pill">
-          {{ store.arrDetail.value.arrangement.label || store.arrDetail.value.arrangement.style }}
+          {{ arrangementTitle(store.arrDetail.value.arrangement) }}
         </span>
       </div>
 
@@ -150,7 +171,7 @@ onMounted(() => {
       <div class="transport-meta">
         <span class="pill">
           <StudioIcon name="music" :size="13" />
-          {{ store.arrDetail.value?.arrangement.label || store.arrDetail.value?.arrangement.style || "未选择编曲" }}
+          {{ store.arrDetail.value ? arrangementTitle(store.arrDetail.value.arrangement) : "未选择编曲" }}
         </span>
         <span
           class="pill"
@@ -178,6 +199,10 @@ onMounted(() => {
       </div>
 
       <div class="transport-controls">
+        <button class="secondary" type="button" @click="queueOpen = !queueOpen">
+          <StudioIcon name="music" :size="14" />
+          队列 {{ store.queue.value.items.length }}
+        </button>
         <button
           class="secondary"
           type="button"
@@ -219,5 +244,10 @@ onMounted(() => {
     </footer>
 
     <ToastStack :toasts="store.toasts.value" @dismiss="store.dismissToast" />
+    <QueueDrawer v-model:open="queueOpen" :store="store" />
+    <AboutDialog
+      v-model:open="aboutOpen"
+      :version="store.health.value?.version"
+    />
   </div>
 </template>

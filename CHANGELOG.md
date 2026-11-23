@@ -5,7 +5,10 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Added
-- **Playback queue with next/previous**: queue arrangements from the studio, see the ordered list with the current item highlighted in the playback console, and move with buttons or the `next`/`previous` global hotkeys; queue switching stops the current playback, re-prepares the target and reuses the focus/permission checks.
+- **Playback queue as a dedicated panel**: the queue moved out of the playback page into a right-side drawer opened from the global transport bar (`队列 n`), with numbered items, current-item highlight, click-to-select, previous/next and clear actions.
+- **Arrangement version management**: saved versions now show an auto-generated descriptive name (`#序号 · 风格 · 移调 · 速度`), playability ratio, note count and creation time, and can be renamed inline (`POST /v1/arrangements/{id}/label`).
+- **About & license dialog**: the sidebar footer now opens an About dialog listing the version, GNU GPL-3.0 notice, source link and third-party component licenses; the "zero API key" slogan was removed.
+- **Playback queue with next/previous**: queue arrangements from the studio and move with buttons or the `next`/`previous` global hotkeys; queue switching stops the current playback, re-prepares the target and reuses the focus/permission checks.
 - **Configurable global hotkeys for playback (default unbound)**: `start` / `pause` / `resume` / `stop` / `next` / `previous` can be assigned user shortcuts such as `Ctrl+Alt+F9`; registration uses the Windows `RegisterHotKey` API, conflicts are reported per action, and the settings page persists them. Nothing is bound until the user sets it.
 - **Configurable game process allowlist**: `windows_allowed_processes` defaults to `GenshinImpact.exe, YuanShen.exe` and can be edited in settings, alongside the existing window-title fallback.
 - **Built-in one-click arrangement presets**: five validated presets per instrument (melody first, balanced, rich, slow practice, lively) exposed as buttons in the arrange studio and via `lyraforge presets list` / `GET /v1/presets`; the default workflow never calls an agent or an API.
@@ -15,10 +18,11 @@ All notable user-facing changes to LyraForge are documented in this file.
 - **Audio & media transcription pipeline**: Pure-Python offline monophonic YIN transcriber (`builtin-mono`), WAV normalization, optional user-configured `ffmpeg` media extraction (`.mp3`, `.flac`, `.m4a`, `.ogg`, `.mp4`, `.mkv`, `.webm`), and isolated subprocess adapters for `basic-pitch` and `dettato`.
 - **Desktop Workbench (Vue 3 + PyWebView)**: Six-view Studio Dark interface (Home, Library, Transcribe, Arrange Studio with interactive DAW Piano Roll, Playback console, Settings & MCP integration) with a persistent bottom transport bar for offline plucked-lyre WAV previewing.
 - **SQLite Library, `.lyrapack` & Backup/Restore**: Content deduplication, exact JSON1 tag filtering, favorites/version branching, rights-confirmed `.lyrapack` sharing (audio-free and secret-free), and transactional ZIP backup/restore with rollback recovery.
-- **Zero-API-Key AI & MCP Integration**: Built-in deterministic `RuleBasedLLMProvider`, optional private OpenAI-compatible HTTP endpoint support, and a standard `stdio` MCP server (`lyraforge mcp`, 10 typed tools) with integration templates under `integrations/` and hard confirmation gating on `play_in_game`.
+- **Optional AI & MCP integration**: Built-in deterministic `RuleBasedLLMProvider`, optional private OpenAI-compatible HTTP endpoint support, and a standard `stdio` MCP server (`lyraforge mcp`, 10 typed tools) with integration templates under `integrations/` and hard confirmation gating on `play_in_game`. Not required for the default offline workflow.
 - **Cross-platform CI & GitHub Releases automation**: Added Windows portable ZIP packaging, post-extraction `LyraForge.exe --self-check`, `SHA256SUMS.txt` checksum generation, rolling `dev-latest` + immutable `dev-YYYYMMDD-<sha7>` experimental pre-releases on `main`, and isolated SemVer (`vX.Y.Z`) release channels (`packaging/lyraforge.spec`, `scripts/build_windows.ps1`, `scripts/release_helper.py`, `.github/workflows/ci.yml`).
 
 ### Changed
+- **Layout and typography fixes**: advanced/optional sections are now full-width instead of leaving an empty grid cell, long paths and engine version strings wrap inside cards, and code blocks wrap instead of overflowing their container.
 - **AI/Agent is now clearly optional**: the desktop navigation, home page, transcribe view and settings put the preset-driven offline workflow first; MCP / HTTP LLM integration moved into collapsed "advanced (optional)" sections, and README no longer presents AI as a prerequisite.
 
 ### Fixed

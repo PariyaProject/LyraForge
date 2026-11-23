@@ -3,7 +3,7 @@ import { computed } from "vue";
 import LyreKeyboard from "../components/LyreKeyboard.vue";
 import PianoRollEditor from "../components/PianoRollEditor.vue";
 import StudioIcon from "../components/StudioIcon.vue";
-import type { LyraStore } from "../composables/useLyraStore";
+import { arrangementTitle, type LyraStore } from "../composables/useLyraStore";
 
 const props = defineProps<{
   store: LyraStore;
@@ -180,7 +180,7 @@ async function onArrangementChange(event: Event): Promise<void> {
             @change="onArrangementChange"
           >
             <option v-for="a in store.arrangements.value" :key="a.id" :value="a.id">
-              {{ a.label || a.style }}（{{ a.event_count }} 音 · {{ a.profile_id }}）
+              {{ arrangementTitle(a) }}（{{ a.event_count }} 音 · {{ a.profile_id }}）
             </option>
           </select>
         </div>

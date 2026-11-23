@@ -1,10 +1,30 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import StudioIcon from "../components/StudioIcon.vue";
-import { isImeEnter, type LyraStore } from "../composables/useLyraStore";
+import {
+  arrangementTitle,
+  isImeEnter,
+  type LyraStore,
+} from "../composables/useLyraStore";
 
 const props = defineProps<{
   store: LyraStore;
 }>();
+
+const editingId = ref<string | null>(null);
+const editingLabel = ref("");
+
+function startRename(arrangementId: string, current: string): void {
+  editingId.value = arrangementId;
+  editingLabel.value = current;
+}
+
+async function saveRename(): Promise<void> {
+  if (!editingId.value) return;
+  await props.store.handleRenameArrangement(editingId.value, editingLabel.value);
+  editingId.value = null;
+}
+
 
 function onFilterKeydown(event: KeyboardEvent): void {
   if (!isImeEnter(event)) return;
@@ -263,13 +283,16 @@ function onRestoreFileChange(event: Event): void {
           <h3>已保存编曲版本 ({{ store.arrangements.value.length }})</h3>
           <div v-if="store.arrangements.value.length > 0" class="view-stack" style="gap: 8px">
             <div
-              v-for="arr in store.arrangements.value"
+              v-for="(arr, index) in store.arrangements.value"
               :key="arr.id"
               class="track-card"
               :class="{ selected: store.selectedArrId.value === arr.id }"
             >
               <div class="card-title-row">
-                <strong>{{ arr.label || arr.style }}</strong>
+                <strong>
+                  <span class="muted">#{{ store.arrangements.value.length - index }}</span>
+                  {{ arrangementTitle(arr) }}
+                </strong>
                 <div class="button-row">
                   <span v-if="arr.is_favorite" class="pill pill-warn">
                     <StudioIcon name="star" :size="12" />
@@ -278,7 +301,29 @@ function onRestoreFileChange(event: Event): void {
                   <span class="pill">{{ arr.event_count }} 音符</span>
                 </div>
               </div>
-              <div class="button-row">
+              <div class="muted" style="font-size: 0.78rem">
+                可演奏 {{ Math.round(arr.playable_ratio * 100) }}% · {{ arr.speed }}x ·
+                {{ new Date(arr.created_at).toLocaleString() }}
+              </div>
+              <div v-if="editingId === arr.id" class="button-row">
+                <input
+                  v-model="editingLabel"
+                  type="text"
+                  maxlength="80"
+                  aria-label="版本名称"
+                  style="flex: 1 1 160px"
+                />
+                <button class="primary" type="button" @click="saveRename">保存</button>
+                <button class="ghost" type="button" @click="editingId = null">取消</button>
+              </div>
+              <div v-else class="button-row">
+                <button
+                  class="ghost"
+                  type="button"
+                  @click="startRename(arr.id, arrangementTitle(arr))"
+                >
+                  重命名
+                </button>
                 <button
                   class="secondary"
                   type="button"

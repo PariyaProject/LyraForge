@@ -260,6 +260,10 @@ class HotkeysUpdateRequest(BaseModel):
     bindings: list[HotkeyBindingModel] = Field(default_factory=list)
 
 
+class ArrangementLabelRequest(BaseModel):
+    label: str = Field(default="", max_length=80)
+
+
 class QueueSetRequest(BaseModel):
     arrangement_ids: list[str] = Field(default_factory=list)
     start_index: int = 0
@@ -751,6 +755,14 @@ def create_app(
     ) -> dict[str, Any]:
         with open_store() as store:
             rec = store.save_edited_arrangement(arrangement_id, req.events, label=req.label)
+        return {"arrangement": rec.to_json()}
+
+    @app.post("/v1/arrangements/{arrangement_id}/label", dependencies=[Depends(require_token)])
+    def set_arrangement_label_route(
+        arrangement_id: str, req: ArrangementLabelRequest
+    ) -> dict[str, Any]:
+        with open_store() as store:
+            rec = store.set_arrangement_label(arrangement_id, req.label)
         return {"arrangement": rec.to_json()}
 
     @app.post("/v1/arrangements/{arrangement_id}/favorite", dependencies=[Depends(require_token)])

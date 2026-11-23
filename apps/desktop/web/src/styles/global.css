@@ -84,6 +84,11 @@
     font-family: var(--font-mono);
   }
 
+  code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
   pre {
     margin: 0;
     padding: var(--space-3);
@@ -91,6 +96,8 @@
     background: var(--bg-canvas);
     border: 1px solid var(--border-subtle);
     overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     font-size: 12.5px;
   }
 

@@ -104,7 +104,8 @@ export interface HotkeyState {
   actions: HotkeyActionInfo[];
 }
 
-export interface ArrangePresetInfo {  id: string;
+export interface ArrangePresetInfo {
+  id: string;
   profile_id: string;
   name: string;
   name_en: string;
@@ -154,6 +155,7 @@ export interface ArrangementRecord {
   score?: number | null;
   user_vote?: number;
   label?: string | null;
+  created_at: string;
 }
 
 export interface PerformanceEventItem {
@@ -374,6 +376,20 @@ export class LyraForgeApi {
     return this.request<{ relaunched: boolean }>("/v1/app/relaunch-elevated", {
       method: "POST",
     });
+  }
+
+  renameArrangement(
+    arrangementId: string,
+    label: string,
+  ): Promise<{ arrangement: ArrangementRecord }> {
+    return this.request<{ arrangement: ArrangementRecord }>(
+      `/v1/arrangements/${encodeURIComponent(arrangementId)}/label`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      },
+    );
   }
 
   getHotkeys(): Promise<HotkeyState> {
