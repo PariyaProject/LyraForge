@@ -5,6 +5,7 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Added
+- **Broader media format support**: `.m4s` DASH segments plus common audio (`.aac`, `.wma`, `.aiff`, `.oga`, `.opus`, `.m4b`) and video containers (`.mov`, `.avi`, `.flv`, `.wmv`, `.ts`, `.m2ts`, `.mts`, `.3gp`, `.mpg`, `.mpeg`, `.vob`, `.ogv`) are accepted by the import picker and routed through FFmpeg; decoding still depends on the installed FFmpeg build and encrypted/DRM files are rejected with a clear error.
 - **dettato can use a GPU and no longer times out on long songs**: the adapter auto-detects CUDA/MPS (`LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps` overrides) and passes `--device`; transcription timeouts now scale with audio length (dettato ~10x realtime + 180 s slack, Basic Pitch ~3x + 60 s) instead of a fixed 5 minutes.
 - **Playback queue as a dedicated panel**: the queue moved out of the playback page into a right-side drawer opened from the global transport bar (`队列 n`), with numbered items, current-item highlight, click-to-select, previous/next and clear actions.
 - **Arrangement version management**: saved versions now show an auto-generated descriptive name (`#序号 · 风格 · 移调 · 速度`), playability ratio, note count and creation time, and can be renamed inline (`POST /v1/arrangements/{id}/label`).

@@ -27,7 +27,40 @@ FFMPEG_BIN_ENV = "LYRAFORGE_FFMPEG_BIN"
 DEFAULT_AUDIO_SAMPLE_RATE = 22_050
 
 SUPPORTED_MEDIA_EXTENSIONS: frozenset[str] = frozenset(
-    {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".mp4", ".mkv", ".webm"}
+    {
+        # PCM / lossless
+        ".wav",
+        ".flac",
+        ".aiff",
+        ".aif",
+        # common compressed audio
+        ".mp3",
+        ".ogg",
+        ".oga",
+        ".opus",
+        ".m4a",
+        ".m4b",
+        ".aac",
+        ".wma",
+        # fragmented / DASH segments and video containers
+        ".m4s",
+        ".mp4",
+        ".m4v",
+        ".mkv",
+        ".webm",
+        ".mov",
+        ".avi",
+        ".flv",
+        ".wmv",
+        ".ts",
+        ".m2ts",
+        ".mts",
+        ".3gp",
+        ".mpg",
+        ".mpeg",
+        ".vob",
+        ".ogv",
+    }
 )
 
 

@@ -145,7 +145,7 @@ function onRestoreFileChange(event: Event): void {
                 <input
                   id="library-media-file"
                   type="file"
-                  accept=".mid,.midi,.mp3,.wav,.flac,.ogg,.m4a,.mp4,.mkv,.webm"
+                  accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.oga,.opus,.m4a,.m4b,.aac,.wma,.aiff,.aif,.m4s,.mp4,.m4v,.mkv,.webm,.mov,.avi,.flv,.wmv,.ts,.m2ts,.mts,.3gp,.mpg,.mpeg,.vob,.ogv"
                   @change="onUploadFileChange"
                 />
               </div>

@@ -345,6 +345,21 @@
    - 本会话没有 NVIDIA GPU / 游戏环境，未实测 CUDA 推理吞吐；仅验证参数与探测逻辑；
    - NPU 加速未实现。
 
+---
+
+## 19. 媒体格式扩展：.m4s 与常见音视频容器（2026-11-23）
+
+1. **支持列表**：`SUPPORTED_MEDIA_EXTENSIONS` 新增 `.m4s`（DASH/分片 MP4 分段），并扩展 `.aac`/`.wma`/`.aiff`/`.aif`/`.oga`/`.opus`/`.m4b` 与 `.mov`/`.avi`/`.flv`/`.wmv`/`.ts`/`.m2ts`/`.mts`/`.3gp`/`.mpg`/`.mpeg`/`.vob`/`.ogv`；桌面导入选择器同步更新。
+2. **解码**：所有非 WAV 格式仍交给本机 FFmpeg（`-i` 解码为单声道 16-bit WAV）；加密/DRM 文件、缺少音轨的文件会得到明确的 `MEDIA_DECODE_FAILED` / `MEDIA_UNSUPPORTED` 错误。
+3. **验证**：
+   - 参数化测试对 32 个受支持扩展逐一验证会被路由到 FFmpeg 提取路径；
+   - `pytest` → **212 passed, 2 warnings in 35.91s**，覆盖率 **83.83%**；`ruff` 通过；
+   - 前端 `vue-tsc + vite build` → 175.15 kB JS / 22.65 kB CSS。
+4. **未覆盖（如实标注）**：
+   - 未用真实 `.m4s`/视频文件逐格式验证解码结果（本机 FFmpeg 版本 9.0.2 可用，但本会话未提供样本）；
+   - 加密（DRM）或需要 init segment 拼接的分片不保证可读。
+
+
 
 
 
