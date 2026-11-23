@@ -359,6 +359,24 @@
    - 未用真实 `.m4s`/视频文件逐格式验证解码结果（本机 FFmpeg 版本 9.0.2 可用，但本会话未提供样本）；
    - 加密（DRM）或需要 init segment 拼接的分片不保证可读。
 
+---
+
+## 20. dettato GPU 设置集成（2026-11-23）
+
+1. **实现**：
+   - `toolchain/gpu.py`：通过 `nvidia-smi` 检测 GPU/驱动，用隔离解释器探测 `torch.version.cuda` / `torch.cuda.is_available()`；读取/写入工具链清单中的 `dettato_device` 设置；
+   - `toolchain/installer.py`：新增 `install_dettato_gpu()`（`uv pip install --index-url https://download.pytorch.org/whl/cu124 --upgrade torch`，安装后验证 CUDA 可用），并接入 `ToolInstallManager`（`dettato-gpu` 任务）；
+   - `toolchain/runtime.py`：启动时把持久化的设备偏好注入 `LYRAFORGE_DETTATO_DEVICE`；
+   - API：`GET /v1/gpu`、`POST /v1/gpu/device`、`POST /v1/gpu/install`；设置页新增 GPU 卡片（检测结果、设备下拉、一键安装与进度）。
+2. **验证**：
+   - `pytest` → **217 passed, 2 warnings in 35.41s**，覆盖率 **83.67%**；`ruff` 通过；
+   - 新增 `test_gpu_tools.py`：nvidia-smi 解析、torch 探测、设备持久化/环境注入、GPU API；
+   - 前端 `vitest` 6/6；`vue-tsc + vite build` → 178.78 kB JS / 22.65 kB CSS。
+3. **未覆盖（如实标注）**：
+   - 本会话没有 NVIDIA GPU，未实际执行 2.5 GB CUDA PyTorch 安装，也未测量推理吞吐；
+   - NPU 仍不支持（dettato CLI 仅声明 cuda/cpu 后端）。
+
+
 
 
 

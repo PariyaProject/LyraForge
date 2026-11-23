@@ -46,6 +46,8 @@ from lyraforge.presets import list_presets
 from lyraforge.preview import DEFAULT_SAMPLE_RATE
 from lyraforge.toolchain import status as toolchain_status
 from lyraforge.toolchain import tools_root as toolchain_tools_root
+from lyraforge.toolchain.gpu import gpu_status
+from lyraforge.toolchain.gpu import set_device as set_dettato_device
 from lyraforge.transcribers import DEFAULT_TRANSCRIBER_ID, TranscribeOptions, list_transcribers
 
 SESSION_TOKEN_HEADER = "X-LyraForge-Token"
@@ -262,6 +264,10 @@ class HotkeysUpdateRequest(BaseModel):
 
 class ArrangementLabelRequest(BaseModel):
     label: str = Field(default="", max_length=80)
+
+
+class DettatoDeviceRequest(BaseModel):
+    device: str = "auto"
 
 
 class QueueSetRequest(BaseModel):
@@ -641,6 +647,18 @@ def create_app(
     @app.post("/v1/tools/{tool_id}/install", dependencies=[Depends(require_token)])
     def install_tool(tool_id: str) -> dict[str, Any]:
         return {"install": tool_manager.start(tool_id)}
+
+    @app.get("/v1/gpu", dependencies=[Depends(require_token)])
+    def get_gpu_status() -> dict[str, Any]:
+        return gpu_status()
+
+    @app.post("/v1/gpu/device", dependencies=[Depends(require_token)])
+    def set_gpu_device(req: DettatoDeviceRequest) -> dict[str, Any]:
+        return set_dettato_device(req.device)
+
+    @app.post("/v1/gpu/install", dependencies=[Depends(require_token)])
+    def install_gpu_torch() -> dict[str, Any]:
+        return {"install": tool_manager.start("dettato-gpu")}
 
     @app.post("/v1/jobs/transcribe", dependencies=[Depends(require_token)])
     def transcribe_job(req: TranscribeJobRequest) -> dict[str, Any]:

@@ -104,6 +104,21 @@ export interface HotkeyState {
   actions: HotkeyActionInfo[];
 }
 
+export interface GpuTorchInfo {
+  version: string | null;
+  cuda_build: string | null;
+  cuda_available: boolean;
+  device_count: number;
+}
+
+export interface GpuStatus {
+  nvidia: { present: boolean; name: string | null; driver: string | null };
+  dettato_installed: boolean;
+  dettato_torch: GpuTorchInfo | null;
+  device: string;
+  device_env: string;
+}
+
 export interface ArrangePresetInfo {
   id: string;
   profile_id: string;
@@ -435,6 +450,24 @@ export class LyraForgeApi {
       `/v1/tools/${encodeURIComponent(toolId)}/install`,
       { method: "POST" },
     );
+  }
+
+  getGpuStatus(): Promise<GpuStatus> {
+    return this.request<GpuStatus>("/v1/gpu");
+  }
+
+  setDettatoDevice(device: string): Promise<GpuStatus> {
+    return this.request<GpuStatus>("/v1/gpu/device", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device }),
+    });
+  }
+
+  installDettatoGpu(): Promise<{ install: ToolInstallState }> {
+    return this.request<{ install: ToolInstallState }>("/v1/gpu/install", {
+      method: "POST",
+    });
   }
 
   importMedia(file: File, title: string, artist: string, tags: string): Promise<{ song: SongSummary }> {

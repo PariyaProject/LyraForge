@@ -219,6 +219,20 @@ def load_manifest() -> dict[str, Any]:
     return _load_manifest()
 
 
+def get_tool_setting(key: str, default: Any = None) -> Any:
+    settings = _load_manifest().get("settings")
+    if isinstance(settings, dict):
+        return settings.get(key, default)
+    return default
+
+
+def set_tool_setting(key: str, value: Any) -> None:
+    data = _load_manifest()
+    data.setdefault("settings", {})[key] = value
+    data["version"] = 1
+    atomic_write_text(manifest_file(), json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
 def _record(tool_id: str, *, path: Path, version: str, mode: str = "managed") -> None:
     data = _load_manifest()
     data.setdefault("tools", {})[tool_id] = {
@@ -420,8 +434,61 @@ def _first_line(text: str) -> str:
     return line[0] if line else "unknown"
 
 
+def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
+    """Install a CUDA-enabled PyTorch build into the dettato virtualenv."""
+    python = venv_python("dettato")
+    if not python.is_file():
+        raise LyraError(
+            ErrorCode.MODEL_MISSING,
+            "请先安装 dettato，再安装 GPU 加速版 PyTorch",
+        )
+    uv = install_uv(progress)
+    index = os.environ.get(
+        "LYRAFORGE_PYTORCH_CUDA_INDEX",
+        "https://download.pytorch.org/whl/cu124",
+    )
+    _emit(progress, 0.2, f"下载并安装 CUDA 版 PyTorch（约 2.5 GB，索引 {index}）…")
+    res = _run(
+        [
+            str(uv),
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--index-url",
+            index,
+            "--upgrade",
+            "torch",
+        ],
+        env=uv_env(),
+        timeout=7200,
+    )
+    if res.returncode != 0:
+        raise LyraError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            f"CUDA PyTorch 安装失败：{_tail(res.stderr)}",
+        )
+    _emit(progress, 0.9, "验证 CUDA 是否可用…")
+    from lyraforge.toolchain.gpu import probe_dettato_torch
+
+    probe = probe_dettato_torch()
+    if probe is None or not probe.get("cuda_available"):
+        raise LyraError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            "CUDA 版 PyTorch 已安装，但 torch.cuda.is_available() 仍为 False；"
+            "请检查 NVIDIA 驱动与 CUDA 版本，或设置 LYRAFORGE_PYTORCH_CUDA_INDEX 使用匹配的索引。",
+        )
+    set_tool_setting("dettato_gpu", True)
+    _emit(progress, 1.0, "dettato GPU 加速已就绪")
+    return {"installed": True, "torch": probe}
+
+
 def install(tool_id: str, progress: ProgressCallback | None = None) -> dict[str, Any]:
     """Install one tool and return its fresh status entry."""
+    if tool_id == "dettato-gpu":
+        with _INSTALL_LOCK:
+            install_dettato_gpu(progress)
+        return {"tool_id": "dettato-gpu", "installed": True}
     spec = tool_spec(tool_id)
     if spec is None:
         raise LyraError(
