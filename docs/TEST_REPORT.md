@@ -204,4 +204,33 @@
    - 尚未用真实流行歌曲（人声+伴奏、多乐器混音）评估新引擎的实际转谱质量；本次仅验证链路可用与音符数。
    - 工具链目前仍需手工安装与环境变量配置；应用内一键安装属于下一阶段工作（见 [ROADMAP.md](ROADMAP.md) 优先级 C）。
 
+---
+
+## 12. 应用内一键安装外部工具链（2026-11-23）
+
+1. **实现范围**：
+   - CLI：`lyraforge tools status [--json]`、`lyraforge tools install [ffmpeg|basic-pitch|dettato|全部]`；
+   - API：`GET /v1/tools`（状态 + 安装进度）、`POST /v1/tools/{id}/install`（后台线程安装，UI 轮询进度）；
+   - 桌面设置页「外部工具与转谱引擎」卡片：显示已装/系统/未装、版本、许可、下载体积，一键安装并显示进度与错误；
+   - 运行时代理：启动时把 `%LOCALAPPDATA%\LyraForge\tools` 下的 FFmpeg 与隔离解释器注入子进程环境，**不修改系统环境变量**，用户显式设置的同名变量优先。
+2. **安装链路（真实执行，Windows x64，`LYRAFORGE_TOOLS_DIR=D:\...\tools-managed`）**：
+   - `ffmpeg`：PyPI `imageio-ffmpeg` wheel（SHA-256 校验）→ 解压 `ffmpeg 9.0.2` → `-version` 校验通过；
+   - `uv 0.13.9`：PyPI wheel 校验解压 → 由它安装托管 CPython 3.11；
+   - `basic-pitch 0.4.0`（TF 2.14.0 / numpy 1.26.4 / setuptools 80.10.2）与 `dettato 2.0.0`（torch 2.15.0+cpu）安装到各自虚拟环境，`import` 探测通过。
+3. **端到端复验（仅设置 `LYRAFORGE_TOOLS_DIR`，未设置任何 `LYRAFORGE_*_PYTHON`）**：
+   - `lyraforge tools status` → 三个工具均 `已安装`、`source=managed`；
+   - `--engine basic-pitch` → `raw_note_count = 8`，`duration_ms = 3986`；
+   - `--engine dettato` → `raw_note_count = 7`，`duration_ms = 3943`；
+   - WAV→MP3 后 `--engine builtin-mono` → `raw_note_count = 8`（使用托管 FFmpeg 解码）。
+4. **自动化门禁**：
+   - `uv run pytest --cov=lyraforge --cov-fail-under=80` → **163 passed, 2 warnings in 35.55s**，总覆盖率 **85.07%**（新增 `test_toolchain.py` 10 例与 API 后台安装用例）；
+   - `uv run ruff check .` → `All checks passed!`；
+   - 前端 `vitest run` → **4 文件 / 6 用例全过**；`vue-tsc --noEmit && vite build` → 成功（`161.06 kB` JS / `20.52 kB` CSS）。
+5. **安全与供应链边界**：只允许 `pypi.org` / `files.pythonhosted.org` 的 HTTPS 下载；使用 PyPI 元数据中的 SHA-256 校验；下载体积上限（uv 80 MB、FFmpeg 120 MB、其他 200 MB）；`shell=False` 固定 argv；失败即删除临时文件；不写注册表、不写用户环境变量。
+6. **未覆盖（如实标注）**：
+   - 桌面 UI 的按钮点击流程仅由组件测试与构建覆盖，未做人工可视化点击验收；
+   - macOS/Linux 的托管安装路径未在对应实机执行（当前仅 Windows 实测）；
+   - 断网/代理失败的用户提示仅由单元测试覆盖，未做真实网络故障演练。
+
+
 

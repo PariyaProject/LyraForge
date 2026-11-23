@@ -16,6 +16,8 @@ import {
   type TranscriberInfo,
   type TranscriptionJob,
   type TranscriptionRecord,
+  type ToolInstallState,
+  type ToolStatus,
 } from "../api";
 import type { ToastItem } from "../components/ToastStack.vue";
 
@@ -54,6 +56,10 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedProfileId = ref("genshin.windsong_lyre.v1");
   const profile = ref<ProfileDetail | null>(null);
   const transcribers = ref<TranscriberInfo[]>([]);
+  const tools = ref<ToolStatus[]>([]);
+  const toolInstalls = ref<Record<string, ToolInstallState>>({});
+  const toolsDir = ref("");
+  const toolBusy = ref<string | null>(null);
   const songs = ref<SongSummary[]>([]);
   const searchQuery = ref("");
   const filterTag = ref("");
@@ -744,6 +750,45 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function refreshTools(): Promise<void> {
+    const res = await api.listTools();
+    tools.value = res.tools;
+    toolsDir.value = res.tools_dir;
+    const map: Record<string, ToolInstallState> = {};
+    for (const item of res.installs) {
+      map[item.tool_id] = item;
+    }
+    toolInstalls.value = map;
+  }
+
+  async function handleInstallTool(toolId: string): Promise<void> {
+    if (toolBusy.value) return;
+    toolBusy.value = toolId;
+    try {
+      await api.installTool(toolId);
+      pushToast("info", `正在下载并安装 ${toolId}，请保持网络连接…`);
+      const deadline = Date.now() + 30 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await refreshTools();
+        const state = toolInstalls.value[toolId];
+        if (state && state.status !== "running") {
+          if (state.status === "installed") {
+            pushToast("ok", `${toolId} 安装完成，可直接选用该引擎`);
+          } else {
+            pushToast("error", state.error ?? `${toolId} 安装失败`);
+          }
+          break;
+        }
+      }
+      transcribers.value = (await api.listTranscribers()).transcribers;
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      toolBusy.value = null;
+    }
+  }
+
   async function initialize(): Promise<void> {
     initializing.value = true;
     try {
@@ -758,6 +803,7 @@ export function createLyraStore(api: LyraForgeApi) {
       }
       profile.value = await api.getProfile(selectedProfileId.value);
       transcribers.value = (await api.listTranscribers()).transcribers;
+      await refreshTools();
       const { settings } = await api.getSettings();
       if (
         settings.default_style === "melody" ||
@@ -862,6 +908,12 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedEngineInfo,
     eventCounts,
     refreshSongs,
+    tools,
+    toolInstalls,
+    toolsDir,
+    toolBusy,
+    refreshTools,
+    handleInstallTool,
     selectSong,
     selectArrangement,
     handleProfileChange,

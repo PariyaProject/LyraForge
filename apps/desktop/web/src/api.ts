@@ -52,6 +52,34 @@ export interface TranscriberInfo {
   scope_note: string;
 }
 
+export interface ToolStatus {
+  id: string;
+  display_name: string;
+  license: string;
+  description: string;
+  kind: "binary" | "python";
+  download_mb: number;
+  env_var: string;
+  installed: boolean;
+  source: "managed" | "system" | null;
+  path: string | null;
+  version: string | null;
+}
+
+export interface ToolInstallState {
+  tool_id: string;
+  status: "running" | "installed" | "failed";
+  progress: number;
+  message: string;
+  error: string | null;
+}
+
+export interface ToolsResponse {
+  tools_dir: string;
+  tools: ToolStatus[];
+  installs: ToolInstallState[];
+}
+
 export interface TranscriptionJob {
   id: string;
   song_id: string;
@@ -294,6 +322,17 @@ export class LyraForgeApi {
 
   listTranscribers(): Promise<{ transcribers: TranscriberInfo[] }> {
     return this.request<{ transcribers: TranscriberInfo[] }>("/v1/transcribers");
+  }
+
+  listTools(): Promise<ToolsResponse> {
+    return this.request<ToolsResponse>("/v1/tools");
+  }
+
+  installTool(toolId: string): Promise<{ install: ToolInstallState }> {
+    return this.request<{ install: ToolInstallState }>(
+      `/v1/tools/${encodeURIComponent(toolId)}/install`,
+      { method: "POST" },
+    );
   }
 
   importMedia(file: File, title: string, artist: string, tags: string): Promise<{ song: SongSummary }> {
