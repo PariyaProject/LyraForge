@@ -3,7 +3,7 @@
 LyraForge 明确不将“单独购买 OpenAI / Anthropic / Gemini API Key”设为使用门槛，而是采用清晰的三层 AI 架构：
 
 1. **第一层：完全离线、零模型、零 API Key（核心默认）**
-   - 本地导入 MIDI/音频、内置单音转谱（YIN）、《原神》风物之诗琴/镜花之琴编曲、主旋律保留与和弦琶音、Piano Roll 编辑、离线 WAV 试听、SQLite 曲库与 `.lyrapack` 导出**全部 100% 离线免费可用**。
+   - 本地导入 MIDI/音频、内置单音转谱（YIN）、《原神》风物之诗琴/镜花之琴/老旧的诗琴编曲、主旋律保留与和弦琶音、Piano Roll 编辑、离线 WAV 试听、SQLite 曲库与 `.lyrapack` 导出**全部 100% 离线免费可用**。
    - `RuleBasedLLMProvider` 是确定性**离线规则命令解析器**（正则与关键词匹配），并非大模型生成。
 
 2. **第二层：MCP Server + Client Skill 接入用户自有已登录客户端（推荐 AI 工作流）**

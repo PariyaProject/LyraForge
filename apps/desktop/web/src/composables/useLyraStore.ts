@@ -4,6 +4,7 @@ import {
   type AgentRunResult,
   type ArrangementDetailResponse,
   type ArrangementRecord,
+  type ArrangePresetInfo,
   type ComparisonResult,
   type HealthResponse,
   type PerformanceEventItem,
@@ -56,6 +57,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedProfileId = ref("genshin.windsong_lyre.v1");
   const profile = ref<ProfileDetail | null>(null);
   const transcribers = ref<TranscriberInfo[]>([]);
+  const presets = ref<ArrangePresetInfo[]>([]);
   const tools = ref<ToolStatus[]>([]);
   const toolInstalls = ref<Record<string, ToolInstallState>>({});
   const toolsDir = ref("");
@@ -750,6 +752,20 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function refreshPresets(): Promise<void> {
+    presets.value = (await api.listPresets()).presets;
+  }
+
+  function applyPreset(presetId: string): void {
+    const preset = presets.value.find((item) => item.id === presetId);
+    if (!preset) return;
+    style.value = preset.style;
+    transposeInput.value = preset.transpose === null ? "auto" : String(preset.transpose);
+    arpeggiateMs.value = preset.arpeggiate_ms;
+    speed.value = preset.speed;
+    pushToast("ok", `已应用预设：${preset.name}`);
+  }
+
   async function refreshTools(): Promise<void> {
     const res = await api.listTools();
     tools.value = res.tools;
@@ -803,6 +819,7 @@ export function createLyraStore(api: LyraForgeApi) {
       }
       profile.value = await api.getProfile(selectedProfileId.value);
       transcribers.value = (await api.listTranscribers()).transcribers;
+      await refreshPresets();
       await refreshTools();
       const { settings } = await api.getSettings();
       if (
@@ -914,6 +931,9 @@ export function createLyraStore(api: LyraForgeApi) {
     toolBusy,
     refreshTools,
     handleInstallTool,
+    presets,
+    refreshPresets,
+    applyPreset,
     selectSong,
     selectArrangement,
     handleProfileChange,

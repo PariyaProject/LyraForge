@@ -80,6 +80,20 @@ export interface ToolsResponse {
   installs: ToolInstallState[];
 }
 
+export interface ArrangePresetInfo {
+  id: string;
+  profile_id: string;
+  name: string;
+  name_en: string;
+  description: string;
+  style: "melody" | "balanced" | "rich";
+  transpose: number | null;
+  arpeggiate_ms: number;
+  speed: number;
+  semitone_policy: "nearest" | "drop";
+  max_chord_keys: number | null;
+}
+
 export interface TranscriptionJob {
   id: string;
   song_id: string;
@@ -326,6 +340,11 @@ export class LyraForgeApi {
 
   listTools(): Promise<ToolsResponse> {
     return this.request<ToolsResponse>("/v1/tools");
+  }
+
+  listPresets(profileId?: string): Promise<{ presets: ArrangePresetInfo[] }> {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    return this.request<{ presets: ArrangePresetInfo[] }>(`/v1/presets${qs}`);
   }
 
   installTool(toolId: string): Promise<{ install: ToolInstallState }> {

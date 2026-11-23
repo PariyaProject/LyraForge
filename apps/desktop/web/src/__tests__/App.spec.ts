@@ -113,6 +113,23 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       installs: [],
     }),
     installTool: vi.fn(),
+    listPresets: vi.fn().mockResolvedValue({
+      presets: [
+        {
+          id: "genshin.windsong_lyre.v1.melody",
+          profile_id: "genshin.windsong_lyre.v1",
+          name: "风物之诗琴 · 主旋律优先",
+          name_en: "Windsong Lyre · Melody first",
+          description: "只保留主旋律",
+          style: "melody",
+          transpose: null,
+          arpeggiate_ms: 0,
+          speed: 1,
+          semitone_policy: "nearest",
+          max_chord_keys: null,
+        },
+      ],
+    }),
     getSettings: vi.fn().mockResolvedValue({ settings: { default_style: "balanced" } }),
     saveSetting: vi.fn().mockResolvedValue({ settings: {} }),
     listSongs: vi.fn().mockResolvedValue({
@@ -377,7 +394,7 @@ describe("App", () => {
     await flushPromises();
     expect(stub.stopPlayback).toHaveBeenCalledTimes(1);
 
-    await clickNav(wrapper, "设置与模型");
+    await clickNav(wrapper, "设置");
     expect(wrapper.find('footer audio[src="blob:http://127.0.0.1/preview"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("uv");
     expect(wrapper.text()).toContain("lyraforge");
@@ -398,7 +415,7 @@ describe("App", () => {
     const wrapper = mount(App, { props: { client: stub } });
     await flushPromises();
 
-    await clickNav(wrapper, "AI 转谱");
+    await clickNav(wrapper, "音频转谱");
 
     expect(wrapper.text()).toContain("音频转 MIDI 转录");
     const bpOpt = wrapper.find('option[value="basic-pitch"]');
@@ -465,9 +482,9 @@ describe("App", () => {
     expect(stub.editArrangement).toHaveBeenCalledTimes(1);
 
     // Transcribe view: Agent natural language automation
-    await clickNav(wrapper, "AI 转谱");
+    await clickNav(wrapper, "音频转谱");
     await wrapper.find("#agent-prompt").setValue("转成风物之诗琴主旋律并优化");
-    const agentBtn = wrapper.findAll("button").find((b) => b.text().includes("执行智能编曲"))!;
+    const agentBtn = wrapper.findAll("button").find((b) => b.text().includes("执行"))!;
     await agentBtn.trigger("click");
     await flushPromises();
     expect(stub.runAgent).toHaveBeenCalledTimes(1);

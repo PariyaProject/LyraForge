@@ -40,6 +40,7 @@ from lyraforge.media import SUPPORTED_MEDIA_EXTENSIONS, MediaLimits
 from lyraforge.music_core.arranger import ArrangeOptions, SemitonePolicy, Style
 from lyraforge.music_core.midi_import import ImportLimits
 from lyraforge.playback import PlaybackMode, is_windows_playback_available
+from lyraforge.presets import list_presets
 from lyraforge.preview import DEFAULT_SAMPLE_RATE
 from lyraforge.toolchain import status as toolchain_status
 from lyraforge.toolchain import tools_root as toolchain_tools_root
@@ -510,6 +511,10 @@ def create_app(
     @app.get("/v1/transcribers", dependencies=[Depends(require_token)])
     def get_transcribers() -> dict[str, Any]:
         return {"transcribers": [m.to_json() for m in list_transcribers()]}
+
+    @app.get("/v1/presets", dependencies=[Depends(require_token)])
+    def get_presets(profile_id: str | None = Query(default=None)) -> dict[str, Any]:
+        return {"presets": list_presets(profile_id)}
 
     @app.get("/v1/tools", dependencies=[Depends(require_token)])
     def get_tools() -> dict[str, Any]:

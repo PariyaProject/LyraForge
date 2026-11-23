@@ -266,6 +266,13 @@ def cmd_profiles_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_presets_list(args: argparse.Namespace) -> int:
+    from lyraforge.presets import list_presets
+
+    print(pretty_json(list_presets(args.profile)), end="")
+    return EXIT_OK
+
+
 def cmd_import(args: argparse.Namespace) -> int:
     from lyraforge.media import SUPPORTED_MEDIA_EXTENSIONS
 
@@ -745,6 +752,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = pps.add_parser("show")
     p.add_argument("profile_id")
     p.set_defaults(func=cmd_profiles_show)
+
+    ppr = sub.add_parser("presets", help="built-in one-click arrangement presets")
+    pprs = ppr.add_subparsers(dest="presets_command", required=True)
+    p = pprs.add_parser("list", help="list built-in presets (no agent or API needed)")
+    p.add_argument("--profile", default=None, help="filter by instrument profile id")
+    p.set_defaults(func=cmd_presets_list)
 
     pi = sub.add_parser("import", help="import a local MIDI or audio/video file into the library")
     pi.add_argument("midi", help="path to .mid/.midi or supported audio/video file")

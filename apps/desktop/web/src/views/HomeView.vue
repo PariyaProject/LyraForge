@@ -59,7 +59,7 @@ async function handleQuickFileChange(event: Event): Promise<void> {
         </button>
         <button class="primary" type="button" @click="store.setView('transcribe')">
           <StudioIcon name="sparkles" />
-          AI 转谱与编曲
+          转谱与编曲
         </button>
       </div>
     </header>

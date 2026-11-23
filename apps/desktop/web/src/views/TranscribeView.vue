@@ -45,12 +45,12 @@ function onAgentKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <section class="view-stack" aria-label="AI 音乐转谱与自然语言编曲">
+  <section class="view-stack" aria-label="音频转谱与可选编排">
     <header class="view-header">
       <div>
-        <h1 class="view-title">AI 音乐转谱与智能编曲 Agent</h1>
+        <h1 class="view-title">音频转谱</h1>
         <p class="view-subtitle">
-          音频转 MIDI 多引擎管理，以及面向本地/受控 CC 音源的自然语言自动化编曲管线。
+          音频转 MIDI 多引擎管理；高级选项中可使用自然语言辅助编排。
         </p>
       </div>
       <button
@@ -175,13 +175,15 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title-row">
-          <h2>AI Agent 自动化编曲</h2>
-          <span class="pill">
-            {{ store.llmEnabledSetting.value ? "可选 HTTP 模型" : "确定性离线规划器" }}
-          </span>
-        </div>
+      <details class="advanced-box" style="order: 99">
+        <summary>高级（可选）：自然语言辅助编排</summary>
+        <div class="card">
+          <div class="card-title-row">
+            <h2>自然语言辅助编排</h2>
+            <span class="pill">
+              {{ store.llmEnabledSetting.value ? "可选 HTTP 模型" : "确定性离线规划器" }}
+            </span>
+          </div>
         <p class="muted" style="margin: 0">
           离线模式下零外部 API Key 即可调度本地曲库、转录与 A/B 对比；外网检索仅在授权后抓取明确的 CC / Public Domain 来源。
         </p>
@@ -223,7 +225,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
             @click="store.handleRunAgent()"
           >
             <StudioIcon name="sparkles" />
-            执行智能编曲
+            执行
           </button>
         </div>
 
@@ -254,7 +256,8 @@ function onAgentKeydown(event: KeyboardEvent): void {
             </li>
           </ol>
         </div>
-      </div>
+        </div>
+      </details>
     </div>
   </section>
 </template>
