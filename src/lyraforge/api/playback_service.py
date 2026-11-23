@@ -41,6 +41,7 @@ class _PendingPrepare:
     mode: PlaybackMode
     realtime: bool
     allowed_window_titles: tuple[str, ...] | None
+    allowed_processes: tuple[str, ...] | None
     events: list[dict[str, Any]]
     profile: InstrumentProfile
 
@@ -68,6 +69,7 @@ class PlaybackManager:
         mode: PlaybackMode = PlaybackMode.DRY_RUN,
         realtime: bool = False,
         allowed_window_titles: Sequence[str] | None = None,
+        allowed_processes: Sequence[str] | None = None,
         store: LibraryStore,
     ) -> dict[str, Any]:
         mode = PlaybackMode(mode)
@@ -78,11 +80,13 @@ class PlaybackManager:
 
         # Verify backend compatibility on the current OS before issuing a token.
         titles = tuple(allowed_window_titles) if allowed_window_titles else None
+        processes = tuple(allowed_processes) if allowed_processes else None
         create_playback_backend(
             mode,
             profile=profile,
             clock=VirtualClock(),
             allowed_window_titles=titles,
+            allowed_processes=processes,
         )
 
         with self._lock:
@@ -99,6 +103,7 @@ class PlaybackManager:
                 mode=mode,
                 realtime=effective_realtime,
                 allowed_window_titles=titles,
+                allowed_processes=processes,
                 events=list(doc["events"]),
                 profile=profile,
             )
@@ -154,6 +159,7 @@ class PlaybackManager:
                 profile=pending.profile,
                 clock=clock,
                 allowed_window_titles=pending.allowed_window_titles,
+                allowed_processes=pending.allowed_processes,
             )
             emergency_stop_fn = create_emergency_stop_checker(pending.mode)
             stop_token = StopToken()
@@ -281,6 +287,26 @@ class PlaybackManager:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(_FOCUS_POLL_S)
+
+    def start_pending(
+        self,
+        *,
+        data_dir: Path,
+        wait_for_focus_s: float = 5.0,
+    ) -> dict[str, Any]:
+        """Start the currently prepared arrangement (used by global hotkeys)."""
+        with self._lock:
+            pending = self._pending
+        if pending is None:
+            raise LyraError(
+                ErrorCode.PERMISSION_REQUIRED,
+                "no prepared arrangement to start; prepare one in the desktop app first",
+            )
+        return self.start(
+            pending.token,
+            data_dir=data_dir,
+            wait_for_focus_s=wait_for_focus_s,
+        )
 
     def pause(self) -> dict[str, Any]:
         with self._lock:

@@ -190,6 +190,17 @@ async function copyText(text: string): Promise<void> {
           />
         </div>
 
+        <div class="field">
+          <label for="settings-allowed-processes">
+            Windows 游戏进程白名单（逗号分隔，默认 GenshinImpact.exe, YuanShen.exe）
+          </label>
+          <input
+            id="settings-allowed-processes"
+            v-model="store.allowedProcessesSetting.value"
+            type="text"
+          />
+        </div>
+
         <details class="advanced-box">
           <summary>高级设置：可选 OpenAI 兼容 HTTP 模型接口</summary>
           <div class="view-stack" style="margin-block-start: var(--space-3); gap: var(--space-2)">
@@ -244,6 +255,40 @@ async function copyText(text: string): Promise<void> {
             保存设置
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <h2>Windows 全局热键（默认未绑定）</h2>
+        <span class="pill">可选 · 游戏内可用</span>
+      </div>
+      <p class="muted" style="margin-block: 0 var(--space-2)">
+        留空表示不绑定。输入形如 <code>Ctrl+Alt+F9</code>（必须包含 Ctrl/Alt/Shift/Win 修饰键），保存后立即注册；
+        被其他程序占用时会提示失败项。建议使用 F9-F12 或组合键，避免与游戏内 21 键冲突。
+      </p>
+      <p v-if="!store.hotkeySupported.value" class="muted">
+        当前平台不支持全局热键（仅 Windows）。
+      </p>
+      <div class="view-stack" style="gap: 8px">
+        <div v-for="action in store.hotkeyActions.value" :key="action.id" class="field">
+          <label :for="`hotkey-${action.id}`">{{ action.label }}</label>
+          <input
+            :id="`hotkey-${action.id}`"
+            v-model="store.hotkeyBindings.value[action.id]"
+            type="text"
+            placeholder="未绑定，例如 Ctrl+Alt+F9"
+          />
+          <span v-if="store.hotkeyErrors.value[action.id]" class="muted">
+            {{ store.hotkeyErrors.value[action.id] }}
+          </span>
+        </div>
+      </div>
+      <div class="button-row">
+        <button class="primary" type="button" @click="store.handleSaveHotkeys">
+          <StudioIcon name="check" />
+          保存热键
+        </button>
       </div>
     </div>
   </section>
