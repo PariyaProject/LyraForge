@@ -4,9 +4,6 @@
 
 LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐转谱与游戏乐器编曲工作台，面向《原神》PC 版大世界中的**自由乐器演奏界面**（非下落式音游脚本）。你可以导入 MIDI 或音频、适配游戏乐器 21 键范围、在交互式 Piano Roll 中试听与微调，并保存到本地曲库或导出分享。
 
-> **当前状态：Alpha 预发布阶段（正在积极开发）**  
-> 跨平台核心转谱、智能编曲、Piano Roll 编辑、离线试听、本地曲库、`.lyrapack` 分享与 MCP 工具链已可正常使用；**Windows 真机《原神》实音键位校准与切窗/急停现场演奏尚未完成实体机验收**，外置多音音频识别模型需用户按需独立配置，请勿将其视为已完成全量实机验证的稳定发行版。
-
 ![LyraForge 工作台实时渲染截图](docs/assets/lyraforge-workbench.png)
 
 > 查看全套 6 视图实机截图：
@@ -39,10 +36,8 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 
 ### Windows 10/11 便携预发行版（免安装 Python / Node）
 
-> **注意**：当前自动构建的 Windows 开发预发行版（Pre-release）仍属于**实验性开发预览版**；Windows 真机《原神》21 键校准与前台实音演奏尚未完成实体机验收。
-
-- **最新开发构建固定入口**：[Latest Dev Pre-release (`dev-latest`)](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（查看历史预发行与正式版本请前往 [Releases](https://github.com/PariyaProject/LyraForge/releases)）。
-- 下载页面内的 `LyraForge-dev-*-windows-x64.zip` 与 `SHA256SUMS.txt` 后，校验哈希并解压运行（请保持 `LyraForge.exe` 与 `_internal\` 位于同一解压目录）：
+- **最新开发构建（Pre-release，实验性）**：[Latest Dev Pre-release (`dev-latest`)](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（查看全部历史预发行与正式版本请前往 [Releases](https://github.com/PariyaProject/LyraForge/releases)）。
+- 下载页面内的 `LyraForge-dev-*-windows-x64.zip` 与 `SHA256SUMS.txt`，校验哈希后解压运行（请保持 `LyraForge.exe` 与 `_internal\` 位于同一解压目录）：
 
 ```powershell
 Get-FileHash .\LyraForge-dev-*-windows-x64.zip -Algorithm SHA256
@@ -86,13 +81,13 @@ uv run lyraforge mcp
 
 | 平台 | 转谱、编曲、Piano Roll、曲库与 MCP | 游戏内自由演奏模式 |
 |---|---|---|
-| **macOS Apple Silicon** | 可正常运行 | 仅支持 **DryRun** 虚拟试跑，不触发系统级按键 |
-| **Windows 10/11 x64** | 可正常运行（提供 PyInstaller 便携打包脚本） | **实验性功能**：代码与双平台构建已就绪，但真实游戏环境中的 21 键映射校准、前景切窗与长曲目实音演奏尚未完成真机验证 |
+| **macOS Apple Silicon** | 支持 | 仅支持 **DryRun** 虚拟试跑，不触发系统级按键 |
+| **Windows 10/11 x64** | 支持 | **实验性功能**（键位校准与游戏内实机演奏尚未完成验证） |
 
 开始使用前请了解以下真实限制：
 
 - **复杂音频转谱存在客观上限**：内置 `builtin-mono` 仅适合干净的单音独奏；流行歌曲、人声与伴奏混音或密集多声部和弦音频需要用户自行配置 `ffmpeg` 及隔离的开源多音引擎（`basic-pitch` 或 `dettato`），并在 Piano Roll 中人工校音调整，无法保证从复杂混音一键还原完整原曲。
-- **外置媒体与识别模型需额外准备**：处于许可证与体积考虑，仓库不捆绑 `ffmpeg` 与神经网络权重文件。
+- **外置媒体与识别模型需额外准备**：出于许可证与体积考虑，仓库不捆绑 `ffmpeg` 与神经网络权重文件。
 - **游戏键盘自动化风险**：Windows 游戏内演奏仅在用户主动触发并保持游戏前台窗口时发送常规扫描码输入；**任何第三方自动按键工具均不能保证 100% 账号零风险**，请自行遵守游戏服务条款与适用法规，切勿用于下落式音游活动或任何合规受限场景。
 
 ---
