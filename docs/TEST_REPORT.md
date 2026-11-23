@@ -139,3 +139,17 @@
 4. **本地全量门禁与文档规范验证**：
    - `pnpm --dir apps/desktop/web install --frozen-lockfile`（`209ms`）、`uv run ruff check .`（`All checks passed!`）、`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80`（`134 passed`, `86.52%`）、`pnpm --dir apps/desktop/web build`（`714ms`, JS `158.80 kB`, CSS `20.52 kB`）、`pnpm --dir apps/desktop/web test`（`4 files / 6 tests passed`）、`make smoke`（`actions_sent=48`, `keys_still_pressed=[]`）、`uv run lyraforge desktop --self-check`（`ok: true`, `platform: "darwin"`, `windows_modules_loaded: false`）。
    - 验证 [README.md](../README.md) Quick Start 命令行可用（`lyraforge profiles list` 与 `lyraforge import tests/fixtures/midi/chords_type1.mid`），并将 README 规范为面向用户和贡献者的产品主页（长期规则写入 [AGENTS.md](../AGENTS.md)）。
+
+---
+
+## 9. GitHub Releases 自动发布流水线验证（基于 `dda4ef7`）
+
+在保留单一 CI 工作流（[.github/workflows/ci.yml](../.github/workflows/ci.yml)）基础上扩展便携 ZIP 校验、SHA256 校验文件与最小权限 GitHub Releases 发布机制（[scripts/release_helper.py](../scripts/release_helper.py)、[tests/unit/test_release_workflow.py](../tests/unit/test_release_workflow.py)）：
+
+1. **发布专项单元测试（5 组全部通过）**：
+   - `test_resolve_release_plan_gating_and_naming`：验证 `pull_request` / 非 `main` 分支 / 畸形 Tag 严禁触发发布；`main` 推送与 `workflow_dispatch` 生成确定性 `dev-<YYYYMMDD>-<sha7>` 快照与固定 `dev-latest` 入口；`vX.Y.Z` / `vX.Y.Z-alpha.1` 生成独立 SemVer 计划。
+   - `test_package_validate_and_sha256_checks`：验证 ZIP 根目录布局、`LICENSE`（GPL-3.0）、`_internal/` 依赖、前端 `dist/`、乐器与 Schema JSON、`SHA256SUMS.txt` 校验以及缺失核心资产/泄露凭据的反向拦截。
+   - `test_idempotent_publish_rolling_entry_pruning_and_semver_isolation`：Mock `gh` CLI 校验首次双发、同提交手动重跑零重复 Release/附件、跨提交安全移动 `dev-latest` 且清理旧附件、超限历史快照裁剪绝不波及 `dev-latest` 与既定 `v0.1.0` Tag，以及保护机制拒绝强移任何正式 SemVer Tag。
+   - `test_ci_workflow_extends_existing_build_with_minimal_permissions_and_gates` 与 `test_cli_package_and_publish_entrypoints`：静态审计 `contents: read` / 隔离 `contents: write` / `Expand-Archive` + `--self-check` 烟测与 `package`/`publish` CLI 入口全通。
+2. **本机全量门禁实测结果**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile`（`57ms`）、`uv run ruff check .`（`All checks passed!`）、`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80`（**`139 passed, 2 warnings in 41.56s`**，总覆盖率 **`86.52%`**）、`vitest`（`4 files / 6 tests passed`）、`vite build`（`775ms`）、`make smoke` & `lyraforge desktop --self-check`（均退出码 `0`）。
