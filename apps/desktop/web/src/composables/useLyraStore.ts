@@ -7,6 +7,7 @@ import {
   type ArrangePresetInfo,
   type ComparisonResult,
   type HealthResponse,
+  type HotkeyActionInfo,
   type PerformanceEventItem,
   type PlaybackPrepareResponse,
   type PlaybackStatusResponse,
@@ -58,6 +59,10 @@ export function createLyraStore(api: LyraForgeApi) {
   const profile = ref<ProfileDetail | null>(null);
   const transcribers = ref<TranscriberInfo[]>([]);
   const presets = ref<ArrangePresetInfo[]>([]);
+  const hotkeyActions = ref<HotkeyActionInfo[]>([]);
+  const hotkeyBindings = ref<Record<string, string>>({});
+  const hotkeyErrors = ref<Record<string, string>>({});
+  const hotkeySupported = ref(true);
   const tools = ref<ToolStatus[]>([]);
   const toolInstalls = ref<Record<string, ToolInstallState>>({});
   const toolsDir = ref("");
@@ -105,6 +110,7 @@ export function createLyraStore(api: LyraForgeApi) {
 
   // Settings
   const allowedTitlesSetting = ref("Genshin Impact, 原神");
+  const allowedProcessesSetting = ref("GenshinImpact.exe, YuanShen.exe");
   const llmEnabledSetting = ref(false);
   const llmBaseUrlSetting = ref("");
   const llmModelSetting = ref("");
@@ -611,6 +617,7 @@ export function createLyraStore(api: LyraForgeApi) {
     try {
       await api.saveSetting("default_style", style.value);
       await api.saveSetting("windows_allowed_titles", allowedTitlesSetting.value);
+      await api.saveSetting("windows_allowed_processes", allowedProcessesSetting.value);
       await api.saveSetting("llm_enabled", llmEnabledSetting.value);
       if (llmBaseUrlSetting.value.trim()) {
         await api.saveSetting("llm_base_url", llmBaseUrlSetting.value.trim());
@@ -764,6 +771,34 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function refreshHotkeys(): Promise<void> {
+    const state = await api.getHotkeys();
+    hotkeyActions.value = state.actions;
+    hotkeyBindings.value = { ...state.bindings };
+    hotkeyErrors.value = { ...state.errors };
+    hotkeySupported.value = state.supported;
+  }
+
+  async function handleSaveHotkeys(): Promise<void> {
+    const bindings = Object.entries(hotkeyBindings.value)
+      .filter(([, text]) => text.trim())
+      .map(([action, text]) => ({ action, text: text.trim() }));
+    try {
+      const res = await api.saveHotkeys(bindings);
+      hotkeyBindings.value = { ...res.bindings };
+      hotkeyErrors.value = { ...res.errors };
+      hotkeySupported.value = res.supported;
+      const failed = Object.keys(res.errors);
+      if (failed.length > 0) {
+        pushToast("error", `部分热键未注册：${failed.join("、")}`);
+      } else {
+        pushToast("ok", bindings.length ? "全局热键已保存并生效" : "已清空所有全局热键");
+      }
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
   async function refreshPresets(): Promise<void> {
     presets.value = (await api.listPresets()).presets;
   }
@@ -845,6 +880,7 @@ export function createLyraStore(api: LyraForgeApi) {
       profile.value = await api.getProfile(selectedProfileId.value);
       transcribers.value = (await api.listTranscribers()).transcribers;
       await refreshPresets();
+      await refreshHotkeys();
       await refreshTools();
       const { settings } = await api.getSettings();
       if (
@@ -856,6 +892,9 @@ export function createLyraStore(api: LyraForgeApi) {
       }
       if (typeof settings.windows_allowed_titles === "string") {
         allowedTitlesSetting.value = settings.windows_allowed_titles;
+      }
+      if (typeof settings.windows_allowed_processes === "string") {
+        allowedProcessesSetting.value = settings.windows_allowed_processes;
       }
       if (typeof settings.llm_enabled === "boolean") {
         llmEnabledSetting.value = settings.llm_enabled;
@@ -929,6 +968,7 @@ export function createLyraStore(api: LyraForgeApi) {
     prepared,
     playbackStatus,
     allowedTitlesSetting,
+    allowedProcessesSetting,
     llmEnabledSetting,
     llmBaseUrlSetting,
     llmModelSetting,
@@ -960,6 +1000,12 @@ export function createLyraStore(api: LyraForgeApi) {
     presets,
     refreshPresets,
     applyPreset,
+    hotkeyActions,
+    hotkeyBindings,
+    hotkeyErrors,
+    hotkeySupported,
+    refreshHotkeys,
+    handleSaveHotkeys,
     selectSong,
     selectArrangement,
     handleProfileChange,

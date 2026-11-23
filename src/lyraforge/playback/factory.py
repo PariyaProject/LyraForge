@@ -32,6 +32,7 @@ def create_playback_backend(
     profile: InstrumentProfile,
     clock: Clock,
     allowed_window_titles: Sequence[str] | None = None,
+    allowed_processes: Sequence[str] | None = None,
 ) -> tuple[PlaybackDriver, FocusGuard]:
     """Build ``(driver, focus_guard)`` for the requested playback mode."""
     mode = PlaybackMode(mode)
@@ -53,8 +54,11 @@ def create_playback_backend(
     )
 
     titles = tuple(allowed_window_titles) if allowed_window_titles else DEFAULT_ALLOWED_TITLES
+    processes = (
+        tuple(allowed_processes) if allowed_processes else DEFAULT_ALLOWED_PROCESSES
+    )
     return WindowsKeyboardDriver(profile), ForegroundWindowGuard(
-        titles, allowed_processes=DEFAULT_ALLOWED_PROCESSES
+        titles, allowed_processes=processes
     )
 
 

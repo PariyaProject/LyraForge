@@ -276,6 +276,22 @@
    - 本会话无《原神》游戏环境，**未进行真实游戏内演奏验证**；管理员/非管理员、国服/国际服、独占全屏/无边框需用户在实机确认；
    - 全局热键（P2）与播放队列/上一首/下一首（P3）尚未实现。
 
+---
+
+## 15. Windows 全局热键 P2（2026-11-23）
+
+1. **实现**：
+   - `src/lyraforge/hotkeys.py`：文本热键解析（至少一个修饰键，支持 F1–F24 / A–Z / 0–9 / 方向键等）、`RegisterHotKey` 消息循环线程、逐动作冲突提示；默认不绑定；
+   - `GET/POST /v1/hotkeys` 与设置页录入/保存；保存到 `windows_hotkeys` 设置并在应用启动时重新注册；
+   - 热键动作：开始（启动已准备的编排）、暂停、继续、停止；开始沿用 `waiting_focus` 与权限检查；
+   - 新增 `windows_allowed_processes` 设置项（默认 `GenshinImpact.exe, YuanShen.exe`），与标题白名单共同决定目标窗口。
+2. **验证**：
+   - `pytest` → **180 passed, 2 warnings in 35.04s**，覆盖率 **83.82%**；`ruff` 通过；
+   - 前端 `vitest` → 6/6；`vue-tsc + vite build` → 167.30 kB JS / 20.52 kB CSS。
+3. **未覆盖（如实标注）**：
+   - 本会话无法在真实游戏中验证 `RegisterHotKey` 是否被独占全屏或反作弊拦截；需要用户实机确认；
+   - 上一首/下一首仍待 P3 播放队列实现。
+
 
 
 

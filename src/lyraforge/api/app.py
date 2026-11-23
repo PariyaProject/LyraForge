@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from lyraforge.api.job_service import TranscriptionJobManager
 from lyraforge.api.playback_service import PlaybackManager
 from lyraforge.api.tool_service import ToolInstallManager
 from lyraforge.errors import ErrorCode, LyraError
+from lyraforge.hotkeys import ACTION_LABELS, HOTKEY_ACTIONS, HotkeyRegistry
 from lyraforge.instruments import DEFAULT_PROFILE_ID, list_profile_ids, load_builtin_profile
 from lyraforge.library import (
     LibraryStore,
@@ -241,11 +242,21 @@ class PlaybackPrepareRequest(BaseModel):
     mode: PlaybackMode = PlaybackMode.DRY_RUN
     realtime: bool = False
     allowed_window_titles: list[str] | None = Field(default=None)
+    allowed_processes: list[str] | None = Field(default=None)
 
 
 class PlaybackStartRequest(BaseModel):
     prepare_token: str
     wait_for_focus_s: float = Field(default=10.0, ge=0.0, le=30.0)
+
+
+class HotkeyBindingModel(BaseModel):
+    action: str
+    text: str = ""
+
+
+class HotkeysUpdateRequest(BaseModel):
+    bindings: list[HotkeyBindingModel] = Field(default_factory=list)
 
 
 def _parse_tags(raw: str) -> list[str]:
@@ -286,6 +297,31 @@ def create_app(
     tool_manager = ToolInstallManager()
     library_gate = _LibraryAccessGate()
 
+    def _hotkey_start() -> None:
+        with suppress(LyraError):
+            manager.start_pending(data_dir=resolved_dir, wait_for_focus_s=5.0)
+
+    def _hotkey_pause() -> None:
+        with suppress(LyraError):
+            manager.pause()
+
+    def _hotkey_resume() -> None:
+        with suppress(LyraError):
+            manager.resume()
+
+    def _hotkey_stop() -> None:
+        with suppress(LyraError):
+            manager.stop("hotkey_stop")
+
+    hotkey_registry = HotkeyRegistry(
+        {
+            "start": _hotkey_start,
+            "pause": _hotkey_pause,
+            "resume": _hotkey_resume,
+            "stop": _hotkey_stop,
+        }
+    )
+
     @contextmanager
     def open_store() -> Iterator[LibraryStore]:
         with library_gate.use(), LibraryStore(app.state.data_dir) as store:
@@ -294,8 +330,23 @@ def create_app(
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
+            raw_hotkeys = None
+            try:
+                with LibraryStore(resolved_dir) as store:
+                    raw_hotkeys = store.get_settings().get("windows_hotkeys")
+            except Exception:  # pragma: no cover - settings load must not block startup
+                raw_hotkeys = None
+            if isinstance(raw_hotkeys, list):
+                mapping = {
+                    str(item.get("action")): str(item.get("text") or "")
+                    for item in raw_hotkeys
+                    if isinstance(item, dict) and item.get("action")
+                }
+                if mapping:
+                    hotkey_registry.apply(mapping)
             yield
         finally:
+            hotkey_registry.stop()
             timeout_s = float(getattr(app.state, "restore_drain_timeout_s", 5.0))
             library_gate.begin_shutdown(wait_ops_timeout_s=timeout_s)
             job_manager.pause_submissions("server_shutdown")
@@ -308,6 +359,7 @@ def create_app(
     app.state.playback_manager = manager
     app.state.job_manager = job_manager
     app.state.tool_manager = tool_manager
+    app.state.hotkeys = hotkey_registry
     app.state.library_gate = library_gate
     app.state.restore_drain_timeout_s = 5.0
 
@@ -785,6 +837,31 @@ def create_app(
             store.set_setting(req.key, req.value)
             return {"settings": store.get_settings()}
 
+    @app.get("/v1/hotkeys", dependencies=[Depends(require_token)])
+    def get_hotkeys() -> dict[str, Any]:
+        return {
+            "supported": hotkey_registry.supported(),
+            "bindings": hotkey_registry.bindings,
+            "errors": hotkey_registry.errors,
+            "actions": [
+                {"id": action, "label": ACTION_LABELS[action]} for action in HOTKEY_ACTIONS
+            ],
+        }
+
+    @app.post("/v1/hotkeys", dependencies=[Depends(require_token)])
+    def set_hotkeys(req: HotkeysUpdateRequest) -> dict[str, Any]:
+        mapping = {binding.action: binding.text for binding in req.bindings}
+        errors = hotkey_registry.apply(mapping)
+        with open_store() as store:
+            store.set_setting(
+                "windows_hotkeys", [binding.model_dump() for binding in req.bindings]
+            )
+        return {
+            "supported": hotkey_registry.supported(),
+            "bindings": hotkey_registry.bindings,
+            "errors": errors,
+        }
+
     @app.post("/v1/app/relaunch-elevated", dependencies=[Depends(require_token)])
     def relaunch_elevated_app() -> dict[str, Any]:
         from lyraforge.elevation import relaunch_elevated
@@ -803,11 +880,21 @@ def create_app(
                 elif isinstance(raw_titles, list):
                     parsed_titles = [str(t).strip() for t in raw_titles if str(t).strip()]
                     allowed_titles = parsed_titles or None
+            allowed_processes = req.allowed_processes
+            if allowed_processes is None:
+                raw_processes = store.get_settings().get("windows_allowed_processes")
+                if isinstance(raw_processes, str):
+                    parsed_processes = [p.strip() for p in raw_processes.split(",") if p.strip()]
+                    allowed_processes = parsed_processes or None
+                elif isinstance(raw_processes, list):
+                    parsed_processes = [str(p).strip() for p in raw_processes if str(p).strip()]
+                    allowed_processes = parsed_processes or None
             return manager.prepare(
                 req.arrangement_id,
                 mode=req.mode,
                 realtime=req.realtime,
                 allowed_window_titles=allowed_titles,
+                allowed_processes=allowed_processes,
                 store=store,
             )
 

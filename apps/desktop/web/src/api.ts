@@ -80,8 +80,19 @@ export interface ToolsResponse {
   installs: ToolInstallState[];
 }
 
-export interface ArrangePresetInfo {
+export interface HotkeyActionInfo {
   id: string;
+  label: string;
+}
+
+export interface HotkeyState {
+  supported: boolean;
+  bindings: Record<string, string>;
+  errors: Record<string, string>;
+  actions: HotkeyActionInfo[];
+}
+
+export interface ArrangePresetInfo {  id: string;
   profile_id: string;
   name: string;
   name_en: string;
@@ -350,6 +361,20 @@ export class LyraForgeApi {
   relaunchElevated(): Promise<{ relaunched: boolean }> {
     return this.request<{ relaunched: boolean }>("/v1/app/relaunch-elevated", {
       method: "POST",
+    });
+  }
+
+  getHotkeys(): Promise<HotkeyState> {
+    return this.request<HotkeyState>("/v1/hotkeys");
+  }
+
+  saveHotkeys(
+    bindings: Array<{ action: string; text: string }>,
+  ): Promise<{ supported: boolean; bindings: Record<string, string>; errors: Record<string, string> }> {
+    return this.request("/v1/hotkeys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bindings }),
     });
   }
 
