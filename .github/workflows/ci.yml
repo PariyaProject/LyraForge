@@ -2,8 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -113,9 +120,80 @@ jobs:
             exit 1
           }
 
+      - name: Package, validate & smoke-test portable Windows ZIP
+        shell: pwsh
+        run: |
+          uv run python scripts/release_helper.py package `
+            --bundle-dir dist/LyraForge `
+            --output-dir release-dist `
+            --license LICENSE `
+            --license-audit docs/LICENSE_AUDIT.md `
+            --event-name "${{ github.event_name }}" `
+            --ref "${{ github.ref }}" `
+            --sha "${{ github.sha }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $zips = @(Get-ChildItem -Path "release-dist" -Filter "LyraForge-*.zip")
+          if ($zips.Count -ne 1) {
+            Write-Error "Expected exactly 1 release ZIP in release-dist, found $($zips.Count)"
+            exit 1
+          }
+          $smokeDir = Join-Path $env:RUNNER_TEMP "lyraforge-zip-smoke"
+          if (Test-Path -LiteralPath $smokeDir) {
+            Remove-Item -Recurse -Force $smokeDir
+          }
+          Expand-Archive -LiteralPath $zips[0].FullName -DestinationPath $smokeDir -Force
+          $zipExe = Join-Path $smokeDir "LyraForge/LyraForge.exe"
+          if (-not (Test-Path -LiteralPath $zipExe)) {
+            Write-Error "Extracted ZIP missing LyraForge/LyraForge.exe at $zipExe"
+            exit 1
+          }
+          & $zipExe --self-check
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Extracted ZIP LyraForge.exe --self-check failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: LyraForge-windows-x64
-          path: dist/LyraForge/
+          path: release-dist/
           retention-days: 14
+
+  release-windows:
+    name: Publish Windows Release (GitHub Releases)
+    needs: [test, package-windows]
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download verified Windows bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LyraForge-windows-x64
+          path: release-dist
+
+      - name: Verify SHA256SUMS & publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/release_helper.py publish \
+            --dist-dir release-dist \
+            --repo "${GITHUB_REPOSITORY}" \
+            --event-name "${GITHUB_EVENT_NAME}" \
+            --ref "${GITHUB_REF}" \
+            --sha "${GITHUB_SHA}" \
+            --retain-dev-snapshots 10

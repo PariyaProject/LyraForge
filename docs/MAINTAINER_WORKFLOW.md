@@ -95,6 +95,6 @@ uv run python scripts/check_ci.py --sha origin/main
 
 ## 6. Alpha / Stable 发布前门禁与断点续做交接规范
 
-- **Alpha Pre-Flight Gate**：合并或标记 Alpha 预发行前，必须同时满足 `make check` 全绿、Chrome CDP 无交互报错/溢出、双平台 CI（含 Windows `LyraForge.exe --self-check`）全绿，且 `README.md` / [PROGRESS.md](PROGRESS.md) 如实标明真机未验证项。
-- **Stable Release Gate**：公开标称稳定版前，除全部自动 CI 外，还必须在 Windows 10/11 实体机按 [TEST_REPORT.md](TEST_REPORT.md) §5 完成真机《原神》21 键校准、切窗/ESC 松键与独立多音识别联调，并经项目所有者明确批准后方可打 Tag / 发 Release。
+- **Alpha / 自动开发预览发布通道**：合入 `main` 且双平台 `test` + `package-windows`（含便携 ZIP 校验与解压后 `--self-check`）全绿后，由 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 自动发布/覆盖更新 `dev-latest` 与按提交保留的 `dev-<YYYYMMDD>-<sha7>` Pre-release（禁止通过 PR 触发，且不得宣传为真机已验证稳定版）。
+- **Stable Release Gate**：公开标称稳定版前，除全部自动 CI 外，还必须在 Windows 10/11 实体机按 [TEST_REPORT.md](TEST_REPORT.md) §5 完成真机《原神》21 键校准、切窗/ESC 松键与独立多音识别联调，并经项目所有者明确批准后通过独立 SemVer Tag（`vX.Y.Z`）发布；禁止强推或移动既有正式 SemVer Tag。
 - **断点交接（Resumable Handoff）**：跨会话持续推进时，[PROGRESS.md](PROGRESS.md) 仅写入真实已观测提交 SHA、PR/CI URL 与命令原始结果；严禁根据记忆补全未运行检查项。

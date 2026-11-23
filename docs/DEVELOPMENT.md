@@ -92,7 +92,7 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 内置 `builtin-mono` 使用纯 Python 离线 YIN 算法（适合独奏单声线；在多声部和弦上受限，见 `scripts/eval_transcribers.py` 实测）。如需非 WAV 媒体（MP3/MP4/MKV）或更高准确度多音转录：
 
 1. 安装系统 `ffmpeg` 并确保其在 `PATH` 中。
-2. 按 [ADR-0001](adr/0001-transcriber-isolation.md) 在独立 Python 虚拟环境中安装对应引擎并通过环境变量接入：
+2. 按 [ADR-0001](adr/0001-headless-python-core-and-isolated-transcribers.md) 在独立 Python 虚拟环境中安装对应引擎并通过环境变量接入：
    - `LYRAFORGE_BASIC_PITCH_PYTHON` 或 `LYRAFORGE_BASIC_PITCH_BIN`（Spotify Basic Pitch, Apache-2.0）
    - `LYRAFORGE_DETTATO_PYTHON` 或 `LYRAFORGE_DETTATO_BIN`（dettato 多乐器转录, Apache-2.0）
 
@@ -106,14 +106,18 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 
 ---
 
-## 5. Windows 10/11 便携打包
+## 5. Windows 10/11 便携打包与 GitHub Releases 自动发布
 
 ```powershell
 # 在 Windows 10/11（无需管理员权限）生成便携目录 dist/LyraForge/LyraForge.exe
 ./scripts/build_windows.ps1
 ```
 
-也可查看 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `package-windows` 作业与 [lyraforge.spec](../packaging/lyraforge.spec)。
+CI 复用 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `package-windows` 作业：在双平台测试及 `LyraForge.exe --self-check` 全数通过后，由 [scripts/release_helper.py](../scripts/release_helper.py) 将完整便携目录打包为包含架构/构建版本、完整 `_internal/` 依赖、前端 `dist/` 与 `LICENSE` 的 ZIP，生成 `SHA256SUMS.txt` 并对其**解压后的 `LyraForge.exe --self-check`** 进行二次验证：
+
+- **开发预发行渠道（Pre-release）**：`main` 分支每次受信任的 `push` 或手动 `workflow_dispatch` 会发布不可变快照 `dev-<YYYYMMDD>-<sha7>`（保留最近 10 个快照），并同步更新固定最新入口 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)；所有开发版均显式标注为实验性未真机校准版本。
+- **独立 SemVer 正式发行渠道**：仅当推送独立 `vX.Y.Z`（或 `vX.Y.Z-alpha.N`）Tag 时发布对应版本，绝不会被普通 `main` 推送覆盖或移动 Tag，且所有 Pull Request 均禁止执行发布作业（顶层默认 `contents: read`，仅发布作业授予 `contents: write`）。
+- 相关构建与发布辅助：[lyraforge.spec](../packaging/lyraforge.spec)、[release_helper.py](../scripts/release_helper.py)。
 
 ---
 

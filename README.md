@@ -37,6 +37,22 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 
 ## Quick Start
 
+### Windows 10/11 便携预发行版（免安装 Python / Node）
+
+> **注意**：当前自动构建的 Windows 开发预发行版（Pre-release）仍属于**实验性开发预览版**；Windows 真机《原神》21 键校准与前台实音演奏尚未完成实体机验收。
+
+- **最新开发构建固定入口**：[Latest Dev Pre-release (`dev-latest`)](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（查看历史预发行与正式版本请前往 [Releases](https://github.com/PariyaProject/LyraForge/releases)）。
+- 下载页面内的 `LyraForge-dev-*-windows-x64.zip` 与 `SHA256SUMS.txt` 后，校验哈希并解压运行（请保持 `LyraForge.exe` 与 `_internal\` 位于同一解压目录）：
+
+```powershell
+Get-FileHash .\LyraForge-dev-*-windows-x64.zip -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+.\LyraForge\LyraForge.exe --self-check
+.\LyraForge\LyraForge.exe
+```
+
+### 从源码运行（macOS Apple Silicon / Windows）
+
 前置环境：Python `3.11` 或 `3.12`、[`uv`](https://docs.astral.sh/uv/)；运行桌面前端还需 Node.js `22+` 与 `pnpm`（`12.6.0`）。
 
 ```bash
