@@ -328,6 +328,24 @@
    - 未在真实窗口做人工视觉验收（无浏览器控制）；布局改动仅由组件测试与构建覆盖；
    - 抽屉/弹层的窄屏与高 DPI 表现需实机确认。
 
+---
+
+## 18. dettato GPU 支持与转录超时缩放（2026-11-23）
+
+1. **GPU / NPU**：
+   - dettato 适配器新增 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps` 覆盖；未指定时会用隔离解释器探测 `torch.cuda.is_available()` / `torch.backends.mps.is_available()`，自动传 `--device`；
+   - 注意：PyPI 安装的 `torch` 默认是 CPU 版，要用 GPU 需在 dettato 环境改装 CUDA 版 wheel（见 [DEVELOPMENT.md](DEVELOPMENT.md) §3.2）；NPU 目前没有通用 `--device` 后端，dettato CLI 只声明 cuda/cpu。
+2. **超时**：转录子进程预算按音频时长缩放（dettato 10×实时 + 180s、Basic Pitch 3× + 60s，且不低于 `TranscribeOptions.timeout_s`），修复长曲目固定 300s 超时。
+3. **UI 清理**：引擎卡片移除 `ADR-0001` 等开发术语，改为用户可读的能力/运行方式描述。
+4. **验证**：
+   - `pytest` → **184 passed, 2 warnings in 35.83s**，覆盖率 **83.86%**；`ruff` 通过；
+   - 新增测试覆盖设备覆盖优先级、CLI runner 回退 cpu、超时缩放上限；
+   - 前端 `vitest` 6/6、`vue-tsc + vite build` 通过（174.93 kB JS / 22.65 kB CSS）。
+5. **未覆盖（如实标注）**：
+   - 本会话没有 NVIDIA GPU / 游戏环境，未实测 CUDA 推理吞吐；仅验证参数与探测逻辑；
+   - NPU 加速未实现。
+
+
 
 
 

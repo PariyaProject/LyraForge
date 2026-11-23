@@ -5,6 +5,7 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Added
+- **dettato can use a GPU and no longer times out on long songs**: the adapter auto-detects CUDA/MPS (`LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps` overrides) and passes `--device`; transcription timeouts now scale with audio length (dettato ~10x realtime + 180 s slack, Basic Pitch ~3x + 60 s) instead of a fixed 5 minutes.
 - **Playback queue as a dedicated panel**: the queue moved out of the playback page into a right-side drawer opened from the global transport bar (`队列 n`), with numbered items, current-item highlight, click-to-select, previous/next and clear actions.
 - **Arrangement version management**: saved versions now show an auto-generated descriptive name (`#序号 · 风格 · 移调 · 速度`), playability ratio, note count and creation time, and can be renamed inline (`POST /v1/arrangements/{id}/label`).
 - **About & license dialog**: the sidebar footer now opens an About dialog listing the version, GNU GPL-3.0 notice, source link and third-party component licenses; the "zero API key" slogan was removed.
@@ -22,6 +23,7 @@ All notable user-facing changes to LyraForge are documented in this file.
 - **Cross-platform CI & GitHub Releases automation**: Added Windows portable ZIP packaging, post-extraction `LyraForge.exe --self-check`, `SHA256SUMS.txt` checksum generation, rolling `dev-latest` + immutable `dev-YYYYMMDD-<sha7>` experimental pre-releases on `main`, and isolated SemVer (`vX.Y.Z`) release channels (`packaging/lyraforge.spec`, `scripts/build_windows.ps1`, `scripts/release_helper.py`, `.github/workflows/ci.yml`).
 
 ### Changed
+- **Developer-only wording removed from the UI**: engine cards no longer mention "ADR-0001"; they describe what each engine does and where it runs in user terms.
 - **Layout and typography fixes**: advanced/optional sections are now full-width instead of leaving an empty grid cell, long paths and engine version strings wrap inside cards, and code blocks wrap instead of overflowing their container.
 - **AI/Agent is now clearly optional**: the desktop navigation, home page, transcribe view and settings put the preset-driven offline workflow first; MCP / HTTP LLM integration moved into collapsed "advanced (optional)" sections, and README no longer presents AI as a prerequisite.
 
