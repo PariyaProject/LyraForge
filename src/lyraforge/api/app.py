@@ -24,6 +24,7 @@ from lyraforge import __version__
 from lyraforge.agent import ALLOWED_TOOLS, FORBIDDEN_TOOLS, AgentOrchestrator
 from lyraforge.api.job_service import TranscriptionJobManager
 from lyraforge.api.playback_service import PlaybackManager
+from lyraforge.api.queue_service import PlaybackQueueManager, QueueItem
 from lyraforge.api.tool_service import ToolInstallManager
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.hotkeys import ACTION_LABELS, HOTKEY_ACTIONS, HotkeyRegistry
@@ -259,6 +260,21 @@ class HotkeysUpdateRequest(BaseModel):
     bindings: list[HotkeyBindingModel] = Field(default_factory=list)
 
 
+class QueueSetRequest(BaseModel):
+    arrangement_ids: list[str] = Field(default_factory=list)
+    start_index: int = 0
+    mode: PlaybackMode = PlaybackMode.DRY_RUN
+    realtime: bool = False
+
+
+class QueueAddRequest(BaseModel):
+    arrangement_id: str
+
+
+class QueueStepRequest(BaseModel):
+    delta: int = 1
+
+
 def _parse_tags(raw: str) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
@@ -295,6 +311,7 @@ def create_app(
     manager = PlaybackManager()
     job_manager = TranscriptionJobManager()
     tool_manager = ToolInstallManager()
+    queue_manager = PlaybackQueueManager()
     library_gate = _LibraryAccessGate()
 
     def _hotkey_start() -> None:
@@ -313,12 +330,22 @@ def create_app(
         with suppress(LyraError):
             manager.stop("hotkey_stop")
 
+    def _hotkey_next() -> None:
+        with suppress(Exception):
+            _step_queue(1)
+
+    def _hotkey_previous() -> None:
+        with suppress(Exception):
+            _step_queue(-1)
+
     hotkey_registry = HotkeyRegistry(
         {
             "start": _hotkey_start,
             "pause": _hotkey_pause,
             "resume": _hotkey_resume,
             "stop": _hotkey_stop,
+            "next": _hotkey_next,
+            "previous": _hotkey_previous,
         }
     )
 
@@ -326,6 +353,36 @@ def create_app(
     def open_store() -> Iterator[LibraryStore]:
         with library_gate.use(), LibraryStore(app.state.data_dir) as store:
             yield store
+
+    def _queue_item(store: LibraryStore, arrangement_id: str) -> QueueItem:
+        rec = store.get_arrangement(arrangement_id)
+        song = store.get_song(rec.song_id).song
+        return QueueItem(
+            arrangement_id=rec.id,
+            label=f"{song.title} · {rec.style}",
+        )
+
+    def _step_queue(delta: int) -> dict[str, Any]:
+        with open_store() as store:
+            item = queue_manager.step(delta)
+            if item is None:
+                return {
+                    "queue": queue_manager.snapshot(),
+                    "playback": manager.status(),
+                }
+            if manager.is_active():
+                manager.stop("queue_switch", timeout_s=2.0)
+            snapshot = queue_manager.snapshot()
+            manager.prepare(
+                item.arrangement_id,
+                mode=PlaybackMode(str(snapshot["mode"])),
+                realtime=bool(snapshot["realtime"]),
+                store=store,
+            )
+            started = manager.start_pending(
+                data_dir=resolved_dir, wait_for_focus_s=5.0
+            )
+            return {"queue": queue_manager.snapshot(), "playback": started}
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -867,6 +924,37 @@ def create_app(
         from lyraforge.elevation import relaunch_elevated
 
         return {"relaunched": relaunch_elevated()}
+
+    @app.get("/v1/playback/queue", dependencies=[Depends(require_token)])
+    def get_playback_queue() -> dict[str, Any]:
+        return queue_manager.snapshot()
+
+    @app.post("/v1/playback/queue", dependencies=[Depends(require_token)])
+    def set_playback_queue(req: QueueSetRequest) -> dict[str, Any]:
+        with open_store() as store:
+            items = [_queue_item(store, arrangement_id) for arrangement_id in req.arrangement_ids]
+        queue_manager.set_items(
+            items,
+            start_index=req.start_index,
+            mode=req.mode,
+            realtime=req.realtime,
+        )
+        return queue_manager.snapshot()
+
+    @app.post("/v1/playback/queue/add", dependencies=[Depends(require_token)])
+    def add_playback_queue_item(req: QueueAddRequest) -> dict[str, Any]:
+        with open_store() as store:
+            queue_manager.add(_queue_item(store, req.arrangement_id))
+        return queue_manager.snapshot()
+
+    @app.post("/v1/playback/queue/clear", dependencies=[Depends(require_token)])
+    def clear_playback_queue() -> dict[str, Any]:
+        queue_manager.clear()
+        return queue_manager.snapshot()
+
+    @app.post("/v1/playback/queue/step", dependencies=[Depends(require_token)])
+    def step_playback_queue(req: QueueStepRequest) -> dict[str, Any]:
+        return _step_queue(req.delta)
 
     @app.post("/v1/playback/prepare", dependencies=[Depends(require_token)])
     def playback_prepare(req: PlaybackPrepareRequest) -> dict[str, Any]:

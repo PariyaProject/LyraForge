@@ -13,6 +13,7 @@ import {
   type PlaybackStatusResponse,
   type ProfileDetail,
   type ProfileSummary,
+  type QueueState,
   type SongSummary,
   type SourceRecord,
   type TranscriberInfo,
@@ -107,6 +108,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const realtime = ref(true);
   const prepared = ref<PlaybackPrepareResponse | null>(null);
   const playbackStatus = ref<PlaybackStatusResponse | null>(null);
+  const queue = ref<QueueState>({ items: [], index: 0, mode: "dry-run", realtime: false });
 
   // Settings
   const allowedTitlesSetting = ref("Genshin Impact, 原神");
@@ -771,6 +773,45 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function refreshQueue(): Promise<void> {
+    queue.value = await api.getQueue();
+  }
+
+  async function handleAddToQueue(): Promise<void> {
+    if (!selectedArrId.value) return;
+    try {
+      queue.value = await api.addToQueue(selectedArrId.value);
+      pushToast("ok", `已加入播放队列（共 ${queue.value.items.length} 首）`);
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
+  async function handleQueueStep(delta: number): Promise<void> {
+    try {
+      const res = await api.stepQueue(delta);
+      queue.value = res.queue;
+      playbackStatus.value = await api.playbackStatus();
+      const item = res.queue.items[res.queue.index];
+      if (item) {
+        pushToast("info", `队列切换到：${item.label}`);
+      } else {
+        pushToast("info", "播放队列为空");
+      }
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
+  async function handleClearQueue(): Promise<void> {
+    try {
+      queue.value = await api.clearQueue();
+      pushToast("info", "已清空播放队列");
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
   async function refreshHotkeys(): Promise<void> {
     const state = await api.getHotkeys();
     hotkeyActions.value = state.actions;
@@ -882,6 +923,7 @@ export function createLyraStore(api: LyraForgeApi) {
       await refreshPresets();
       await refreshHotkeys();
       await refreshTools();
+      await refreshQueue();
       const { settings } = await api.getSettings();
       if (
         settings.default_style === "melody" ||
@@ -1006,6 +1048,11 @@ export function createLyraStore(api: LyraForgeApi) {
     hotkeySupported,
     refreshHotkeys,
     handleSaveHotkeys,
+    queue,
+    refreshQueue,
+    handleAddToQueue,
+    handleQueueStep,
+    handleClearQueue,
     selectSong,
     selectArrangement,
     handleProfileChange,
