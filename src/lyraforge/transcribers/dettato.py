@@ -70,7 +70,8 @@ class DettatoSubprocessTranscriber:
                 *base,
                 str(wav_in),
                 "-o",
-                str(out_dir / "dettato.mid"),
+                # dettato's -o is an output *directory*; it writes <stem>.mid there.
+                str(out_dir),
             ],
             options=options,
             on_progress=on_progress,

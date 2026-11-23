@@ -174,6 +174,34 @@
    - 自动化回归：`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **`150 passed, 2 warnings in 33.30s`**，总覆盖率 **`85.86%`**（含新增 `tests/unit/test_desktop_startup.py` 与 `test_release_workflow.py` 的 GUI payload 反向用例）；`uv run ruff check .` → `All checks passed!`。
 5. **仍未覆盖（如实标注）**：
    - 本次会话未安装 `pnpm`，故未重跑前端 `vitest`/`vite build` 与 `make smoke`。
-   - `windows-latest` 上的 `--self-check --check-gui` CI 门禁需在本分支推送后由 `scripts/check_ci.py` 实测确认。
+   - `windows-latest` 上的 `--self-check --check-gui` 门禁已在 PR #10 与合并后 main 运行中实测通过。
    - 《原神》Windows 真机 21 键校准与游戏内实机演奏仍未执行（见 §5）。
+
+---
+
+## 11. 外部转录引擎 Windows 实机接通与适配器修复（2026-11-23）
+
+1. **本机工具链安装（Windows x64）**：
+   - `ffmpeg` 9.1（`winget install --id Gyan.FFmpeg`，`ffmpeg`/`ffprobe` 已在用户 `PATH`）。
+   - `pnpm` 12.21.0（`npm install -g pnpm`）。
+   - Basic Pitch 隔离环境：`uv venv …\LyraForge\tools\basic-pitch --python 3.11` + `basic-pitch==0.4.0`（TensorFlow `2.14.0`、`numpy 1.26.4`、`setuptools 80.10.2`）。
+   - dettato 隔离环境：`uv venv …\LyraForge\tools\dettato --python 3.11` + `dettato==2.0.0`（`torch 2.15.0+cpu`；权重首次运行从 Hugging Face `kobimusic/dettato*` 下载）。
+2. **真实环境暴露并修复的三个适配器缺陷**：
+   - `basic-pitch` 0.4.x 的控制台入口是 `basic_pitch.predict`，旧的 `-m basic_pitch.inference` 在 0.4.0 下不会产生任何输出；
+   - 中文 Windows 下子进程继承 `cp936`，Basic Pitch 的 emoji 进度打印触发 `UnicodeEncodeError` 直接中断转录；现统一向子进程注入 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`；
+   - `dettato -o` 语义是输出**目录**（写出 `<stem>.mid`），旧实现传入 `…/dettato.mid` 文件路径导致找不到产物。
+3. **端到端复验（`lyraforge` CLI，真实模型）**：
+   - `uv run lyraforge engines list` → 三个引擎均 `available: true`，`runner` 分别为 `…\basic-pitch\Scripts\python.exe -m basic_pitch.predict` 与 `…\dettato\Scripts\python.exe -m dettato`。
+   - 4 秒测试音频（`c_major_scale` 编曲后离线合成 WAV）：
+     - `--engine basic-pitch` → 退出码 0，`raw_note_count = 8`，`duration_ms = 3986`；
+     - `--engine dettato` → 退出码 0，`raw_note_count = 7`，`duration_ms = 3943`。
+   - 用 `ffmpeg` 将 WAV 转 MP3 后 `--engine builtin-mono` → 退出码 0，`raw_note_count = 8`（验证非 WAV 提取链路）。
+   - 回归：`uv run pytest --cov=lyraforge --cov-fail-under=80` → **`152 passed, 2 warnings in 34.63s`**，总覆盖率 **`85.86%`**；`uv run ruff check .` → `All checks passed!`。
+4. **AI / MCP 接入实测**：
+   - `claude mcp add -s user lyraforge -- D:\Code\LyraForge\.venv\Scripts\lyraforge.exe mcp` → `claude mcp list` 显示 `lyraforge … ✓ Connected`；Skill 已安装到 `~\.claude\skills\lyraforge-music-workbench\SKILL.md`。
+   - Antigravity：`~\.gemini\config\mcp_config.json` 与 `~\.gemini\antigravity-ide\mcp_config.json` 写入同一 `mcpServers.lyraforge` 配置并通过 JSON 校验。
+5. **仍未覆盖（如实标注）**：
+   - 尚未用真实流行歌曲（人声+伴奏、多乐器混音）评估新引擎的实际转谱质量；本次仅验证链路可用与音符数。
+   - 工具链目前仍需手工安装与环境变量配置；应用内一键安装属于下一阶段工作（见 [ROADMAP.md](ROADMAP.md) 优先级 C）。
+
 

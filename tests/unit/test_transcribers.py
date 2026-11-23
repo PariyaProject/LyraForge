@@ -7,6 +7,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -143,16 +144,25 @@ def test_basic_pitch_probe_missing_and_mocked_subprocess(
             self.returncode = rc
             self.stderr = type("R", (), {"read": lambda _s: b"err"})()
             if rc == 0:
-                out_dir = Path(cmd[1])
+                out_dir = Path(cmd[-2])
                 (out_dir / "input_basic_pitch.mid").write_bytes(midi_sample)
 
         def poll(self) -> int:
             return self.returncode
 
-    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **_kw: FakeBPProc(cmd, rc=0))
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> FakeBPProc:
+        captured.update(kwargs)
+        return FakeBPProc(cmd, rc=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     res = bp.transcribe(wav)
     assert res.engine_id == "basic-pitch"
     assert res.note_count == 8
+    # Child Python tools must receive UTF-8 stdio (Chinese Windows defaults to cp936).
+    assert captured["env"]["PYTHONUTF8"] == "1"
+    assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
 
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **_kw: FakeBPProc(cmd, rc=2))
     with pytest.raises(LyraError) as exc_fail:
@@ -162,6 +172,21 @@ def test_basic_pitch_probe_missing_and_mocked_subprocess(
     with pytest.raises(LyraError) as exc_unknown:
         get_transcriber("does-not-exist")
     assert exc_unknown.value.code == ErrorCode.INVALID_ARGUMENT
+
+
+def test_basic_pitch_python_env_uses_predict_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_python = tmp_path / "python.exe"
+    fake_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv(BASIC_PITCH_PYTHON_ENV, str(fake_python))
+    monkeypatch.delenv(BASIC_PITCH_CLI_ENV, raising=False)
+
+    assert BasicPitchSubprocessTranscriber().probe().details["runner"] == [
+        str(fake_python),
+        "-m",
+        "basic_pitch.predict",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -230,9 +255,13 @@ def test_dettato_subprocess_probe_and_mocked_run(
     class FakeDettatoProc:
         def __init__(self, cmd: list[str], rc: int = 0) -> None:
             self.returncode = rc
+            self.cmd = cmd
             self.stderr = type("R", (), {"read": lambda _s: b"err"})()
             if rc == 0:
-                Path(cmd[-1]).write_bytes(midi_sample)
+                # dettato's -o is an output directory and it writes <stem>.mid inside it.
+                out_dir = Path(cmd[-1])
+                assert out_dir.is_dir()
+                (out_dir / "dettato.mid").write_bytes(midi_sample)
 
         def poll(self) -> int:
             return self.returncode
@@ -241,3 +270,18 @@ def test_dettato_subprocess_probe_and_mocked_run(
     res = dt.transcribe(wav)
     assert res.engine_id == "dettato"
     assert res.note_count == 8
+
+
+def test_dettato_python_env_uses_module_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_python = tmp_path / "python.exe"
+    fake_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv(DETTATO_PYTHON_ENV, str(fake_python))
+    monkeypatch.delenv(DETTATO_CLI_ENV, raising=False)
+
+    assert DettatoSubprocessTranscriber().probe().details["runner"] == [
+        str(fake_python),
+        "-m",
+        "dettato",
+    ]
