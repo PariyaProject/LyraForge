@@ -19,11 +19,11 @@ class ToolInstallManager:
         self._items: dict[str, dict[str, Any]] = {}
 
     def start(self, tool_id: str) -> dict[str, Any]:
-        if tool_id not in tool_ids():
+        if tool_id not in tool_ids() and tool_id != "dettato-gpu":
             raise LyraError(
                 ErrorCode.INVALID_ARGUMENT,
                 f"unknown tool: {tool_id!r}",
-                {"available": list(tool_ids())},
+                {"available": [*tool_ids(), "dettato-gpu"]},
             )
         with self._lock:
             current = self._items.get(tool_id)

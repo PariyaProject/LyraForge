@@ -6,6 +6,7 @@ import {
   type ArrangementRecord,
   type ArrangePresetInfo,
   type ComparisonResult,
+  type GpuStatus,
   type HealthResponse,
   type HotkeyActionInfo,
   type PerformanceEventItem,
@@ -78,6 +79,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const hotkeyBindings = ref<Record<string, string>>({});
   const hotkeyErrors = ref<Record<string, string>>({});
   const hotkeySupported = ref(true);
+  const gpuStatus = ref<GpuStatus | null>(null);
   const tools = ref<ToolStatus[]>([]);
   const toolInstalls = ref<Record<string, ToolInstallState>>({});
   const toolsDir = ref("");
@@ -842,6 +844,47 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  async function refreshGpu(): Promise<void> {
+    gpuStatus.value = await api.getGpuStatus();
+  }
+
+  async function handleSetGpuDevice(device: string): Promise<void> {
+    try {
+      gpuStatus.value = await api.setDettatoDevice(device);
+      pushToast("ok", `dettato 推理设备已设置为 ${gpuStatus.value.device}`);
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
+  async function handleInstallGpuTorch(): Promise<void> {
+    if (toolBusy.value) return;
+    toolBusy.value = "dettato-gpu";
+    try {
+      await api.installDettatoGpu();
+      pushToast("info", "正在安装 CUDA 版 PyTorch（约 2.5 GB），请保持网络连接…");
+      const deadline = Date.now() + 60 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await refreshTools();
+        const state = toolInstalls.value["dettato-gpu"];
+        if (state && state.status !== "running") {
+          if (state.status === "installed") {
+            pushToast("ok", "CUDA 版 PyTorch 已安装并验证可用");
+          } else {
+            pushToast("error", state.error ?? "CUDA 版 PyTorch 安装失败");
+          }
+          break;
+        }
+      }
+      await refreshGpu();
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      toolBusy.value = null;
+    }
+  }
+
   async function refreshHotkeys(): Promise<void> {
     const state = await api.getHotkeys();
     hotkeyActions.value = state.actions;
@@ -954,6 +997,7 @@ export function createLyraStore(api: LyraForgeApi) {
       await refreshHotkeys();
       await refreshTools();
       await refreshQueue();
+      await refreshGpu();
       const { settings } = await api.getSettings();
       if (
         settings.default_style === "melody" ||
@@ -1069,6 +1113,10 @@ export function createLyraStore(api: LyraForgeApi) {
     refreshTools,
     handleInstallTool,
     handleRelaunchElevated,
+    gpuStatus,
+    refreshGpu,
+    handleSetGpuDevice,
+    handleInstallGpuTorch,
     presets,
     refreshPresets,
     applyPreset,

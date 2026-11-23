@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-from lyraforge.toolchain.installer import load_manifest
+from lyraforge.toolchain.installer import get_tool_setting, load_manifest
 from lyraforge.toolchain.paths import ffmpeg_executable, venv_python
 from lyraforge.toolchain.specs import TOOL_SPECS
 
@@ -38,6 +38,10 @@ def managed_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
         python = venv_python(spec.id)
         if entry.get("mode") == "managed" and python.is_file():
             env.setdefault(spec.env_var, str(python))
+
+    device = str(get_tool_setting("dettato_device", "auto") or "auto").lower()
+    if device in {"cpu", "cuda", "mps"}:
+        env.setdefault("LYRAFORGE_DETTATO_DEVICE", device)
     return env
 
 

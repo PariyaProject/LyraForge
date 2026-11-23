@@ -13,6 +13,10 @@ function installOf(toolId: string) {
   return props.store.toolInstalls.value[toolId];
 }
 
+function onDettatoDeviceChange(event: Event): void {
+  void props.store.handleSetGpuDevice((event.target as HTMLSelectElement).value);
+}
+
 const MCP_SNIPPETS: Record<"claude" | "codex" | "antigravity", { title: string; code: string }> = {
   claude: {
     title: "Claude Code (.mcp.json / integrations/claude-code)",
@@ -166,6 +170,69 @@ async function copyText(text: string): Promise<void> {
               <span v-if="installOf(tool.id)?.error">{{ installOf(tool.id)?.error }}</span>
             </div>
           </div>
+        </div>
+
+        <div class="track-card">
+          <div class="card-title-row">
+            <strong>dettato GPU 加速</strong>
+            <span
+              class="pill"
+              :class="
+                store.gpuStatus.value?.dettato_torch?.cuda_available ? 'pill-ok' : 'pill-warn'
+              "
+            >
+              {{ store.gpuStatus.value?.dettato_torch?.cuda_available ? "CUDA 可用" : "CPU 推理" }}
+            </span>
+          </div>
+          <template v-if="store.gpuStatus.value">
+            <div class="muted">
+              NVIDIA：{{
+                store.gpuStatus.value.nvidia.present
+                  ? `${store.gpuStatus.value.nvidia.name ?? "未知 GPU"}（驱动 ${store.gpuStatus.value.nvidia.driver ?? "?"}）`
+                  : "未检测到 NVIDIA GPU"
+              }}
+            </div>
+            <div class="muted">
+              PyTorch：{{
+                store.gpuStatus.value.dettato_torch
+                  ? `${store.gpuStatus.value.dettato_torch.version ?? "?"} · CUDA ${store.gpuStatus.value.dettato_torch.cuda_build ?? "-"} · ${store.gpuStatus.value.dettato_torch.cuda_available ? "可用" : "仅 CPU"}`
+                  : "未安装 dettato"
+              }}
+            </div>
+            <div class="field">
+              <label for="dettato-device">推理设备</label>
+              <select
+                id="dettato-device"
+                :value="store.gpuStatus.value.device"
+                @change="onDettatoDeviceChange"
+              >
+                <option value="auto">自动（优先 CUDA/MPS，否则 CPU）</option>
+                <option value="cpu">CPU</option>
+                <option value="cuda">CUDA</option>
+                <option value="mps">MPS（Apple Silicon）</option>
+              </select>
+            </div>
+            <div class="button-row">
+              <button
+                v-if="!store.gpuStatus.value.dettato_torch?.cuda_available"
+                class="secondary"
+                type="button"
+                :disabled="!store.gpuStatus.value.nvidia.present || store.toolBusy.value !== null"
+                @click="store.handleInstallGpuTorch"
+              >
+                <StudioIcon name="download" />
+                安装 CUDA 版 PyTorch（约 2.5 GB）
+              </button>
+              <span v-else class="muted">CUDA 版 PyTorch 已就绪；切换设备后下一次转谱生效</span>
+            </div>
+            <div v-if="store.toolInstalls.value['dettato-gpu']" class="muted">
+              {{ store.toolInstalls.value["dettato-gpu"]?.message }}
+              （{{ Math.round((store.toolInstalls.value["dettato-gpu"]?.progress ?? 0) * 100) }}%）
+              <span v-if="store.toolInstalls.value['dettato-gpu']?.error">
+                {{ store.toolInstalls.value["dettato-gpu"]?.error }}
+              </span>
+            </div>
+          </template>
         </div>
       </div>
 
