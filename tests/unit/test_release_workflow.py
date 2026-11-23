@@ -234,15 +234,20 @@ def test_package_validate_and_sha256_checks(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fake_runner_factory() -> tuple[
+def _fake_runner_factory(
+    *,
+    initial_main_head: str = "",
+) -> tuple[
     Any,
     dict[str, dict[str, Any]],
     dict[str, str],
     list[list[str]],
+    dict[str, Any],
 ]:
     releases: dict[str, dict[str, Any]] = {}
     tag_refs: dict[str, str] = {}
     calls: list[list[str]] = []
+    state: dict[str, Any] = {"main_head": initial_main_head, "fail_main_ref": False}
     publish_seq = 0
 
     def run_cmd(cmd: list[str] | tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -260,6 +265,18 @@ def _fake_runner_factory() -> tuple[
                     c, 0, json.dumps({"object": {"sha": sha_arg}}), ""
                 )
             endpoint = c[2]
+            if endpoint.endswith("/git/ref/heads/main"):
+                if state["fail_main_ref"]:
+                    return subprocess.CompletedProcess(c, 1, "", "503 Service Unavailable")
+                return subprocess.CompletedProcess(
+                    c,
+                    0,
+                    json.dumps({
+                        "ref": "refs/heads/main",
+                        "object": {"sha": state["main_head"]},
+                    }),
+                    "",
+                )
             if endpoint.startswith("repos/") and "/git/refs/tags/" in endpoint:
                 tag = endpoint.rsplit("/", 1)[-1]
                 if tag in tag_refs:
@@ -347,13 +364,13 @@ def _fake_runner_factory() -> tuple[
 
         raise AssertionError(f"unexpected command: {c}")
 
-    return run_cmd, releases, tag_refs, calls
+    return run_cmd, releases, tag_refs, calls, state
 
 
 def test_idempotent_publish_rolling_entry_pruning_and_semver_isolation(tmp_path: Path) -> None:
     lic = ROOT / "LICENSE"
     bundle = _make_fake_bundle(tmp_path / "bundle")
-    run_cmd, releases, tag_refs, calls = _fake_runner_factory()
+    run_cmd, releases, tag_refs, calls, state = _fake_runner_factory()
 
     # Safety guard refuses force-moving any SemVer or non-rolling tag
     with pytest.raises(ValueError, match="protected"):
@@ -390,6 +407,7 @@ def test_idempotent_publish_rolling_entry_pruning_and_semver_isolation(tmp_path:
 
     # First main push creates dev snapshot + rolling dev-latest (Pre-release)
     sha1 = "1111111" + "0" * 33
+    state["main_head"] = sha1
     plan1 = rh.resolve_release_plan(
         event_name="push",
         ref="refs/heads/main",
@@ -454,6 +472,7 @@ def test_idempotent_publish_rolling_entry_pruning_and_semver_isolation(tmp_path:
     # Two more main pushes: dev-latest moves forward cleanly & old snapshot gets pruned (retain=2),
     # while dev-latest replaces stale ZIP and v0.1.0 stays completely untouched!
     for idx, sha_n in enumerate(("2222222" + "0" * 33, "3333333" + "0" * 33), start=2):
+        state["main_head"] = sha_n
         pl = rh.resolve_release_plan(
             event_name="push",
             ref="refs/heads/main",
@@ -551,7 +570,7 @@ def test_cli_package_and_publish_entrypoints(
     assert meta["zip_name"] == "LyraForge-dev-20261123-a1b2c3d-windows-x64.zip"
     assert (dist_dir / "SHA256SUMS.txt").is_file()
 
-    run_cmd, releases, _refs, _calls = _fake_runner_factory()
+    run_cmd, releases, _refs, _calls, state = _fake_runner_factory(initial_main_head=sha)
     monkeypatch.setattr(rh, "default_run_cmd", run_cmd)
     rc_pub = rh.main([
         "publish",
@@ -570,4 +589,71 @@ def test_cli_package_and_publish_entrypoints(
     ])
     assert rc_pub == 0
     assert set(releases) == {"dev-20261123-a1b2c3d", "dev-latest"}
+
+
+def test_stale_ci_job_cannot_rollback_dev_latest(tmp_path: Path) -> None:
+    lic = ROOT / "LICENSE"
+    bundle = _make_fake_bundle(tmp_path / "stale_bundle")
+    sha1 = "1111111" + "0" * 33
+    sha2 = "2222222" + "0" * 33
+    run_cmd, releases, tag_refs, calls, state = _fake_runner_factory(initial_main_head=sha1)
+
+    plan1 = rh.resolve_release_plan(
+        event_name="push",
+        ref="refs/heads/main",
+        sha=sha1,
+        commit_date_yyyymmdd="20261123",
+        build_timestamp_utc="2026-11-23T04:00:00Z",
+    )
+    zip1, sums1, _ = rh.package_windows_bundle(
+        bundle, tmp_path / "s1", zip_name=plan1.zip_name, license_path=lic
+    )
+    res1 = rh.publish_release(plan=plan1, zip_path=zip1, checksums_path=sums1, run_cmd=run_cmd)
+    assert res1["rolling_updated"] is True
+    assert tag_refs["dev-latest"] == sha1
+
+    # Advance remote main HEAD to sha2 and publish newer build
+    state["main_head"] = sha2
+    plan2 = rh.resolve_release_plan(
+        event_name="push",
+        ref="refs/heads/main",
+        sha=sha2,
+        commit_date_yyyymmdd="20261124",
+        build_timestamp_utc="2026-11-24T04:00:00Z",
+    )
+    zip2, sums2, _ = rh.package_windows_bundle(
+        bundle, tmp_path / "s2", zip_name=plan2.zip_name, license_path=lic
+    )
+    res2 = rh.publish_release(plan=plan2, zip_path=zip2, checksums_path=sums2, run_cmd=run_cmd)
+    assert res2["rolling_updated"] is True
+    assert tag_refs["dev-latest"] == sha2
+
+    # Stale CI job or manual rerun for older sha1 while remote main HEAD is sha2
+    calls.clear()
+    res_stale = rh.publish_release(
+        plan=plan1,
+        zip_path=zip1,
+        checksums_path=sums1,
+        retain_dev_snapshots=1,
+        run_cmd=run_cmd,
+    )
+    assert res_stale["published"] is True
+    assert res_stale["rolling_updated"] is False
+    assert "stale commit" in str(res_stale["rolling_skipped_reason"])
+    assert res_stale["pruned_snapshots"] == []
+    # dev-latest stays pinned to newer sha2 and keeps sha2's assets intact
+    assert tag_refs["dev-latest"] == sha2
+    assert set(releases["dev-latest"]["assets"]) == {plan2.zip_name, "SHA256SUMS.txt"}
+    assert "dev-20261124-2222222" in releases
+    # Zero PATCH, edit, upload, delete-asset, or delete calls touched dev-latest or snapshots
+    assert not any("PATCH" in c for c in calls)
+    assert not any(c[:4] == ["gh", "release", "edit", "dev-latest"] for c in calls)
+    assert not any(c[:4] == ["gh", "release", "upload", "dev-latest"] for c in calls)
+    assert not any(c[:3] == ["gh", "release", "delete"] for c in calls)
+
+    # Fail-closed when remote main ref API fails -> never modifies dev-latest
+    state["fail_main_ref"] = True
+    with pytest.raises(RuntimeError, match="fetch remote main HEAD SHA"):
+        rh.publish_release(plan=plan1, zip_path=zip1, checksums_path=sums1, run_cmd=run_cmd)
+    assert tag_refs["dev-latest"] == sha2
 
