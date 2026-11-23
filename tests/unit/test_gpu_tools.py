@@ -71,6 +71,38 @@ def test_device_preference_is_persisted_and_injected(
     assert "LYRAFORGE_DETTATO_DEVICE" not in runtime.managed_env({"PATH": ""})
 
 
+def test_install_dettato_gpu_reinstalls_torch_from_cuda_index(
+    tools_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from lyraforge.toolchain import installer
+
+    python = venv_python("dettato")
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(installer, "install_uv", lambda progress=None: Path("uv.exe"))
+    monkeypatch.setattr(installer, "_run", fake_run)
+    monkeypatch.setattr(
+        gpu,
+        "probe_dettato_torch",
+        lambda: {"cuda_available": True, "version": "2.14.1+cu130"},
+    )
+
+    result = installer.install_dettato_gpu()
+    assert result["installed"] is True
+    cmd = calls[0]
+    assert "--reinstall-package" in cmd and cmd[cmd.index("--reinstall-package") + 1] == "torch"
+    assert cmd[cmd.index("--index-url") + 1].endswith("/cu130")
+
+
 def test_gpu_api_status_device_and_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

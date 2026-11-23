@@ -135,7 +135,7 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
    ```
 
    - dettato 的 `-o` 是输出**目录**，它会在其中写入 `<曲名>.mid`；CPU 推理约 4 秒音频 / 20 秒耗时。
-   - **GPU 加速**：桌面 **设置 → 外部工具与转谱引擎 → dettato GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE`）。若只装了 CPU 版 torch，点「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install torch --index-url https://download.pytorch.org/whl/cu124` 完成（约 2.5 GB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps`。
+   - **GPU 加速**：桌面 **设置 → 外部工具与转谱引擎 → dettato GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE`）。若只装了 CPU 版 torch，点「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu130` 完成（下载约 1.9 GiB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。注意 PyPI 的 CPU wheel 可能比 CUDA 索引里的最新版本更新（例如 2.15.0+cpu 对 2.14.1+cu130），所以必须 `--reinstall-package torch` 强制降级替换，普通 `--upgrade` 会“无变更”并继续报 CUDA 不可用。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps`。
    - **超时**：转录子进程预算会随音频长度增长（dettato 约 10× 实时 + 180 秒余量，Basic Pitch 约 3× + 60 秒），不再固定 5 分钟。
 3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
 

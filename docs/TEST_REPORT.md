@@ -376,6 +376,22 @@
    - 本会话没有 NVIDIA GPU，未实际执行 2.5 GB CUDA PyTorch 安装，也未测量推理吞吐；
    - NPU 仍不支持（dettato CLI 仅声明 cuda/cpu 后端）。
 
+---
+
+## 21. GPU 安装“成功但仍是 CPU”修复（2026-11-23）
+
+1. **现象**：设置页检测到 RTX 2070 SUPER / 驱动 617.42，PyTorch 为 `2.15.0+cpu`；点安装后 90% 处报 `[SOURCE_UNAVAILABLE] CUDA 版 PyTorch 已安装，但 torch.cuda.is_available() 仍为 False`。
+2. **根因**：PyPI 的 CPU wheel 版本高于当前 CUDA 索引里可用的最新版（`2.15.0+cpu` vs `2.14.1+cu130`）。`uv pip install --upgrade torch` 判定“已是最新”，实际没有替换，探测仍为 CPU。
+3. **修复**：默认索引改为 `cu130`，安装命令改为 `uv pip install --index-url <cuXXX> --reinstall-package torch torch`；这会只重装 torch 并允许降级（dettato 仅要求 `torch>=2.2`）。索引仍可由 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖；失败提示建议换 cu128/cu126/cu124。
+4. **真机验证**：
+   - 安装 `torch-2.14.1+cu130`（下载 1.9 GiB，Prepared 40.22s）；
+   - `torch.__version__ = 2.14.1+cu130`、`torch.version.cuda = 13.0`、`torch.cuda.is_available() = True`、`torch.cuda.get_device_name(0) = NVIDIA GeForce RTX 2070 SUPER`；
+   - `pytest` → **218 passed, 2 warnings in 35.79s**，覆盖率 **83.83%**。
+5. **未覆盖（如实标注）**：
+   - 未跑完整 dettato 转录 benchmark（只验证 CUDA 可用与设备名）；
+   - NPU 仍不支持。
+
+
 
 
 
