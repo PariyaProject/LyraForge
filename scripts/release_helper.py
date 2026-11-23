@@ -22,6 +22,28 @@ DEFAULT_ARCH = "windows-x64"
 DEFAULT_REPO = "PariyaProject/LyraForge"
 CHECKSUMS_FILENAME = "SHA256SUMS.txt"
 METADATA_FILENAME = "release-meta.json"
+PORTABLE_README_FILENAME = "README.txt"
+
+PORTABLE_README_TEXT = """\
+LyraForge - Portable Windows build
+==================================
+
+1. Extract this whole ZIP into a folder you can write to
+   (for example %LOCALAPPDATA%\\Programs\\LyraForge).
+2. Keep LyraForge.exe next to the _internal folder, and do not start the EXE from
+   inside the ZIP preview window.
+3. Start LyraForge.exe. The Studio Dark workbench window opens after a few seconds.
+4. The Microsoft Edge WebView2 Runtime is required (preinstalled on Windows 11; on
+   Windows 10 install the Evergreen Runtime from Microsoft).
+
+This is an experimental pre-release build unless the release title says otherwise:
+live Genshin Impact playback verification is still pending.
+
+If no window appears, open the startup log and attach it to a GitHub issue:
+  %LOCALAPPDATA%\\LyraForge\\logs\\startup.log
+
+License: GNU General Public License v3.0 (see LICENSE).
+"""
 
 SEMVER_TAG_RE = re.compile(
     r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?P<pre>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
@@ -266,6 +288,21 @@ def validate_release_zip(zip_path: Path) -> dict[str, Any]:
         if not _any_bundle_prefix(files, "lyraforge/music_core/schemas/", ".json"):
             raise ValueError("release ZIP missing performance schema JSON data")
 
+        if files.get(f"LyraForge/{PORTABLE_README_FILENAME}", 0) <= 0:
+            raise ValueError("release ZIP missing non-empty portable README.txt")
+
+        # The desktop window is hosted by pywebview: without these payload files the frozen
+        # EXE starts, fails to import the GUI host, and exits without showing anything.
+        for required_payload in (
+            "webview/lib/Microsoft.Web.WebView2.Core.dll",
+            "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+            "pythonnet/runtime/Python.Runtime.dll",
+        ):
+            if not _has_bundle_path(files, required_payload):
+                raise ValueError(
+                    f"release ZIP missing bundled desktop GUI payload: {required_payload}"
+                )
+
     return {
         "zip_name": zip_path.name,
         "file_count": len(files),
@@ -313,6 +350,9 @@ def package_windows_bundle(
         ):
             zf.write(license_audit_path, arcname="LyraForge/LICENSE_AUDIT.md")
             arc_written.add("LyraForge/LICENSE_AUDIT.md")
+        if f"LyraForge/{PORTABLE_README_FILENAME}" not in arc_written:
+            zf.writestr(f"LyraForge/{PORTABLE_README_FILENAME}", PORTABLE_README_TEXT)
+            arc_written.add(f"LyraForge/{PORTABLE_README_FILENAME}")
 
     validate_release_zip(zip_path)
     digest = write_sha256sums(zip_path, checksums_path)

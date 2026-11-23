@@ -28,6 +28,7 @@ def _make_fake_bundle(
     include_css: bool = True,
     include_instrument: bool = True,
     include_schema: bool = True,
+    include_gui_host: bool = True,
     include_secret: bool = False,
     layout_under_internal: bool = True,
 ) -> Path:
@@ -58,6 +59,15 @@ def _make_fake_bundle(
         sch = data_base / "lyraforge" / "music_core" / "schemas"
         sch.mkdir(parents=True, exist_ok=True)
         (sch / "performance.schema.json").write_text("{}", encoding="utf-8")
+    if include_gui_host:
+        webview_lib = data_base / "webview" / "lib"
+        native = webview_lib / "runtimes" / "win-x64" / "native"
+        native.mkdir(parents=True, exist_ok=True)
+        (webview_lib / "Microsoft.Web.WebView2.Core.dll").write_bytes(b"MZ-fake-webview2-core")
+        (native / "WebView2Loader.dll").write_bytes(b"MZ-fake-webview2-loader")
+        runtime = data_base / "pythonnet" / "runtime"
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "Python.Runtime.dll").write_bytes(b"MZ-fake-python-runtime")
     if include_secret:
         (bundle / ".lyraforge.secrets.json").write_text(
             '{"llm_api_key":"secret"}', encoding="utf-8"
@@ -187,10 +197,15 @@ def test_package_validate_and_sha256_checks(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         names = set(zf.namelist())
+        readme = zf.read("LyraForge/README.txt").decode("utf-8")
     assert "LyraForge/LyraForge.exe" in names
     assert "LyraForge/LICENSE" in names
     assert "LyraForge/LICENSE_AUDIT.md" in names
     assert "LyraForge/_internal/apps/desktop/web/dist/index.html" in names
+    assert "LyraForge/_internal/webview/lib/Microsoft.Web.WebView2.Core.dll" in names
+    assert "LyraForge/_internal/pythonnet/runtime/Python.Runtime.dll" in names
+    assert "LyraForge.exe" in readme
+    assert "startup.log" in readme
 
     # Check tampered SHA256SUMS fails
     sums_path.write_text(f"{'0' * 64}  {zip_name}\n", encoding="utf-8")
@@ -199,12 +214,13 @@ def test_package_validate_and_sha256_checks(tmp_path: Path) -> None:
 
     # Check negative validation cases
     negative_cases = [
-        ({"include_dll": False}, "_internal/"),
+        ({"include_dll": False, "include_gui_host": False}, "_internal/"),
         ({"include_index": False}, "index.html"),
         ({"include_js": False}, "JS assets"),
         ({"include_css": False}, "CSS assets"),
         ({"include_instrument": False}, "instrument profile"),
         ({"include_schema": False}, "performance schema"),
+        ({"include_gui_host": False}, "desktop GUI payload"),
         ({"include_secret": True}, "sensitive file"),
     ]
     for idx, (kwargs, err_match) in enumerate(negative_cases):
@@ -522,6 +538,9 @@ def test_ci_workflow_extends_existing_build_with_minimal_permissions_and_gates()
     assert "scripts/release_helper.py package" in ci_text
     assert "Expand-Archive" in ci_text
     assert "& $zipExe --self-check" in ci_text
+    # The frozen EXE gate must also prove the PyWebView GUI host imports (missing pywebview
+    # in the PyInstaller payload used to pass --self-check and then exit silently).
+    assert "--self-check --check-gui" in ci_text
     assert "path: release-dist/" in ci_text
 
     # Downstream release job gates strictly on test + package-windows, write permission isolated,

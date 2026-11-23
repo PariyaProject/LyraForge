@@ -13,9 +13,9 @@ uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/lyraforge.sp
 if (-not (Test-Path -LiteralPath "dist/LyraForge/LyraForge.exe")) {
     throw "Expected dist/LyraForge/LyraForge.exe was not generated."
 }
-Write-Host "[4/4] Running headless frozen bundle self-check..."
-& "dist/LyraForge/LyraForge.exe" --self-check
+Write-Host "[4/4] Running headless frozen bundle self-check (assets + GUI host)..."
+& "dist/LyraForge/LyraForge.exe" --self-check --check-gui
 if ($LASTEXITCODE -ne 0) {
-    throw "LyraForge.exe --self-check failed with exit code $LASTEXITCODE"
+    throw "LyraForge.exe --self-check --check-gui failed with exit code $LASTEXITCODE"
 }
 Write-Host "Done: dist/LyraForge/LyraForge.exe"

@@ -153,3 +153,27 @@
    - `test_ci_workflow_extends_existing_build_with_minimal_permissions_and_gates` 与 `test_cli_package_and_publish_entrypoints`：静态审计 `contents: read` / 隔离 `contents: write` / `Expand-Archive` + `--self-check` 烟测与 `package`/`publish` CLI 入口全通。
 2. **本机全量门禁实测结果**：
    - `pnpm --dir apps/desktop/web install --frozen-lockfile`（`57ms`）、`uv run ruff check .`（`All checks passed!`）、`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80`（**`139 passed, 2 warnings in 41.56s`**，总覆盖率 **`86.52%`**）、`vitest`（`4 files / 6 tests passed`）、`vite build`（`775ms`）、`make smoke` & `lyraforge desktop --self-check`（均退出码 `0`）。
+
+---
+
+## 10. Windows 预发行包「双击无反应」根因定位与修复验证（针对 `a8a42de` 的 `dev-latest`）
+
+1. **现象复现（Windows 10/11 x64）**：
+   - 下载 `LyraForge-dev-20261123-a8a42de-windows-x64.zip`（`17,755,710` bytes）解压后双击 `LyraForge/LyraForge.exe` 无任何窗口；在可继承 stderr 的控制台内启动约 `1.0 s` 后退出（exit code `1`），唯一输出为 `error [SOURCE_UNAVAILABLE]: pywebview is not installed; install desktop extra with 'uv sync --extra desktop'`。
+   - 同一 EXE 执行 `--self-check` 退出码 `0`（`ok: true`, `windows_modules_loaded: true`），说明旧门禁只校验了 Web 资源与服务端，**未校验 GUI 宿主**。
+2. **根因分析**：
+   - `src/lyraforge/desktop/launcher.py` 使用 `importlib.import_module("webview")` 动态导入 pywebview，PyInstaller 静态分析无法发现；`packaging/lyraforge.spec` 也未把 `webview` / `clr` / `webview.platforms.edgechromium` 列入 `hiddenimports`，因此 pywebview 与 pythonnet 的 `pyinstaller40` hook 从未加载，`_internal/` 内既无 `webview/lib/Microsoft.Web.WebView2.*.dll`、`WebView2Loader.dll`，也无 `pythonnet/runtime/Python.Runtime.dll`。
+   - EXE 以 `console=False` 构建，`cli.main()` 将 `LyraError` 写入 stderr 后 `return 1`；双击场景既无控制台也无错误对话框，因此表现为“完全没有反应”。
+3. **修复内容**：
+   - spec 固化 GUI 宿主 hidden imports，并在 Windows 构建末尾断言 4 个 GUI payload 文件缺失即抛 `RuntimeError` 中止构建；`--self-check --check-gui` 真实导入 `webview` 与 `webview.platforms.edgechromium`（触发 pythonnet / WebView2 互操作 DLL 加载），冻结包自动要求该检查；新增 `src/lyraforge/startup_report.py` 将致命启动异常（含 traceback 与命令行）写入 `%LOCALAPPDATA%\LyraForge\logs\startup.log` 并弹出原生错误对话框；便携 ZIP 增加 `README.txt`，且 `release_helper.validate_release_zip()` 拒绝缺少 GUI payload 的归档。
+4. **修复后实测（本机 Windows x64，源码重建）**：
+   - 前端资源沿用发布 ZIP 内已构建的 `apps/desktop/web/dist`（本机未安装 `pnpm`，未重新构建 UI），`uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/lyraforge.spec` 构建成功。
+   - `dist/LyraForge/LyraForge.exe --self-check --check-gui` → 退出码 `0`，`gui_host.backend = "edgechromium"`, `gui_host.backend_ok = true`, `gui_host.version = "6.2.1"`。
+   - 实际启动 `dist/LyraForge/LyraForge.exe`：`Get-Process` 观察到窗口标题 `LyraForge`，`CloseMainWindow()` 正常关闭且进程退出码 `0`。
+   - 真实打包链路：`uv run python scripts/release_helper.py package ...`（`refs/heads/main`）生成 `LyraForge-dev-20261123-a8a42de-windows-x64.zip`（`18,591,276` bytes，`133` 个条目，含 `LyraForge/README.txt`、`webview/lib/Microsoft.Web.WebView2.Core.dll`、`pythonnet/runtime/Python.Runtime.dll`），`validate_release_zip()` 校验通过；解压该 ZIP 后执行 `LyraForge.exe --self-check --check-gui` → 退出码 `0`，再次启动可见窗口标题 `LyraForge` 并正常关闭（退出码 `0`）。
+   - 自动化回归：`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **`150 passed, 2 warnings in 33.30s`**，总覆盖率 **`85.86%`**（含新增 `tests/unit/test_desktop_startup.py` 与 `test_release_workflow.py` 的 GUI payload 反向用例）；`uv run ruff check .` → `All checks passed!`。
+5. **仍未覆盖（如实标注）**：
+   - 本次会话未安装 `pnpm`，故未重跑前端 `vitest`/`vite build` 与 `make smoke`。
+   - `windows-latest` 上的 `--self-check --check-gui` CI 门禁需在本分支推送后由 `scripts/check_ci.py` 实测确认。
+   - 《原神》Windows 真机 21 键校准与游戏内实机演奏仍未执行（见 §5）。
+

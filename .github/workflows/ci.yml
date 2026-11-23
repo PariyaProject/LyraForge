@@ -114,9 +114,9 @@ jobs:
             Write-Error "Expected Windows bundle dist/LyraForge/LyraForge.exe was not generated."
             exit 1
           }
-          & "dist/LyraForge/LyraForge.exe" --self-check
+          & "dist/LyraForge/LyraForge.exe" --self-check --check-gui
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "LyraForge.exe --self-check failed with exit code $LASTEXITCODE"
+            Write-Error "LyraForge.exe --self-check --check-gui failed with exit code $LASTEXITCODE"
             exit 1
           }
 
@@ -148,9 +148,9 @@ jobs:
             Write-Error "Extracted ZIP missing LyraForge/LyraForge.exe at $zipExe"
             exit 1
           }
-          & $zipExe --self-check
+          & $zipExe --self-check --check-gui
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Extracted ZIP LyraForge.exe --self-check failed with exit code $LASTEXITCODE"
+            Write-Error "Extracted ZIP LyraForge.exe --self-check --check-gui failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE
           }
 

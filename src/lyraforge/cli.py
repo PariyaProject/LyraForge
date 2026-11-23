@@ -16,8 +16,10 @@ There is intentionally NO command that sends real keyboard input in M0/M1-A/B.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -471,6 +473,60 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _webview_version(webview: Any) -> str:
+    """Best-effort pywebview version for self-check diagnostics (no dist-info when frozen)."""
+    import importlib
+
+    direct = getattr(webview, "__version__", None)
+    if direct:
+        return str(direct)
+    try:
+        return str(importlib.import_module("webview._version").__version__)
+    except Exception:
+        return "unknown"
+
+
+def _gui_host_status(*, required: bool) -> dict[str, Any]:
+    """Import the PyWebView GUI host (and its Windows backend) for the desktop self-check.
+
+    The frozen Windows build imports pywebview dynamically, so a packaging regression
+    (missing module, WebView2 interop DLLs or pythonnet runtime) is invisible to the
+    asset/server checks. ``required`` turns such a regression into a hard failure.
+    """
+    import importlib
+
+    try:
+        webview = importlib.import_module("webview")
+    except Exception as exc:
+        if not required:
+            return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        raise LyraError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            "desktop GUI host is unavailable: pywebview ('webview') could not be imported",
+            {"problems": [f"{type(exc).__name__}: {exc}"]},
+        ) from exc
+
+    status: dict[str, Any] = {
+        "available": True,
+        "version": _webview_version(webview),
+    }
+    if sys.platform == "win32":
+        try:
+            importlib.import_module("webview.platforms.edgechromium")
+        except Exception as exc:
+            status.update({"backend": "edgechromium", "backend_ok": False})
+            if required:
+                raise LyraError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    "WebView2/pythonnet GUI backend failed to load in this build",
+                    {"problems": [f"{type(exc).__name__}: {exc}"]},
+                ) from exc
+            status["reason"] = f"{type(exc).__name__}: {exc}"
+        else:
+            status.update({"backend": "edgechromium", "backend_ok": True})
+    return status
+
+
 def _desktop_self_check(args: argparse.Namespace) -> int:
     import importlib
 
@@ -492,6 +548,13 @@ def _desktop_self_check(args: argparse.Namespace) -> int:
     importlib.import_module("uvicorn")
     profiles = [load_builtin_profile(pid).id for pid in list_profile_ids()]
 
+    # A frozen bundle is the shippable GUI: always prove its GUI host imports, not just
+    # the web assets, so a broken PyInstaller payload fails CI instead of the user's desktop.
+    required_gui = bool(getattr(args, "check_gui", False)) or (
+        getattr(sys, "_MEIPASS", None) is not None
+    )
+    gui_host = _gui_host_status(required=required_gui)
+
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="lyraforge-selfcheck-") as tmp:
@@ -512,6 +575,7 @@ def _desktop_self_check(args: argparse.Namespace) -> int:
                 "web_dist": str(static_dir),
                 "profiles": profiles,
                 "windows_modules_loaded": win_ok,
+                "gui_host": gui_host,
             }
         ),
         end="",
@@ -520,7 +584,7 @@ def _desktop_self_check(args: argparse.Namespace) -> int:
 
 
 def cmd_desktop(args: argparse.Namespace) -> int:
-    if getattr(args, "self_check", False):
+    if getattr(args, "self_check", False) or getattr(args, "check_gui", False):
         return _desktop_self_check(args)
     from lyraforge.desktop import launch_desktop
 
@@ -737,6 +801,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verify bundled assets, schemas, and server startup without opening a GUI window",
     )
+    pd.add_argument(
+        "--check-gui",
+        action="store_true",
+        help="with --self-check, also import the PyWebView GUI host and its Windows backend",
+    )
     pd.set_defaults(func=cmd_desktop)
 
     pe = sub.add_parser("engines", help="audio-to-MIDI transcription engines")
@@ -780,7 +849,23 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
+def _write_stderr(text: str) -> None:
+    """Write to stderr without raising when the (windowed) build has no stderr stream."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    try:
+        stream.write(text)
+        stream.flush()
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the original failure
+        pass
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    error_reporter: Callable[[LyraError], None] | None = None,
+) -> int:
     for stream in (sys.stdout, sys.stderr):  # UTF-8 output even on legacy Windows code pages
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -788,9 +873,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except LyraError as err:
-        print(f"error [{err.code}]: {err.message}", file=sys.stderr)
+        lines = [f"error [{err.code}]: {err.message}"]
         for prob in err.details.get("problems", [])[:20]:
-            print(f"  - {prob}", file=sys.stderr)
+            lines.append(f"  - {prob}")
+        _write_stderr("\n".join(lines) + "\n")
+        if error_reporter is not None:
+            with contextlib.suppress(Exception):  # never turn a reported error into a crash
+                error_reporter(err)
         return EXIT_ERROR
 
 
