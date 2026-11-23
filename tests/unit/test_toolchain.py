@@ -178,9 +178,10 @@ def test_install_ffmpeg_extracts_binary_and_records_manifest(
 def test_install_uv_extracts_scripts_member(
     tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    exe_name = "uv.exe" if sys.platform == "win32" else "uv"
     wheel = _make_wheel(
         tmp_path / "uv.whl",
-        {"uv-0.13.9.data/scripts/uv.exe": b"MZ-fake-uv"},
+        {f"uv-0.13.9.data/scripts/{exe_name}": b"MZ-fake-uv"},
     )
     monkeypatch.setattr(installer, "_platform_tags", lambda: ("win_amd64",))
     monkeypatch.setattr(
