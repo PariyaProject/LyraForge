@@ -18,6 +18,7 @@ from lyraforge.media import (
     extract_audio_to_wav,
     probe_wav,
 )
+from lyraforge.media.extract import SUPPORTED_MEDIA_EXTENSIONS
 from lyraforge.playback import StopToken
 
 
@@ -72,6 +73,30 @@ def test_media_validation_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     with pytest.raises(LyraError) as exc3:
         extract_audio_to_wav(fake_mp3, tmp_path / "out.wav")
     assert exc3.value.code == ErrorCode.MODEL_MISSING
+
+
+@pytest.mark.parametrize("ext", sorted(SUPPORTED_MEDIA_EXTENSIONS - {".wav"}))
+def test_media_extensions_are_routed_to_ffmpeg(
+    ext: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / f"input{ext}"
+    src.write_bytes(b"fake-media-segment")
+    dest = tmp_path / "out.wav"
+    calls: list[str] = []
+
+    def fake_extract(
+        _ffmpeg: str, src_path: Path, dest_path: Path, **_kwargs: Any
+    ) -> None:
+        calls.append(src_path.name)
+        _write_pcm16_wav(dest_path, channels=1, rate=22_050, frames=2205)
+
+    monkeypatch.setattr("lyraforge.media.extract._run_ffmpeg_extract", fake_extract)
+    monkeypatch.setattr("lyraforge.media.extract.find_ffmpeg", lambda: "ffmpeg")
+
+    info = extract_audio_to_wav(src, dest)
+    assert calls == [src.name]
+    assert info.sample_rate == 22_050
+    assert info.duration_s > 0
 
 
 def test_ffmpeg_subprocess_mocked_success_failure_and_cancel(

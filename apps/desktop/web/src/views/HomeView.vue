@@ -106,7 +106,7 @@ async function handleQuickFileChange(event: Event): Promise<void> {
           <input
             id="home-file-input"
             type="file"
-            accept=".mid,.midi,.mp3,.wav,.flac,.ogg,.m4a,.mp4,.mkv,.webm,.lyrapack,.zip"
+            accept=".mid,.midi,.wav,.mp3,.flac,.ogg,.oga,.opus,.m4a,.m4b,.aac,.wma,.aiff,.aif,.m4s,.mp4,.m4v,.mkv,.webm,.mov,.avi,.flv,.wmv,.ts,.m2ts,.mts,.3gp,.mpg,.mpeg,.vob,.ogv,.lyrapack,.zip"
             :disabled="store.busy.value"
             @change="handleQuickFileChange"
           />
