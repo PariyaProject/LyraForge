@@ -29,6 +29,8 @@ from lyraforge.playback import (
 )
 
 PREPARE_TOKEN_TTL_S = 60.0
+DEFAULT_WAIT_FOR_FOCUS_S = 10.0
+_FOCUS_POLL_S = 0.05
 
 
 @dataclass(slots=True)
@@ -120,7 +122,14 @@ class PlaybackManager:
             ),
         }
 
-    def start(self, prepare_token: str, *, data_dir: Path) -> dict[str, Any]:
+    def start(
+        self,
+        prepare_token: str,
+        *,
+        data_dir: Path,
+        wait_for_focus_s: float = DEFAULT_WAIT_FOR_FOCUS_S,
+    ) -> dict[str, Any]:
+        wait_s = max(0.0, min(30.0, float(wait_for_focus_s)))
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise LyraError(
@@ -153,37 +162,95 @@ class PlaybackManager:
             self._stop_token = stop_token
             self._pause_token = pause_token
             self._driver = driver
-            self._state = "running"
+            self._state = "running" if pending.mode == PlaybackMode.DRY_RUN else "waiting_focus"
             self._session_id = session_id
             self._arrangement_id = pending.arrangement_id
             self._mode = pending.mode
             self._last_result = None
 
-            def _run() -> None:
-                player = Player(
-                    driver,
-                    clock,
-                    focus_guard=focus_guard,
-                    stop_token=stop_token,
-                    pause_token=pause_token,
-                    emergency_stop_fn=emergency_stop_fn,
-                )
-                result = player.play(pending.events)
-                if stop_token.reason not in {"library_restore", "server_shutdown"}:
-                    try:
-                        with LibraryStore(data_dir) as s:
-                            s.record_playback_session(
-                                pending.arrangement_id,
-                                f"{pending.mode}:{'realtime' if pending.realtime else 'virtual'}",
-                                result,
-                            )
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        pass
+            def _finish(state: str, result: dict[str, Any] | None) -> None:
                 with self._lock:
-                    self._state = str(result.state)
-                    self._last_result = result.to_json()
+                    self._state = state
+                    self._last_result = result
                     self._pause_token = None
                     self._thread = None
+
+            def _run() -> None:
+                try:
+                    if not self._wait_for_focus(focus_guard, stop_token, wait_s):
+                        if stop_token.stopped:
+                            _finish(
+                                "stopped",
+                                {
+                                    "state": "stopped",
+                                    "stop_reason": stop_token.reason or "stopped_before_start",
+                                },
+                            )
+                        else:
+                            info = (
+                                focus_guard.current_info()
+                                if hasattr(focus_guard, "current_info")
+                                else None
+                            )
+                            foreground = (
+                                f"{info.process_name or '未知进程'} / {info.title or '无标题窗口'}"
+                                if info is not None
+                                else "未知前台窗口"
+                            )
+                            _finish(
+                                "focus_timeout",
+                                {
+                                    "state": "focus_timeout",
+                                    "error": (
+                                        f"{wait_s:.0f} 秒内未检测到游戏窗口获得前台"
+                                        f"（当前前台：{foreground}）。"
+                                        "请切换到游戏后重新开始；未发送任何按键。"
+                                    ),
+                                },
+                            )
+                        return
+
+                    problem = (
+                        focus_guard.permission_problem()
+                        if hasattr(focus_guard, "permission_problem")
+                        else None
+                    )
+                    if problem:
+                        _finish(
+                            "permission_required",
+                            {"state": "permission_required", "error": problem},
+                        )
+                        return
+
+                    with self._lock:
+                        if self._state != "paused":
+                            self._state = "running"
+                    player = Player(
+                        driver,
+                        clock,
+                        focus_guard=focus_guard,
+                        stop_token=stop_token,
+                        pause_token=pause_token,
+                        emergency_stop_fn=emergency_stop_fn,
+                    )
+                    result = player.play(pending.events)
+                    if stop_token.reason not in {"library_restore", "server_shutdown"}:
+                        try:
+                            with LibraryStore(data_dir) as s:
+                                mode_label = (
+                                    f"{pending.mode}:"
+                                    f"{'realtime' if pending.realtime else 'virtual'}"
+                                )
+                                s.record_playback_session(
+                                    pending.arrangement_id,
+                                    mode_label,
+                                    result,
+                                )
+                        except Exception:  # pragma: no cover - defensive cleanup
+                            pass
+                    _finish(str(result.state), result.to_json())
+                except Exception as exc:  # pragma: no cover - unexpected crash
+                    _finish("error", {"state": "error", "error": f"{type(exc).__name__}: {exc}"})
 
             thread = threading.Thread(
                 target=_run,
@@ -195,11 +262,25 @@ class PlaybackManager:
 
             return {
                 "session_id": session_id,
-                "status": "running",
+                "status": self._state,
                 "arrangement_id": pending.arrangement_id,
                 "mode": str(pending.mode),
                 "sends_os_input": bool(getattr(driver, "sends_os_input", False)),
+                "wait_for_focus_s": wait_s,
             }
+
+    @staticmethod
+    def _wait_for_focus(guard: Any, stop_token: StopToken, seconds: float) -> bool:
+        """Wait until the guard sees the game focused; ``False`` on timeout or stop."""
+        deadline = time.monotonic() + max(0.0, seconds)
+        while True:
+            if stop_token.stopped:
+                return False
+            if guard.is_target_focused():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_FOCUS_POLL_S)
 
     def pause(self) -> dict[str, Any]:
         with self._lock:
@@ -207,8 +288,9 @@ class PlaybackManager:
                 self._thread is None
                 or not self._thread.is_alive()
                 or self._pause_token is None
+                or self._state not in {"waiting_focus", "running"}
             ):
-                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "no active playback session to pause")
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "no running playback session to pause")
             self._pause_token.pause()
             self._state = "paused"
         return self.status()
@@ -219,6 +301,7 @@ class PlaybackManager:
                 self._thread is None
                 or not self._thread.is_alive()
                 or self._pause_token is None
+                or self._state != "paused"
             ):
                 raise LyraError(ErrorCode.PLAYBACK_ABORTED, "no paused playback session to resume")
             self._pause_token.resume()

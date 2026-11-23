@@ -46,13 +46,16 @@ def create_playback_backend(
         )
 
     from lyraforge.playback.windows import (
+        DEFAULT_ALLOWED_PROCESSES,
         DEFAULT_ALLOWED_TITLES,
         ForegroundWindowGuard,
         WindowsKeyboardDriver,
     )
 
     titles = tuple(allowed_window_titles) if allowed_window_titles else DEFAULT_ALLOWED_TITLES
-    return WindowsKeyboardDriver(profile), ForegroundWindowGuard(titles)
+    return WindowsKeyboardDriver(profile), ForegroundWindowGuard(
+        titles, allowed_processes=DEFAULT_ALLOWED_PROCESSES
+    )
 
 
 def create_emergency_stop_checker(mode: PlaybackMode) -> Callable[[], bool] | None:

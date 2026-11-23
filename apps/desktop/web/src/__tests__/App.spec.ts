@@ -354,7 +354,7 @@ describe("App", () => {
 
     await startBtn.trigger("click");
     await flushPromises();
-    expect(stub.startPlayback).toHaveBeenCalledWith("tok-1");
+    expect(stub.startPlayback).toHaveBeenCalledWith("tok-1", 10);
 
     // Simulate running -> pause -> resume transitions via unified transport
     vi.mocked(stub.playbackStatus).mockResolvedValueOnce({

@@ -347,6 +347,12 @@ export class LyraForgeApi {
     return this.request<{ presets: ArrangePresetInfo[] }>(`/v1/presets${qs}`);
   }
 
+  relaunchElevated(): Promise<{ relaunched: boolean }> {
+    return this.request<{ relaunched: boolean }>("/v1/app/relaunch-elevated", {
+      method: "POST",
+    });
+  }
+
   installTool(toolId: string): Promise<{ install: ToolInstallState }> {
     return this.request<{ install: ToolInstallState }>(
       `/v1/tools/${encodeURIComponent(toolId)}/install`,
@@ -501,11 +507,17 @@ export class LyraForgeApi {
     });
   }
 
-  startPlayback(prepareToken: string): Promise<{ session_id: string; status: string }> {
+  startPlayback(
+    prepareToken: string,
+    waitForFocusS = 10,
+  ): Promise<{ session_id: string; status: string; wait_for_focus_s?: number }> {
     return this.request("/v1/playback/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prepare_token: prepareToken }),
+      body: JSON.stringify({
+        prepare_token: prepareToken,
+        wait_for_focus_s: waitForFocusS,
+      }),
     });
   }
 

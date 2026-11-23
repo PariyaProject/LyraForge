@@ -245,6 +245,7 @@ class PlaybackPrepareRequest(BaseModel):
 
 class PlaybackStartRequest(BaseModel):
     prepare_token: str
+    wait_for_focus_s: float = Field(default=10.0, ge=0.0, le=30.0)
 
 
 def _parse_tags(raw: str) -> list[str]:
@@ -784,6 +785,12 @@ def create_app(
             store.set_setting(req.key, req.value)
             return {"settings": store.get_settings()}
 
+    @app.post("/v1/app/relaunch-elevated", dependencies=[Depends(require_token)])
+    def relaunch_elevated_app() -> dict[str, Any]:
+        from lyraforge.elevation import relaunch_elevated
+
+        return {"relaunched": relaunch_elevated()}
+
     @app.post("/v1/playback/prepare", dependencies=[Depends(require_token)])
     def playback_prepare(req: PlaybackPrepareRequest) -> dict[str, Any]:
         with open_store() as store:
@@ -807,7 +814,11 @@ def create_app(
     @app.post("/v1/playback/start", dependencies=[Depends(require_token)])
     def playback_start(req: PlaybackStartRequest) -> dict[str, Any]:
         with library_gate.use():
-            return manager.start(req.prepare_token, data_dir=app.state.data_dir)
+            return manager.start(
+                req.prepare_token,
+                data_dir=app.state.data_dir,
+                wait_for_focus_s=req.wait_for_focus_s,
+            )
 
     @app.post("/v1/playback/pause", dependencies=[Depends(require_token)])
     def playback_pause() -> dict[str, Any]:
