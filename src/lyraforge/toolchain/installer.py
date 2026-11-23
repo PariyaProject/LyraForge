@@ -445,7 +445,7 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
     uv = install_uv(progress)
     index = os.environ.get(
         "LYRAFORGE_PYTORCH_CUDA_INDEX",
-        "https://download.pytorch.org/whl/cu124",
+        "https://download.pytorch.org/whl/cu130",
     )
     _emit(progress, 0.2, f"下载并安装 CUDA 版 PyTorch（约 2.5 GB，索引 {index}）…")
     res = _run(
@@ -457,7 +457,11 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
             str(python),
             "--index-url",
             index,
-            "--upgrade",
+            # CPU wheels on PyPI are often newer than the newest CUDA wheel, so a plain
+            # --upgrade keeps 2.x+cpu. Force only torch to be reinstalled from the CUDA
+            # index; this may downgrade torch, which dettato accepts (torch>=2.2).
+            "--reinstall-package",
+            "torch",
             "torch",
         ],
         env=uv_env(),
@@ -476,7 +480,8 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
         raise LyraError(
             ErrorCode.SOURCE_UNAVAILABLE,
             "CUDA 版 PyTorch 已安装，但 torch.cuda.is_available() 仍为 False；"
-            "请检查 NVIDIA 驱动与 CUDA 版本，或设置 LYRAFORGE_PYTORCH_CUDA_INDEX 使用匹配的索引。",
+            "请确认 NVIDIA 驱动支持该 CUDA 版本（当前默认 cu130），"
+            "或设置 LYRAFORGE_PYTORCH_CUDA_INDEX 指向 cu128/cu126/cu124 后重试。",
         )
     set_tool_setting("dettato_gpu", True)
     _emit(progress, 1.0, "dettato GPU 加速已就绪")

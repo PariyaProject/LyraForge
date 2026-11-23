@@ -4,6 +4,9 @@ All notable user-facing changes to LyraForge are documented in this file.
 
 ## [Unreleased] — 0.1.0-alpha
 
+### Fixed
+- **CUDA PyTorch install now actually replaces the CPU build**: PyPI's CPU wheels can be newer than the newest CUDA wheel (e.g. `2.15.0+cpu` vs `2.14.1+cu130`), so a plain `--upgrade` resolved to "no changes" and GPU install failed at verification. The installer now uses `--reinstall-package torch` against the `cu130` index (override with `LYRAFORGE_PYTORCH_CUDA_INDEX`), allowing the necessary downgrade; verified on an RTX 2070 SUPER / driver 617.42 with `torch 2.14.1+cu130`, `torch.cuda.is_available() == True`.
+
 ### Added
 - **GPU acceleration managed from settings**: the settings page now detects an NVIDIA GPU and the dettato environment's PyTorch/CUDA build, lets the user pick `auto / cpu / cuda / mps` (persisted and injected as `LYRAFORGE_DETTATO_DEVICE`), and offers a one-click "install CUDA PyTorch" action that runs through the existing tool-install progress UI and verifies `torch.cuda.is_available()`.
 - **Broader media format support**: `.m4s` DASH segments plus common audio (`.aac`, `.wma`, `.aiff`, `.oga`, `.opus`, `.m4b`) and video containers (`.mov`, `.avi`, `.flv`, `.wmv`, `.ts`, `.m2ts`, `.mts`, `.3gp`, `.mpg`, `.mpeg`, `.vob`, `.ogv`) are accepted by the import picker and routed through FFmpeg; decoding still depends on the installed FFmpeg build and encrypted/DRM files are rejected with a clear error.
