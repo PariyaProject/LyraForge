@@ -9,6 +9,10 @@ const props = defineProps<{
 
 const activeMcpTab = ref<"claude" | "codex" | "antigravity">("claude");
 
+function installOf(toolId: string) {
+  return props.store.toolInstalls.value[toolId];
+}
+
 const MCP_SNIPPETS: Record<"claude" | "codex" | "antigravity", { title: string; code: string }> = {
   claude: {
     title: "Claude Code (.mcp.json / integrations/claude-code)",
@@ -113,19 +117,51 @@ async function copyText(text: string): Promise<void> {
 
     <div class="split-2">
       <div class="card">
-        <h2>转谱引擎就绪状态与许可证</h2>
+        <div class="card-title-row">
+          <h2>外部工具与转谱引擎（可一键安装）</h2>
+          <span class="pill">应用内下载 · 不改系统环境</span>
+        </div>
+        <p class="muted" style="margin-block: 0 var(--space-2)">
+          工具安装到 <code>{{ store.toolsDir.value || "…" }}</code>，启动时自动注入子进程环境；也可先用系统已安装的版本。
+        </p>
         <div class="view-stack" style="gap: 8px">
-          <div v-for="t in store.transcribers.value" :key="t.id" class="track-card">
+          <div v-for="tool in store.tools.value" :key="tool.id" class="track-card">
             <div class="card-title-row">
-              <strong>{{ t.display_name }}</strong>
-              <span class="pill" :class="t.available ? 'pill-ok' : 'pill-warn'">
-                {{ t.available ? "可用" : "未安装可选依赖" }}
+              <strong>{{ tool.display_name }}</strong>
+              <span class="pill" :class="tool.installed ? 'pill-ok' : 'pill-warn'">
+                {{
+                  tool.installed
+                    ? tool.source === "managed"
+                      ? "已安装（应用内）"
+                      : "已安装（系统）"
+                    : "未安装"
+                }}
               </span>
             </div>
+            <div class="muted">{{ tool.description }}</div>
             <div class="muted">
-              ID: <code>{{ t.id }}</code> · 许可：<code>{{ t.license }}</code>
+              许可：<code>{{ tool.license }}</code>
+              <template v-if="tool.version"> · 版本 <code>{{ tool.version }}</code></template>
+              <template v-if="tool.download_mb"> · 约 {{ tool.download_mb }} MB</template>
             </div>
-            <div class="muted">{{ t.scope_note }}</div>
+            <div class="button-row">
+              <button
+                v-if="!tool.installed"
+                class="secondary"
+                type="button"
+                :disabled="store.toolBusy.value !== null"
+                @click="store.handleInstallTool(tool.id)"
+              >
+                <StudioIcon name="download" />
+                安装 {{ tool.display_name }}
+              </button>
+              <span v-else class="muted">路径：<code>{{ tool.path }}</code></span>
+            </div>
+            <div v-if="installOf(tool.id)" class="muted">
+              {{ installOf(tool.id)?.message }}
+              （{{ Math.round((installOf(tool.id)?.progress ?? 0) * 100) }}%）
+              <span v-if="installOf(tool.id)?.error">{{ installOf(tool.id)?.error }}</span>
+            </div>
           </div>
         </div>
       </div>

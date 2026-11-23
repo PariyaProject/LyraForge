@@ -9,6 +9,7 @@ import time
 import wave
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from lyraforge.api import SESSION_TOKEN_HEADER, create_app
@@ -489,3 +490,46 @@ def test_api_m3_profiles_ab_edit_favorite_vote_and_compare(tmp_path: Path) -> No
     backup_resp = client.get("/v1/library/backup.zip", headers=headers)
     assert backup_resp.status_code == 200
     assert backup_resp.content[:2] == b"PK"
+
+
+def test_tools_status_and_background_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lyraforge.api import tool_service
+
+    monkeypatch.setenv("LYRAFORGE_TOOLS_DIR", str(tmp_path / "tools"))
+    app = create_app(data_dir=tmp_path / "tools_api", session_token="tools-token")
+    headers = {SESSION_TOKEN_HEADER: "tools-token"}
+    client = TestClient(app)
+
+    listing = client.get("/v1/tools", headers=headers)
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert payload["tools_dir"] == str(tmp_path / "tools")
+    assert {item["id"] for item in payload["tools"]} == {"ffmpeg", "basic-pitch", "dettato"}
+    assert all(isinstance(item["installed"], bool) for item in payload["tools"])
+
+    assert client.get("/v1/tools").status_code == 401
+    assert client.post("/v1/tools/nope/install", headers=headers).status_code == 400
+
+    def fake_install(tool_id: str, progress: object = None) -> dict[str, str]:
+        if callable(progress):
+            progress(0.5, "halfway")
+            progress(1.0, "done")
+        return {"id": tool_id}
+
+    monkeypatch.setattr(tool_service, "install_tool", fake_install)
+    started = client.post("/v1/tools/basic-pitch/install", headers=headers)
+    assert started.status_code == 200
+    assert started.json()["install"]["status"] in {"running", "installed"}
+
+    deadline = time.time() + 5.0
+    item: dict[str, object] = {}
+    while time.time() < deadline:
+        installs = client.get("/v1/tools", headers=headers).json()["installs"]
+        item = next((i for i in installs if i["tool_id"] == "basic-pitch"), {})
+        if item.get("status") == "installed":
+            break
+        time.sleep(0.05)
+    assert item["status"] == "installed"
+    assert item["progress"] == 1.0

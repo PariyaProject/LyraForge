@@ -91,6 +91,23 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 
 内置 `builtin-mono` 使用纯 Python 离线 YIN 算法（适合独奏单声线；在多声部和弦上受限，见 `scripts/eval_transcribers.py` 实测）。如需非 WAV 媒体（MP3/MP4/MKV）或更高准确度多音转录：
 
+### 3.1 推荐：应用内一键安装（无需命令行、不改系统环境）
+
+桌面版 **设置 →「外部工具与转谱引擎」** 卡片中，每个工具都有「安装」按钮；也可用 CLI：
+
+```bash
+uv run lyraforge tools status          # 查看 ffmpeg / basic-pitch / dettato 是否就绪
+uv run lyraforge tools install         # 安装全部（首次约 1.2 GB 下载）
+uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
+```
+
+安装位置为 `%LOCALAPPDATA%\LyraForge\tools`（macOS：`~/Library/Application Support/LyraForge/tools`）：
+- 从 PyPI 下载 `uv` wheel（SHA-256 校验后解压），由它管理独立 CPython 与各引擎虚拟环境；
+- FFmpeg 从 `imageio-ffmpeg` wheel 中提取并做可执行性校验；
+- 不写注册表、不修改用户环境变量；应用启动时由 `lyraforge.toolchain.runtime` 自动把路径注入子进程，显式设置的同名环境变量优先。
+
+### 3.2 高级：手动安装（自定义版本或无法联网时）
+
 1. 安装系统 `ffmpeg` 并确保 `ffmpeg`/`ffprobe` 在 `PATH` 中（Windows 可直接 `winget install --id Gyan.FFmpeg`）。
 2. 按 [ADR-0001](adr/0001-headless-python-core-and-isolated-transcribers.md) 在**独立**虚拟环境中安装对应引擎（不要装进主环境），再通过环境变量接入：
 
@@ -122,7 +139,7 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 
 > Windows 如需让桌面应用长期看到上述变量，可用
 > `[Environment]::SetEnvironmentVariable('LYRAFORGE_BASIC_PITCH_PYTHON', '<path>', 'User')` 写入用户环境变量后重新登录。
-> 计划中的「应用内一键安装」将自动完成这一步，见 [ROADMAP.md](ROADMAP.md) 优先级 C。
+> 使用 §3.1 的应用内安装时无需这一步。
 
 
 ---

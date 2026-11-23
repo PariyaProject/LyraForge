@@ -47,6 +47,7 @@ Get-Content .\SHA256SUMS.txt
 ```
 
 - 需要 Microsoft Edge WebView2 Runtime（Windows 11 已内置；Windows 10 请安装 Evergreen Runtime）。
+- 需要 `ffmpeg` / 多音转谱引擎时，无需手工配置：桌面 **设置 →「外部工具与转谱引擎」** 点「安装」即可（应用内下载并校验，安装到用户目录，不改系统环境变量）；命令行等价入口为 `lyraforge tools install`。
 - 若双击后没有出现窗口，启动失败详情会写入 `%LOCALAPPDATA%\LyraForge\logs\startup.log`，同时弹出原生错误对话框；提交 Issue 时请附上该日志。
 
 ### 从源码运行（macOS Apple Silicon / Windows）

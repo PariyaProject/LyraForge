@@ -24,6 +24,7 @@ from lyraforge import __version__
 from lyraforge.agent import ALLOWED_TOOLS, FORBIDDEN_TOOLS, AgentOrchestrator
 from lyraforge.api.job_service import TranscriptionJobManager
 from lyraforge.api.playback_service import PlaybackManager
+from lyraforge.api.tool_service import ToolInstallManager
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.instruments import DEFAULT_PROFILE_ID, list_profile_ids, load_builtin_profile
 from lyraforge.library import (
@@ -40,6 +41,8 @@ from lyraforge.music_core.arranger import ArrangeOptions, SemitonePolicy, Style
 from lyraforge.music_core.midi_import import ImportLimits
 from lyraforge.playback import PlaybackMode, is_windows_playback_available
 from lyraforge.preview import DEFAULT_SAMPLE_RATE
+from lyraforge.toolchain import status as toolchain_status
+from lyraforge.toolchain import tools_root as toolchain_tools_root
 from lyraforge.transcribers import DEFAULT_TRANSCRIBER_ID, TranscribeOptions, list_transcribers
 
 SESSION_TOKEN_HEADER = "X-LyraForge-Token"
@@ -278,6 +281,7 @@ def create_app(
     token = session_token or secrets.token_urlsafe(32)
     manager = PlaybackManager()
     job_manager = TranscriptionJobManager()
+    tool_manager = ToolInstallManager()
     library_gate = _LibraryAccessGate()
 
     @contextmanager
@@ -301,6 +305,7 @@ def create_app(
     app.state.session_token = token
     app.state.playback_manager = manager
     app.state.job_manager = job_manager
+    app.state.tool_manager = tool_manager
     app.state.library_gate = library_gate
     app.state.restore_drain_timeout_s = 5.0
 
@@ -505,6 +510,18 @@ def create_app(
     @app.get("/v1/transcribers", dependencies=[Depends(require_token)])
     def get_transcribers() -> dict[str, Any]:
         return {"transcribers": [m.to_json() for m in list_transcribers()]}
+
+    @app.get("/v1/tools", dependencies=[Depends(require_token)])
+    def get_tools() -> dict[str, Any]:
+        return {
+            "tools_dir": str(toolchain_tools_root()),
+            "tools": toolchain_status(),
+            "installs": tool_manager.snapshot(),
+        }
+
+    @app.post("/v1/tools/{tool_id}/install", dependencies=[Depends(require_token)])
+    def install_tool(tool_id: str) -> dict[str, Any]:
+        return {"install": tool_manager.start(tool_id)}
 
     @app.post("/v1/jobs/transcribe", dependencies=[Depends(require_token)])
     def transcribe_job(req: TranscribeJobRequest) -> dict[str, Any]:

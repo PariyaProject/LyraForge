@@ -602,6 +602,46 @@ def cmd_engines_list(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_tools_status(args: argparse.Namespace) -> int:
+    from lyraforge.toolchain import status, tools_root
+
+    items = status()
+    if args.json:
+        print(pretty_json({"tools_root": str(tools_root()), "tools": items}), end="")
+        return EXIT_OK
+    print(f"tools dir: {tools_root()}")
+    for item in items:
+        state = "已安装" if item["installed"] else "未安装"
+        version = item["version"] or "-"
+        source = item["source"] or "-"
+        path = item["path"] or "-"
+        print(f"{item['id']:<12} {state:<4} {version:<10} {source:<8} {path}")
+    return EXIT_OK
+
+
+def cmd_tools_install(args: argparse.Namespace) -> int:
+    from lyraforge.toolchain import install, tool_ids
+
+    targets = list(args.tools) if args.tools else list(tool_ids())
+    unknown = [t for t in targets if t not in tool_ids()]
+    if unknown:
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"unknown tool(s): {', '.join(unknown)}",
+            {"available": list(tool_ids())},
+        )
+
+    results: list[dict[str, Any]] = []
+    for tool_id in targets:
+        def progress(fraction: float, message: str, _id: str = tool_id) -> None:
+            _write_stderr(f"[{_id}] {fraction * 100:5.1f}% {message}\n")
+
+        _write_stderr(f"installing {tool_id}...\n")
+        results.append(install(tool_id, progress))
+    print(pretty_json(results), end="")
+    return EXIT_OK
+
+
 def cmd_mcp(args: argparse.Namespace) -> int:
     from lyraforge.mcp import run_stdio_server
 
@@ -813,6 +853,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = pes.add_parser("list", help="list available transcription engines")
     p.set_defaults(func=cmd_engines_list)
 
+    ptc = sub.add_parser(
+        "tools", help="install optional external tools (ffmpeg/basic-pitch/dettato)"
+    )
+    ptcs = ptc.add_subparsers(dest="tools_command", required=True)
+    p = ptcs.add_parser("status", help="show which external tools are installed")
+    p.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    p.set_defaults(func=cmd_tools_status)
+    p = ptcs.add_parser(
+        "install",
+        help="download and install tools into the per-user LyraForge tools directory",
+    )
+    p.add_argument("tools", nargs="*", help="tool ids (default: all)")
+    p.set_defaults(func=cmd_tools_install)
+
     pt = sub.add_parser("transcribe", help="transcribe local audio/video into MIDI")
     pt.add_argument("audio")
     pt.add_argument("--engine", default="builtin-mono")
@@ -869,6 +923,11 @@ def main(
     for stream in (sys.stdout, sys.stderr):  # UTF-8 output even on legacy Windows code pages
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    from lyraforge.toolchain.runtime import apply_process_env
+
+    # Managed tools installed from the desktop settings page are wired in here; explicit
+    # user-provided environment variables always take precedence (setdefault semantics).
+    apply_process_env()
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))
