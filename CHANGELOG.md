@@ -5,7 +5,8 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Added
-- **Configurable global hotkeys for playback (default unbound)**: `start` / `pause` / `resume` / `stop` (and `next` / `previous` once a queue exists) can be assigned user shortcuts such as `Ctrl+Alt+F9`; registration uses the Windows `RegisterHotKey` API, conflicts are reported per action, and the settings page persists them. Nothing is bound until the user sets it.
+- **Playback queue with next/previous**: queue arrangements from the studio, see the ordered list with the current item highlighted in the playback console, and move with buttons or the `next`/`previous` global hotkeys; queue switching stops the current playback, re-prepares the target and reuses the focus/permission checks.
+- **Configurable global hotkeys for playback (default unbound)**: `start` / `pause` / `resume` / `stop` / `next` / `previous` can be assigned user shortcuts such as `Ctrl+Alt+F9`; registration uses the Windows `RegisterHotKey` API, conflicts are reported per action, and the settings page persists them. Nothing is bound until the user sets it.
 - **Configurable game process allowlist**: `windows_allowed_processes` defaults to `GenshinImpact.exe, YuanShen.exe` and can be edited in settings, alongside the existing window-title fallback.
 - **Built-in one-click arrangement presets**: five validated presets per instrument (melody first, balanced, rich, slow practice, lively) exposed as buttons in the arrange studio and via `lyraforge presets list` / `GET /v1/presets`; the default workflow never calls an agent or an API.
 - **Vintage Lyre (老旧的诗琴) profile**: a third 21-key instrument preset with the community-documented C Dorian / C Phrygian pitch mapping (distinct from the C major lyres), marked `unverified` until in-game calibration.

@@ -85,6 +85,18 @@ export interface HotkeyActionInfo {
   label: string;
 }
 
+export interface QueueItemInfo {
+  arrangement_id: string;
+  label: string;
+}
+
+export interface QueueState {
+  items: QueueItemInfo[];
+  index: number;
+  mode: string;
+  realtime: boolean;
+}
+
 export interface HotkeyState {
   supported: boolean;
   bindings: Record<string, string>;
@@ -366,6 +378,30 @@ export class LyraForgeApi {
 
   getHotkeys(): Promise<HotkeyState> {
     return this.request<HotkeyState>("/v1/hotkeys");
+  }
+
+  getQueue(): Promise<QueueState> {
+    return this.request<QueueState>("/v1/playback/queue");
+  }
+
+  addToQueue(arrangementId: string): Promise<QueueState> {
+    return this.request<QueueState>("/v1/playback/queue/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arrangement_id: arrangementId }),
+    });
+  }
+
+  clearQueue(): Promise<QueueState> {
+    return this.request<QueueState>("/v1/playback/queue/clear", { method: "POST" });
+  }
+
+  stepQueue(delta: number): Promise<{ queue: QueueState; playback: { status?: string } }> {
+    return this.request("/v1/playback/queue/step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ delta }),
+    });
   }
 
   saveHotkeys(

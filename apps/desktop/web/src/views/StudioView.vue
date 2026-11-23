@@ -111,6 +111,15 @@ async function onArrangementChange(event: Event): Promise<void> {
 
         <div class="button-row" style="margin-inline-start: auto">
           <button
+            class="secondary"
+            type="button"
+            :disabled="!store.selectedArrId.value || store.busy.value"
+            @click="store.handleAddToQueue"
+          >
+            <StudioIcon name="music" />
+            加入播放队列
+          </button>
+          <button
             class="primary"
             type="button"
             :disabled="!store.canArrange.value || store.busy.value"

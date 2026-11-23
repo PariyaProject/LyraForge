@@ -140,6 +140,10 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       ],
     }),
     saveHotkeys: vi.fn().mockResolvedValue({ supported: true, bindings: {}, errors: {} }),
+    getQueue: vi.fn().mockResolvedValue({ items: [], index: 0, mode: "dry-run", realtime: false }),
+    addToQueue: vi.fn(),
+    clearQueue: vi.fn(),
+    stepQueue: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({ settings: { default_style: "balanced" } }),
     saveSetting: vi.fn().mockResolvedValue({ settings: {} }),
     listSongs: vi.fn().mockResolvedValue({
