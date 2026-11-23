@@ -39,6 +39,18 @@ def resolve_runner(
     return None
 
 
+def _utf8_child_env() -> dict[str, str]:
+    """Force UTF-8 stdio in child Python tools.
+
+    Basic Pitch prints emoji progress lines; on a Chinese Windows console the inherited
+    ``cp936`` codec raises ``UnicodeEncodeError`` and aborts the whole transcription.
+    """
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def run_isolated_transcriber(
     *,
     engine_id: str,
@@ -82,6 +94,7 @@ def run_isolated_transcriber(
             cancel_message="transcription cancelled",
             timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
             timeout_message=f"{display_name} timed out after {opts.timeout_s:.1f}s",
+            env=_utf8_child_env(),
         )
         if stop_token is not None and stop_token.stopped:
             raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")

@@ -91,10 +91,39 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 
 内置 `builtin-mono` 使用纯 Python 离线 YIN 算法（适合独奏单声线；在多声部和弦上受限，见 `scripts/eval_transcribers.py` 实测）。如需非 WAV 媒体（MP3/MP4/MKV）或更高准确度多音转录：
 
-1. 安装系统 `ffmpeg` 并确保其在 `PATH` 中。
-2. 按 [ADR-0001](adr/0001-headless-python-core-and-isolated-transcribers.md) 在独立 Python 虚拟环境中安装对应引擎并通过环境变量接入：
-   - `LYRAFORGE_BASIC_PITCH_PYTHON` 或 `LYRAFORGE_BASIC_PITCH_BIN`（Spotify Basic Pitch, Apache-2.0）
-   - `LYRAFORGE_DETTATO_PYTHON` 或 `LYRAFORGE_DETTATO_BIN`（dettato 多乐器转录, Apache-2.0）
+1. 安装系统 `ffmpeg` 并确保 `ffmpeg`/`ffprobe` 在 `PATH` 中（Windows 可直接 `winget install --id Gyan.FFmpeg`）。
+2. 按 [ADR-0001](adr/0001-headless-python-core-and-isolated-transcribers.md) 在**独立**虚拟环境中安装对应引擎（不要装进主环境），再通过环境变量接入：
+
+   **Basic Pitch（Apache-2.0）**
+
+   ```bash
+   uv venv ~/.lyraforge-tools/basic-pitch --python 3.11
+   uv pip install --python ~/.lyraforge-tools/basic-pitch/bin/python \
+     basic-pitch==0.4.0 "numpy<2" "setuptools<81"
+   export LYRAFORGE_BASIC_PITCH_PYTHON=~/.lyraforge-tools/basic-pitch/bin/python
+   # Windows：...\basic-pitch\Scripts\python.exe
+   ```
+
+   - basic-pitch 0.4.x 的模块入口是 `basic_pitch.predict`（旧版本为 `basic_pitch.inference`，LyraForge 已按 0.4.x 适配）；
+   - `numpy<2` 是 TensorFlow 2.14 的硬性要求（否则 `pywrap_ml_dtypes` 导入崩溃）；`setuptools<81` 仍提供 `resampy` 需要的 `pkg_resources`；
+   - `basic-pitch` 会向 stdout 打印 emoji 进度，LyraForge 已为子进程强制 `PYTHONUTF8=1`，避免中文 Windows 的 `cp936` 编码崩溃。
+
+   **dettato（Apache-2.0，权重首次运行自动从 Hugging Face 下载）**
+
+   ```bash
+   uv venv ~/.lyraforge-tools/dettato --python 3.11
+   uv pip install --python ~/.lyraforge-tools/dettato/bin/python dettato==2.0.0
+   export LYRAFORGE_DETTATO_PYTHON=~/.lyraforge-tools/dettato/bin/python
+   # Windows：...\dettato\Scripts\python.exe
+   ```
+
+   - dettato 的 `-o` 是输出**目录**，它会在其中写入 `<曲名>.mid`；CPU 推理约 4 秒音频 / 20 秒耗时。
+3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
+
+> Windows 如需让桌面应用长期看到上述变量，可用
+> `[Environment]::SetEnvironmentVariable('LYRAFORGE_BASIC_PITCH_PYTHON', '<path>', 'User')` 写入用户环境变量后重新登录。
+> 计划中的「应用内一键安装」将自动完成这一步，见 [ROADMAP.md](ROADMAP.md) 优先级 C。
+
 
 ---
 

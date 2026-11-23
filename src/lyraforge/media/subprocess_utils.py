@@ -10,7 +10,7 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -135,7 +135,7 @@ class BoundedSubprocessResult:
     peak_disk_bytes: int
 
 
-def _popen_isolation_kwargs() -> dict[str, Any]:
+def _popen_isolation_kwargs(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
@@ -143,6 +143,8 @@ def _popen_isolation_kwargs() -> dict[str, Any]:
         "shell": False,
         "close_fds": True,
     }
+    if env is not None:
+        kwargs["env"] = dict(env)
     if os.name == "nt":
         create_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         if create_group:
@@ -408,6 +410,7 @@ def run_bounded_subprocess(
     max_log_bytes: int = MAX_SUBPROCESS_LOG_BYTES,
     tail_bytes: int = DEFAULT_LOG_TAIL_BYTES,
     drain_grace_s: float = 0.5,
+    env: Mapping[str, str] | None = None,
 ) -> BoundedSubprocessResult:
     """Run subprocess with process-tree isolation, pipe drains, and rotating logs."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +427,7 @@ def run_bounded_subprocess(
     try:
         proc = subprocess.Popen(  # noqa: S603
             list(cmd),
-            **_popen_isolation_kwargs(),
+            **_popen_isolation_kwargs(env),
         )
         raw_pid = getattr(proc, "pid", None)
         if os.name != "nt" and isinstance(raw_pid, int) and raw_pid > 0:

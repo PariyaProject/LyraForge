@@ -21,7 +21,9 @@ BASIC_PITCH_CLI_ENV = "LYRAFORGE_BASIC_PITCH_BIN"
 def _resolve_runner() -> list[str] | None:
     return resolve_runner(
         python_env=BASIC_PITCH_PYTHON_ENV,
-        python_module_args=["-m", "basic_pitch.inference"],
+        # basic-pitch 0.4.x moved the CLI entry point from ``basic_pitch.inference`` to
+        # ``basic_pitch.predict``; ``predict`` keeps the same ``OUTPUT_DIR AUDIO`` contract.
+        python_module_args=["-m", "basic_pitch.predict"],
         cli_env=BASIC_PITCH_CLI_ENV,
         binary_name="basic-pitch",
     )
