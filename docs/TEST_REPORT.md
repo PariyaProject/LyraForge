@@ -1,4 +1,4 @@
-# LyraForge 第四轮全量测试与验收基准报告
+# LyraForge 测试报告与验收基准（Test Report）
 
 > **记录原则**：本报告仅记录在最终提交代码后**实际执行并直接观察到输出**的命令、结果、耗时与未验证环境边界，绝不外推未运行的 Windows 真机或外置 ML 工具状态。
 
@@ -90,7 +90,7 @@
 
 ## 6. 第五轮 Code Review 加固专项复核与回归结果（基于 `051a222b`）
 
-针对第五轮独立 Review 指出的 6 类工程隐患已完成代码修改与针对性回归（[tests/unit/test_round5_review_fixes.py](tests/unit/test_round5_review_fixes.py)，新增 **6 组端到端专项测试全部通过**；全库回归共 **128 passed**, 覆盖率 **87.64%**, 前端 Vitest **4 文件 / 6 用例全过**，无新增第三方依赖）：
+针对第五轮独立 Review 指出的 6 类工程隐患已完成代码修改与针对性回归（[tests/unit/test_round5_review_fixes.py](../tests/unit/test_round5_review_fixes.py)，新增 **6 组端到端专项测试全部通过**；全库回归共 **128 passed**, 覆盖率 **87.64%**, 前端 Vitest **4 文件 / 6 用例全过**，无新增第三方依赖）：
 
 1. **MCP 协议统一校验、并发有界线程池与竞态安全（`mcp/server.py`, `mcp/tools.py`）**：
    - 将消息解析、初始化检查（未初始化调用 `tools/call` 或 `tools/list` 统一返回 `-32002`）、`arguments` 对象类型严格校验（拒收字符串/数组/`null` 返回 `-32602`，绝不静默转 `{}`）及错误 JSON-RPC 处理收敛至单一 `_parse_and_route()`，`handle_message()` 与 `serve_streams()` 彻底消除分叉绕过。
@@ -108,7 +108,7 @@
 
 ## 7. 第六轮稳定性收敛专项复核与回归结果（基于 `34f08ce`）
 
-针对第六轮 Code Review 剩余边界问题已完成最小化高可靠改造与全量回归验证（[tests/unit/test_round6_review_fixes.py](tests/unit/test_round6_review_fixes.py)，新增 **4 组专项回归全通**；全库回归共 **132 passed**, 覆盖率 **86.49%**, 前端 Vitest **4 文件 / 6 用例全过**, Vite 构建 **757ms**, 无新增第三方依赖）：
+针对第六轮 Code Review 剩余边界问题已完成最小化高可靠改造与全量回归验证（[tests/unit/test_round6_review_fixes.py](../tests/unit/test_round6_review_fixes.py)，新增 **4 组专项回归全通**；全库回归共 **132 passed**, 覆盖率 **86.49%**, 前端 Vitest **4 文件 / 6 用例全过**, Vite 构建 **757ms**, 无新增第三方依赖）：
 
 1. **事务型曲库目录切换恢复与断点自动回滚（`library/packaging.py`, `library/store.py`, `library/__init__.py`）**：
    - 在触碰目标库前执行 `_check_target_files_unlocked()` 与 `_verify_and_quiesce_existing_db()`，先于目录外部准备并校验证明完整的 `prepared_dir` 与 `rollback_dir`，再通过 `.restore-txn.json` + 目录原子重命名（`_rename_dir_with_retry()`）实施无就地删档切换。
@@ -119,3 +119,23 @@
    - 移除 `lambda ...: _st` 忽略路径，将 `search_music`/`import_media`/`transcribe`/`arrange`/`evaluate`/`preview`/`save_to_library`/`export_score` 纳入统一 `_run_tracked()` 追踪与 `StopToken`/`is_cancelled` 检查，确保执行前、流式下载/移调搜索/波形合成中途以及写数据库提交前取消均可清理新建孤儿产物并返回 `PLAYBACK_ABORTED`，且已提交事务或原子写入后的迟到取消绝不错误标记为失败。
 4. **外部子进程及其派生进程树生命周期（`media/subprocess_utils.py`, `media/{extract.py}`, `transcribers/_subprocess.py`）**：
    - 隔离会话/进程组启动（`start_new_session=True` / `CREATE_NEW_PROCESS_GROUP`、`stdin=DEVNULL`、`close_fds=True`），终止时使用 POSIX `os.killpg` 与 Windows `taskkill /F /T` + `Win32_Process` 后代递归清扫；即使父进程已退出而孙进程仍继承持有 `stdout`/`stderr` 管道亦能识别并安全回收，并在所有排空线程完全结束及管道关闭后再执行轮转日志清理，避免 Windows 句柄竞争与跨线程并发关闭隐患。
+
+---
+
+## 8. 第七轮收尾回归、源码核验与质量验收结果（基于 `e9570fa`）
+
+针对第七轮 Code Review 收尾检查（[tests/unit/test_round7_review_fixes.py](../tests/unit/test_round7_review_fixes.py)，新增 **2 组专项回归测试全过**；全库回归共 **134 passed, 2 warnings in 42.42s**，语句+分支总覆盖率 **86.52%**（6615 stmts, 1830 branches），前端 Vitest **4 文件 / 6 用例全过（1.46s）**，Vite 构建 **714ms**，无新增第三方依赖）：
+
+1. **并发试听取消防文件误删回归（`src/lyraforge/fs.py`, `src/lyraforge/library/paths.py`, `src/lyraforge/library/store.py`）**：
+   - **修复前复现**：请求 B 完成 `render_preview()` 写入 `wav_path` 并更新 `arrangements.preview_path` 后，原本先于 B 启动的请求 A 因旧逻辑依赖 `existed_before = False`，在合成结束后遭遇 `StopToken` 取消并直接 `unlink(wav_path)`，导致共享 WAV 丢失而 `preview_path` 仍指向不存在的路径。
+   - **最小修复与验证**：新增 `atomic_replace_file()`（按目标路径条带加锁 + Windows `PermissionError` 重试）；`render_preview()` 先写入单次调用专属同目录临时 WAV，在锁下再次核验 `StopToken` 后执行 `os.replace` 原子发布并立即更新 SQLite，`finally:` 仅清理当前请求自身临时文件。覆盖并发竞争、全新曲目取消、合成异常保留历史版本、连续多采样率重生成、发布后迟到取消等场景全部通过，零 `.tmp*` 残留。
+2. **子进程终态排空与日志清理并发收尾（`src/lyraforge/media/subprocess_utils.py`）**：
+   - **修复前复现**：模拟 `_terminate_process_tree()` 在超时/取消分支抛异常时，`reap_attempted = True` 被过早赋值导致 `finally:` 跳过回退清理、子进程继续存活且遗漏 `.log` 文件；POSIX 下独立会话（`start_new_session=True`）孙进程持管道退出后，原 `BufferedReader.read(4096)` 与先 `join` 后 `stop_drain.set()` 的时序亦会丢弃 `PARENT_DONE` 并遗留活跃 `-drain` daemon 线程。
+   - **最小修复与验证**：POSIX FIFO 管道改用 `selectors.DefaultSelector()` + `os.read()` 可中断非阻塞轮询（Windows/测试桩保留兼容 `.read()` 回退）；`_BoundedRotatingLog.read_tail()` 持锁原子关闭并快照状态；新增 `_safe_terminate_process_tree()`（失败时回退 `killpg`/`proc.kill()`/`wait()`）；延后 `reap_attempted = True` 至真实返回之后；`finally:` 先 `stop_drain.set()` 再 `join`，并先 `out_log.close()`/`err_log.close()` 后清理磁盘日志。实测全部回归（含脱管孙进程、阻塞 Mock 管道延迟释放、Reap 失败与超限轮转日志）均零泄漏且零进程残余。同时顺带修复 GitHub macOS CI 暴露的 [src/lyraforge/api/app.py](../src/lyraforge/api/app.py) `_LibraryAccessGate.exclusive()` 退出时因 `_shutting_down=True` 未清除 `_maintenance_reason` 而导致 `begin_shutdown()` 空等超时的竞态缺陷。
+3. **重点源码深度核验记录（只读核验通过，未做无意义重构）**：
+   - [src/lyraforge/library/packaging.py](../src/lyraforge/library/packaging.py)：核验 `restore_backup_zip()` 与 `recover_interrupted_restore()` 通过 `.restore-txn.json`、`prepared_dir` / `rollback_dir` / `displaced_dir` / `failed_dir` 目录原子切换、`BaseException` 自动回滚以及回滚二次失败时 `keep_snapshots = True` + `manual_recovery_steps` 完整自愈。
+   - [src/lyraforge/mcp/tools.py](../src/lyraforge/mcp/tools.py)：核验 `MCPTaskRegistry` 使用 `finished` 与 `_reclaim_finished_locked()` 严禁驱逐活动/取消中任务，满载返回 `LIMIT_EXCEEDED`，全部工具通过 `_run_tracked()` 与 `_pre_cancelled` / `StopToken` 一致跟踪。
+   - [tests/unit/test_round6_review_fixes.py](../tests/unit/test_round6_review_fixes.py)：核验 4 组测试真实注入 DB 事务锁、只读文件锁、`PermissionError`、目录换名失败、回滚双重失败、中断重启、`max_tasks=1/3` 与 10 线程压测、`asyncio`/流式取消、孙进程树与孤儿管道等故障场景。
+4. **本地全量门禁与文档规范验证**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile`（`209ms`）、`uv run ruff check .`（`All checks passed!`）、`uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80`（`134 passed`, `86.52%`）、`pnpm --dir apps/desktop/web build`（`714ms`, JS `158.80 kB`, CSS `20.52 kB`）、`pnpm --dir apps/desktop/web test`（`4 files / 6 tests passed`）、`make smoke`（`actions_sent=48`, `keys_still_pressed=[]`）、`uv run lyraforge desktop --self-check`（`ok: true`, `platform: "darwin"`, `windows_modules_loaded: false`）。
+   - 验证 [README.md](../README.md) Quick Start 命令行可用（`lyraforge profiles list` 与 `lyraforge import tests/fixtures/midi/chords_type1.mid`），并将 README 规范为面向用户和贡献者的产品主页（长期规则写入 [AGENTS.md](../AGENTS.md)）。

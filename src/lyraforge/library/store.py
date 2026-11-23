@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -17,6 +18,7 @@ from typing import Any, Literal
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.instruments import DEFAULT_PROFILE_ID, load_builtin_profile
 from lyraforge.library.paths import (
+    atomic_replace_file,
     atomic_write_bytes,
     atomic_write_text,
     default_data_dir,
@@ -64,6 +66,7 @@ def _utc_now_iso() -> str:
 
 
 _ARRANGE_PERSIST_STRIPES = [threading.Lock() for _ in range(64)]
+_PREVIEW_PUBLISH_STRIPES = [threading.Lock() for _ in range(64)]
 
 
 def _escape_like(text: str) -> str:
@@ -1289,35 +1292,40 @@ class LibraryStore:
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         stop_token: StopToken | None = None,
     ) -> Path:
-        """Synthesize an offline WAV preview for a stored arrangement."""
+        """Synthesize an offline WAV preview for a stored arrangement safely."""
         _check_stop(stop_token, "preview synthesis cancelled")
         rec = self.get_arrangement(arrangement_id)
         doc = self.load_arrangement_performance(arrangement_id)
         rel_wav = f"songs/{rec.song_id}/previews/{rec.id}.wav"
         wav_path = resolve_under(self.data_dir, rel_wav)
-        existed_before = wav_path.exists()
-        _check_stop(stop_token, "preview synthesis cancelled")
-        synthesize_performance_to_wav(
-            doc,
-            wav_path,
-            sample_rate=sample_rate,
-            is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
-        )
-        if stop_token is not None and stop_token.stopped:
-            if not existed_before:
-                wav_path.unlink(missing_ok=True)
-            raise LyraError(
-                ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "preview synthesis cancelled"
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_wav = wav_path.parent / f".{rec.id}.{uuid.uuid4().hex[:8]}.preview.tmp.wav"
+        stripe_idx = hash(
+            (os.path.normcase(os.path.abspath(os.fspath(self.data_dir))), rec.id)
+        ) % len(_PREVIEW_PUBLISH_STRIPES)
+        try:
+            _check_stop(stop_token, "preview synthesis cancelled")
+            synthesize_performance_to_wav(
+                doc,
+                tmp_wav,
+                sample_rate=sample_rate,
+                is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
             )
-        now = _utc_now_iso()
-        with self._conn:
-            self._conn.execute(
-                "UPDATE arrangements SET preview_path = ? WHERE id = ?",
-                (rel_wav, rec.id),
-            )
-            self._conn.execute(
-                "UPDATE songs SET updated_at = ? WHERE id = ?", (now, rec.song_id)
-            )
+            _check_stop(stop_token, "preview synthesis cancelled")
+            with _PREVIEW_PUBLISH_STRIPES[stripe_idx]:
+                _check_stop(stop_token, "preview synthesis cancelled")
+                atomic_replace_file(tmp_wav, wav_path)
+                now = _utc_now_iso()
+                with self._conn:
+                    self._conn.execute(
+                        "UPDATE arrangements SET preview_path = ? WHERE id = ?",
+                        (rel_wav, rec.id),
+                    )
+                    self._conn.execute(
+                        "UPDATE songs SET updated_at = ? WHERE id = ?", (now, rec.song_id)
+                    )
+        finally:
+            tmp_wav.unlink(missing_ok=True)
         return wav_path
 
     def record_playback_session(

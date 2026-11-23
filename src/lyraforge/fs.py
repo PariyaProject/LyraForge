@@ -18,6 +18,20 @@ def _stripe_lock(path: Path) -> threading.Lock:
     return _PATH_STRIPES[idx]
 
 
+def atomic_replace_file(src: Path, dst: Path) -> None:
+    """Atomically replace ``dst`` with an existing sibling temporary file ``src``."""
+    with _stripe_lock(dst):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(5):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError:
+                if attempt >= 4:
+                    raise
+                time.sleep(0.015 * (attempt + 1))
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write bytes to a sibling temporary file and atomically replace ``path``."""
     with _stripe_lock(path):

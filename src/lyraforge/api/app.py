@@ -122,7 +122,7 @@ class _LibraryAccessGate:
             yield
         finally:
             with self._cond:
-                if not self._shutting_down and self._maintenance_reason == reason:
+                if self._maintenance_reason == reason:
                     self._maintenance_reason = None
                 self._cond.notify_all()
 

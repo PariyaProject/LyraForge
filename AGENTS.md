@@ -14,6 +14,7 @@
 - Store HTTP API keys only in OS Keychain / Credential Manager / `0o600` `.lyraforge.secrets.json` / `LYRAFORGE_*` env vars — never plaintext in SQLite, backups, `.lyrapack`, logs, or errors.
 - External downloads require `allow_network=True`, DNS-pinned SSRF checks (`sources/url.py`), and auditable CC/PD URL classification (`sources/online.py`; never weak substrings; reject `NoDerivatives`).
 - Keep audio transcription accuracy (`transcription_fidelity` vs ground truth) strictly separated from `arrangement_playability_vs_input_midi`.
+- **Documentation Rule**: README.md is the public-facing product homepage, not a development log. Keep detailed implementation status in docs/PROGRESS.md, test metrics in docs/TEST_REPORT.md, roadmap items in docs/ROADMAP.md, and user-facing release changes in CHANGELOG.md. Update README only when product features, user workflows, installation instructions, compatibility, screenshots, or important limitations materially change. Do not append routine review reports, internal bug tracking, CI logs, or temporary development status to README.
 
 ## 3. Startup Check (Every New Session)
 1. Read `AGENTS.md`, `docs/PROJECT_SPEC.md`, `docs/PROGRESS.md`, and open tasks (`docs/NEXT.md` if present).
