@@ -5,6 +5,7 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Fixed
+- **Transcription target no longer follows playback selection**: the transcribe page now keeps its own song target; switching songs in playback/library does not change it or hide the running job. Job panel shows the job's song, human-readable stage and elapsed seconds, and completion refreshes the job's own song even if another song is playing.
 - **CUDA PyTorch install now actually replaces the CPU build**: PyPI's CPU wheels can be newer than the newest CUDA wheel (e.g. `2.15.0+cpu` vs `2.14.1+cu130`), so a plain `--upgrade` resolved to "no changes" and GPU install failed at verification. The installer now uses `--reinstall-package torch` against the `cu130` index (override with `LYRAFORGE_PYTORCH_CUDA_INDEX`), allowing the necessary downgrade; verified on an RTX 2070 SUPER / driver 617.42 with `torch 2.14.1+cu130`, `torch.cuda.is_available() == True`.
 
 ### Added

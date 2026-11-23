@@ -91,6 +91,10 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedSongId = ref<string | null>(null);
   const songSources = ref<SourceRecord[]>([]);
   const songTranscriptions = ref<TranscriptionRecord[]>([]);
+  const transcribeSongId = ref<string | null>(null);
+  const transcribeSongTitle = ref("");
+  const transcribeSources = ref<SourceRecord[]>([]);
+  const transcribeTranscriptions = ref<TranscriptionRecord[]>([]);
   const arrangements = ref<ArrangementRecord[]>([]);
   const selectedArrId = ref<string>("");
   const arrDetail = ref<ArrangementDetailResponse | null>(null);
@@ -240,6 +244,21 @@ export function createLyraStore(api: LyraForgeApi) {
     if (!selectedSongId.value && songs.value.length > 0) {
       await selectSong(songs.value[0].id);
     }
+    if (!transcribeSongId.value && songs.value.length > 0) {
+      await selectTranscribeSong(selectedSongId.value ?? songs.value[0].id);
+    }
+  }
+
+  const transcribeHasAudio = computed(() =>
+    transcribeSources.value.some((s) => s.kind === "audio"),
+  );
+
+  async function selectTranscribeSong(songId: string): Promise<void> {
+    const detail = await api.getSong(songId);
+    transcribeSongId.value = songId;
+    transcribeSongTitle.value = detail.song.title;
+    transcribeSources.value = detail.sources ?? [];
+    transcribeTranscriptions.value = detail.transcriptions ?? [];
   }
 
   async function selectSong(songId: string): Promise<void> {
@@ -313,6 +332,7 @@ export function createLyraStore(api: LyraForgeApi) {
       uploadFile.value = null;
       await refreshSongs();
       await selectSong(res.song.id);
+      await selectTranscribeSong(res.song.id);
       reportOk(`已导入曲目：${res.song.title}`);
       const isMidi = lower.endsWith(".mid") || lower.endsWith(".midi");
       setView(isMidi ? "studio" : "transcribe");
@@ -332,11 +352,16 @@ export function createLyraStore(api: LyraForgeApi) {
   }
 
   async function handleStartTranscribe(): Promise<void> {
-    if (!selectedSongId.value) return;
+    const songId = transcribeSongId.value ?? selectedSongId.value;
+    if (!songId) return;
+    if (!transcribeHasAudio.value) {
+      reportError("当前曲目没有音频/视频来源，无法转谱；请先导入音频或视频");
+      return;
+    }
     busy.value = true;
     errorMessage.value = "";
     try {
-      const { job } = await api.submitTranscribeJob(selectedSongId.value, selectedEngineId.value);
+      const { job } = await api.submitTranscribeJob(songId, selectedEngineId.value);
       activeJob.value = job;
       reportOk(`已提交音频转谱任务 (${job.engine_id})`);
       stopJobPolling();
@@ -350,12 +375,14 @@ export function createLyraStore(api: LyraForgeApi) {
           activeJob.value = res.job;
           if (res.job.status === "completed") {
             stopJobPolling();
-            if (selectedSongId.value) {
-              await selectSong(selectedSongId.value);
+            await selectTranscribeSong(res.job.song_id);
+            if (selectedSongId.value === res.job.song_id) {
+              await selectSong(res.job.song_id);
             }
             reportOk(`音频转谱完成，共保留 ${res.job.transcription?.note_count ?? 0} 个音符`);
           } else if (res.job.status === "cancelled" || res.job.status === "failed") {
             stopJobPolling();
+            await selectTranscribeSong(res.job.song_id);
             if (res.job.error) {
               reportError(res.job.error.message);
             } else {
@@ -365,7 +392,7 @@ export function createLyraStore(api: LyraForgeApi) {
         } catch {
           stopJobPolling();
         }
-      }, 150);
+      }, 400);
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -601,6 +628,7 @@ export function createLyraStore(api: LyraForgeApi) {
       packFile.value = null;
       await refreshSongs();
       await selectSong(res.song.id);
+      await selectTranscribeSong(res.song.id);
       await selectArrangement(res.arrangement.id);
       reportOk(`已导入分享包曲目：${res.song.title}`);
     } catch (err) {
@@ -1060,6 +1088,12 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedSong,
     songSources,
     songTranscriptions,
+    transcribeSongId,
+    transcribeSongTitle,
+    transcribeSources,
+    transcribeTranscriptions,
+    transcribeHasAudio,
+    selectTranscribeSong,
     arrangements,
     selectedArrId,
     arrDetail,

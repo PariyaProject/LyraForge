@@ -27,8 +27,12 @@ class _TranscriptionJob:
     error: dict[str, Any] | None = None
     stop_token: StopToken = field(default_factory=StopToken)
     thread: threading.Thread | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
 
     def to_json(self) -> dict[str, Any]:
+        now = self.finished_at if self.finished_at is not None else time.time()
+        elapsed = max(0.0, now - self.started_at) if self.started_at is not None else 0.0
         return {
             "id": self.id,
             "song_id": self.song_id,
@@ -38,6 +42,9 @@ class _TranscriptionJob:
             "progress": round(self.progress, 4),
             "transcription": self.transcription,
             "error": self.error,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "elapsed_s": round(elapsed, 1),
         }
 
 
@@ -114,6 +121,7 @@ class TranscriptionJobManager:
                     return
                 job.status = "running"
                 job.stage = "extracting"
+                job.started_at = time.time()
             try:
                 with LibraryStore(data_dir) as store:
                     rec = store.transcribe_song(
@@ -127,9 +135,11 @@ class TranscriptionJobManager:
                     job.status = "completed"
                     job.stage = "completed"
                     job.progress = 1.0
+                    job.finished_at = time.time()
                     job.transcription = rec.to_json()
             except LyraError as exc:
                 with self._lock:
+                    job.finished_at = time.time()
                     if exc.code == ErrorCode.PLAYBACK_ABORTED or job.stop_token.stopped:
                         job.status = "cancelled"
                         job.stage = "cancelled"
@@ -141,6 +151,7 @@ class TranscriptionJobManager:
                 with self._lock:
                     job.status = "failed"
                     job.stage = "failed"
+                    job.finished_at = time.time()
                     job.error = {
                         "code": str(ErrorCode.TRANSCRIPTION_FAILED),
                         "message": f"{type(exc).__name__}: {exc}",

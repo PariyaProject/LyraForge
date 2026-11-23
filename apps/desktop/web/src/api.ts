@@ -142,6 +142,9 @@ export interface TranscriptionJob {
   progress: number;
   transcription: TranscriptionRecord | null;
   error: { code: string; message: string } | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  elapsed_s?: number;
 }
 
 export interface SongSummary {
