@@ -437,6 +437,20 @@ def _require_ok(
     return res
 
 
+def _get_remote_main_sha(*, repo: str, run_cmd: CommandRunner) -> str:
+    resp = _require_ok(
+        run_cmd(["gh", "api", f"repos/{repo}/git/ref/heads/main"]),
+        "fetch remote main HEAD SHA",
+    )
+    try:
+        sha = str(json.loads(resp.stdout or "{}").get("object", {}).get("sha") or "").strip()
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid JSON from remote main ref API: {exc}") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", sha.lower()):
+        raise RuntimeError(f"unexpected remote main HEAD SHA: {sha!r}")
+    return sha.lower()
+
+
 def _update_rolling_dev_tag(
     *,
     repo: str,
@@ -695,6 +709,21 @@ def publish_release(
             )
             published_urls.append({"tag": plan.snapshot_tag, "url": snap_url})
 
+            remote_main_sha = _get_remote_main_sha(repo=repo, run_cmd=runner)
+            if remote_main_sha.lower() != plan.sha.lower():
+                return {
+                    "published": True,
+                    "channel": plan.channel,
+                    "sha": plan.sha,
+                    "sha256": digest,
+                    "releases": published_urls,
+                    "pruned_snapshots": [],
+                    "rolling_updated": False,
+                    "rolling_skipped_reason": (
+                        f"stale commit {plan.sha} != remote main {remote_main_sha}"
+                    ),
+                }
+
             if plan.rolling_tag:
                 rolling_notes = tmp_dir / "rolling-notes.md"
                 rolling_notes.write_text(
@@ -739,6 +768,8 @@ def publish_release(
                 "sha256": digest,
                 "releases": published_urls,
                 "pruned_snapshots": pruned,
+                "rolling_updated": bool(plan.rolling_tag),
+                "rolling_skipped_reason": None,
             }
 
         sem_notes = tmp_dir / "semver-notes.md"
