@@ -42,7 +42,7 @@ class BasicPitchSubprocessTranscriber:
             available=runner is not None,
             license="Apache-2.0",
             scope_note=(
-                "支持多音识别；按 ADR-0001 通过独立 Python 环境或 basic-pitch CLI 隔离调用。"
+                "支持多音/和弦识别；在独立 Python 环境中运行，不需要装进主程序。"
             ),
             details={
                 "runner": runner,
@@ -72,4 +72,6 @@ class BasicPitchSubprocessTranscriber:
             options=options,
             on_progress=on_progress,
             stop_token=stop_token,
+            timeout_per_audio_second=3.0,
+            timeout_slack_s=60.0,
         )

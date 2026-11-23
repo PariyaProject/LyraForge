@@ -263,35 +263,5 @@ defineProps<{
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-title-row">
-        <h2>播放队列</h2>
-        <span class="pill">{{ store.queue.value.items.length }} 首</span>
-      </div>
-      <ol v-if="store.queue.value.items.length > 0" style="margin: 0; padding-inline-start: 1.4em">
-        <li
-          v-for="(item, index) in store.queue.value.items"
-          :key="item.arrangement_id"
-          :style="{ fontWeight: index === store.queue.value.index ? 700 : 400 }"
-        >
-          {{ item.label }}
-          <span v-if="index === store.queue.value.index" class="muted">（当前）</span>
-        </li>
-      </ol>
-      <p v-else class="muted" style="margin: 0">
-        队列为空：在编曲工作室点击「加入播放队列」，或使用队列热键切换。
-      </p>
-      <div class="button-row">
-        <button class="secondary" type="button" @click="store.handleQueueStep(-1)">
-          上一首
-        </button>
-        <button class="secondary" type="button" @click="store.handleQueueStep(1)">
-          下一首
-        </button>
-        <button class="ghost" type="button" @click="store.handleClearQueue">
-          清空队列
-        </button>
-      </div>
-    </div>
   </section>
 </template>

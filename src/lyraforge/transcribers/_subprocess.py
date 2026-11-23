@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import wave
 from collections.abc import Callable
 from pathlib import Path
 
@@ -51,6 +52,30 @@ def _utf8_child_env() -> dict[str, str]:
     return env
 
 
+def _wav_duration_s(path: Path) -> float:
+    """Read a WAV's duration for timeout scaling; 0 when it cannot be read."""
+    try:
+        with wave.open(str(path), "rb") as wf:
+            rate = wf.getframerate()
+            return wf.getnframes() / rate if rate > 0 else 0.0
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+
+
+def _effective_timeout_s(
+    base_timeout_s: float,
+    duration_s: float,
+    *,
+    per_audio_second: float,
+    slack_s: float,
+) -> float:
+    """Grow the subprocess budget with audio length so CPU inference cannot time out."""
+    if per_audio_second <= 0:
+        return base_timeout_s
+    scaled = slack_s + duration_s * per_audio_second
+    return max(base_timeout_s, scaled)
+
+
 def run_isolated_transcriber(
     *,
     engine_id: str,
@@ -62,6 +87,8 @@ def run_isolated_transcriber(
     options: TranscribeOptions | None = None,
     on_progress: ProgressCallback | None = None,
     stop_token: StopToken | None = None,
+    timeout_per_audio_second: float = 0.0,
+    timeout_slack_s: float = 120.0,
 ) -> TranscriptionResult:
     opts = options or TranscribeOptions()
     opts.validate()
@@ -85,15 +112,21 @@ def run_isolated_transcriber(
         if on_progress is not None:
             on_progress(0.3, f"running {engine_id} subprocess")
 
+        timeout_s = _effective_timeout_s(
+            opts.timeout_s,
+            _wav_duration_s(wav_in),
+            per_audio_second=timeout_per_audio_second,
+            slack_s=timeout_slack_s,
+        )
         res = run_bounded_subprocess(
             cmd,
             work_dir=work,
             prefix=engine_id,
-            timeout_s=opts.timeout_s,
+            timeout_s=timeout_s,
             stop_token=stop_token,
             cancel_message="transcription cancelled",
             timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
-            timeout_message=f"{display_name} timed out after {opts.timeout_s:.1f}s",
+            timeout_message=f"{display_name} timed out after {timeout_s:.1f}s",
             env=_utf8_child_env(),
         )
         if stop_token is not None and stop_token.stopped:

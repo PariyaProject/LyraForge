@@ -45,6 +45,20 @@ export function isImeEnter(event: KeyboardEvent): boolean {
   return event.key === "Enter" && !event.isComposing && event.keyCode !== 229;
 }
 
+export function arrangementTitle(arr: ArrangementRecord): string {
+  const custom = (arr.label ?? "").trim();
+  if (custom) return custom;
+  const styles: Record<string, string> = {
+    melody: "主旋律",
+    balanced: "均衡",
+    rich: "丰满",
+  };
+  const style = styles[arr.style] ?? arr.style;
+  const transpose =
+    arr.transpose === 0 ? "原调" : `移调${arr.transpose > 0 ? "+" : ""}${arr.transpose}`;
+  return `${style} · ${transpose} · ${arr.speed}x`;
+}
+
 export function createLyraStore(api: LyraForgeApi) {
   const activeView = ref<StudioViewId>("home");
   if (typeof window !== "undefined") {
@@ -483,6 +497,22 @@ export function createLyraStore(api: LyraForgeApi) {
         a.id === res.arrangement.id ? res.arrangement : a,
       );
       reportOk(nextFav ? "已收藏该改编版本" : "已取消收藏");
+    } catch (err) {
+      reportError((err as Error).message);
+    }
+  }
+
+  async function handleRenameArrangement(arrangementId: string, label: string): Promise<void> {
+    try {
+      const res = await api.renameArrangement(arrangementId, label);
+      arrangements.value = arrangements.value.map((a) =>
+        a.id === res.arrangement.id ? res.arrangement : a,
+      );
+      if (arrDetail.value?.arrangement.id === res.arrangement.id) {
+        arrDetail.value = { ...arrDetail.value, arrangement: res.arrangement };
+      }
+      await refreshQueue();
+      pushToast("ok", "版本名称已更新");
     } catch (err) {
       reportError((err as Error).message);
     }
@@ -1064,6 +1094,7 @@ export function createLyraStore(api: LyraForgeApi) {
     handleArrangeAB,
     handleSaveEdited,
     handleToggleFavorite,
+    handleRenameArrangement,
     handleVote,
     handlePreview,
     handleExport,

@@ -308,6 +308,45 @@
    - 真实游戏内切歌、热键与管理员权限组合仍待用户实机验证；
    - 队列目前只支持手动加入与顺序/环绕切换，未实现随机播放或按曲库批量生成队列。
 
+---
+
+## 17. UI/UX 布局与版本管理修正（2026-11-23）
+
+1. **修复的问题**：
+   - 音频转谱页的「高级（可选）」详情被放在两列网格里，折叠后留下空白占位；现已移到网格外整宽显示；
+   - 设置页外部工具卡片中的长版本串/路径会溢出边框；`code`、`pre` 与卡片文本统一 `overflow-wrap: anywhere`，`pre` 允许换行；
+   - 左下角「离线可运行 · 零绑架 API Key」口号被移除，改为「版本 + GPL-3.0 · 关于与第三方许可」入口。
+2. **播放队列重构**：从播放页内嵌卡片改为全局右侧抽屉（底部传输栏「队列 n」开关），支持编号、当前项高亮、点击选中、上一首/下一首/清空；`PlaybackView` 内的重复卡片已删除。
+3. **编曲版本管理**：
+   - 版本标题自动生成 `#序号 · 风格 · 移调 · 速度`，并展示可演奏率、音符数与创建时间；
+   - 支持在曲库中就地重命名（新增 `POST /v1/arrangements/{id}/label` 与 `store.set_arrangement_label` 复用）；
+   - 编曲工作室下拉、全局底栏也统一使用同一描述。
+4. **验证**：
+   - `pytest` → **182 passed, 2 warnings in 45.86s**，覆盖率 **83.96%**；`ruff` 通过；
+   - 前端 `vitest` → 4 文件 / 6 用例全过；`vue-tsc + vite build` → 174.93 kB JS / 22.65 kB CSS。
+5. **未覆盖（如实标注）**：
+   - 未在真实窗口做人工视觉验收（无浏览器控制）；布局改动仅由组件测试与构建覆盖；
+   - 抽屉/弹层的窄屏与高 DPI 表现需实机确认。
+
+---
+
+## 18. dettato GPU 支持与转录超时缩放（2026-11-23）
+
+1. **GPU / NPU**：
+   - dettato 适配器新增 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps` 覆盖；未指定时会用隔离解释器探测 `torch.cuda.is_available()` / `torch.backends.mps.is_available()`，自动传 `--device`；
+   - 注意：PyPI 安装的 `torch` 默认是 CPU 版，要用 GPU 需在 dettato 环境改装 CUDA 版 wheel（见 [DEVELOPMENT.md](DEVELOPMENT.md) §3.2）；NPU 目前没有通用 `--device` 后端，dettato CLI 只声明 cuda/cpu。
+2. **超时**：转录子进程预算按音频时长缩放（dettato 10×实时 + 180s、Basic Pitch 3× + 60s，且不低于 `TranscribeOptions.timeout_s`），修复长曲目固定 300s 超时。
+3. **UI 清理**：引擎卡片移除 `ADR-0001` 等开发术语，改为用户可读的能力/运行方式描述。
+4. **验证**：
+   - `pytest` → **184 passed, 2 warnings in 35.83s**，覆盖率 **83.86%**；`ruff` 通过；
+   - 新增测试覆盖设备覆盖优先级、CLI runner 回退 cpu、超时缩放上限；
+   - 前端 `vitest` 6/6、`vue-tsc + vite build` 通过（174.93 kB JS / 22.65 kB CSS）。
+5. **未覆盖（如实标注）**：
+   - 本会话没有 NVIDIA GPU / 游戏环境，未实测 CUDA 推理吞吐；仅验证参数与探测逻辑；
+   - NPU 加速未实现。
+
+
+
 
 
 

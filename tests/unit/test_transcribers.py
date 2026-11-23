@@ -285,3 +285,25 @@ def test_dettato_python_env_uses_module_runner(
         "-m",
         "dettato",
     ]
+
+
+def test_dettato_device_override_and_cli_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lyraforge.transcribers.dettato import resolve_device
+
+    monkeypatch.setenv("LYRAFORGE_DETTATO_DEVICE", "cuda")
+    assert resolve_device(["python.exe", "-m", "dettato"]) == "cuda"
+
+    monkeypatch.setenv("LYRAFORGE_DETTATO_DEVICE", "cpu")
+    assert resolve_device(["python.exe", "-m", "dettato"]) == "cpu"
+
+    monkeypatch.delenv("LYRAFORGE_DETTATO_DEVICE", raising=False)
+    assert resolve_device(["dettato.exe"]) == "cpu"
+
+
+def test_transcriber_timeout_scales_with_audio_length() -> None:
+    from lyraforge.transcribers._subprocess import _effective_timeout_s
+
+    assert _effective_timeout_s(300.0, 0.0, per_audio_second=0.0, slack_s=0.0) == 300.0
+    # dettato: 10 minutes of audio at ~10x realtime + 180s slack, still above the base 300s.
+    assert _effective_timeout_s(300.0, 600.0, per_audio_second=10.0, slack_s=180.0) == 6180.0
+    assert _effective_timeout_s(300.0, 5.0, per_audio_second=10.0, slack_s=180.0) == 300.0

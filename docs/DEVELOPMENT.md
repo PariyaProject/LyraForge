@@ -135,6 +135,13 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
    ```
 
    - dettato 的 `-o` 是输出**目录**，它会在其中写入 `<曲名>.mid`；CPU 推理约 4 秒音频 / 20 秒耗时。
+   - **GPU 加速**：应用会探测隔离环境里的 `torch.cuda.is_available()` 并自动传 `--device cuda`；可用 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps` 强制指定。PyPI 默认安装的是 CPU 版 PyTorch，要用 GPU 需在 dettato 环境里改装 CUDA 版：
+     ```bash
+     uv pip install --python ~/.lyraforge-tools/dettato/bin/python \
+       torch --index-url https://download.pytorch.org/whl/cu124
+     ```
+     Windows 为 `...\dettato\Scripts\python.exe`；CUDA 版本号按你的驱动选择。
+   - **超时**：转录子进程预算会随音频长度增长（dettato 约 10× 实时 + 180 秒余量，Basic Pitch 约 3× + 60 秒），不再固定 5 分钟。
 3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
 
 > Windows 如需让桌面应用长期看到上述变量，可用

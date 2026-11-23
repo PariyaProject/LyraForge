@@ -175,7 +175,9 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
       </div>
 
-      <details class="advanced-box" style="order: 99">
+    </div>
+
+    <details class="advanced-box">
         <summary>高级（可选）：自然语言辅助编排</summary>
         <div class="card">
           <div class="card-title-row">
@@ -185,7 +187,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
             </span>
           </div>
         <p class="muted" style="margin: 0">
-          离线模式下零外部 API Key 即可调度本地曲库、转录与 A/B 对比；外网检索仅在授权后抓取明确的 CC / Public Domain 来源。
+          离线模式下即可调度本地曲库、转录与 A/B 对比；外网检索仅在授权后抓取明确的 CC / Public Domain 来源。
         </p>
 
         <div class="button-row">
@@ -257,7 +259,6 @@ function onAgentKeydown(event: KeyboardEvent): void {
           </ol>
         </div>
         </div>
-      </details>
-    </div>
+    </details>
   </section>
 </template>
