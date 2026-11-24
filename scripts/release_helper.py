@@ -343,6 +343,8 @@ def _zip_info_for_posix(
         info.compress_type = zipfile.ZIP_STORED
     else:
         mode = stat.S_IMODE(st.st_mode) or 0o644
+        if arcname.startswith("LyraForge.app/Contents/MacOS/"):
+            mode |= 0o755
         info.external_attr = (stat.S_IFREG | mode) << 16
         info.compress_type = zipfile.ZIP_DEFLATED
     return info
