@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import LyreKeyboard from "../components/LyreKeyboard.vue";
 import PianoRollEditor from "../components/PianoRollEditor.vue";
 import StudioIcon from "../components/StudioIcon.vue";
 import { arrangementTitle, type LyraStore } from "../composables/useLyraStore";
+import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
 
 const props = defineProps<{
   store: LyraStore;
@@ -11,6 +12,22 @@ const props = defineProps<{
 
 const inspectorOpen = ref(true);
 const keyboardDockOpen = ref(false);
+const confirmDeleteArrId = ref<string | null>(null);
+
+watch(
+  () => props.store.selectedArrId.value,
+  () => {
+    confirmDeleteArrId.value = null;
+  },
+);
+
+const DROP_REASON_LABELS: Record<string, string> = {
+  duplicate_key: "同键去重",
+  repeat_too_fast: "过密连击过滤",
+  polyphony_limit: "复音上限裁剪",
+  semitone_dropped: "半音丢弃",
+  out_of_range: "超音域丢弃",
+};
 
 const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string }> = [
   { id: "melody", label: "主旋律" },
@@ -30,6 +47,42 @@ const activeStrategyInfo = computed(
 const effectiveMelodyTrack = computed(
   () => props.store.selectedMelodyTrack.value ?? props.store.detectedMelodyTrack.value,
 );
+
+const arrangedCountByTrack = computed(() => {
+  const counts = new Map<number, number>();
+  for (const ev of props.store.arrDetail.value?.performance.events ?? []) {
+    const trackIdx = ev.source_track ?? 0;
+    counts.set(trackIdx, (counts.get(trackIdx) ?? 0) + 1);
+  }
+  return counts;
+});
+
+const trackColorMap = computed(() =>
+  buildTrackColorMap(
+    props.store.songTracks.value,
+    effectiveMelodyTrack.value,
+    Array.from(arrangedCountByTrack.value.keys()),
+  ),
+);
+
+const dropBreakdown = computed(() => {
+  const dropped = props.store.arrDetail.value?.report?.stats?.dropped;
+  if (!dropped) return [];
+  return Object.entries(dropped)
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([reason, count]) => ({
+      reason,
+      label: DROP_REASON_LABELS[reason] ?? reason,
+      count: count as number,
+    }));
+});
+
+async function confirmDeleteCurrentArrangement(): Promise<void> {
+  const targetId = confirmDeleteArrId.value;
+  if (!targetId) return;
+  confirmDeleteArrId.value = null;
+  await props.store.handleDeleteArrangement(targetId);
+}
 
 async function onTranscriptionSelect(event: Event): Promise<void> {
   const trId = (event.target as HTMLSelectElement).value;
@@ -110,6 +163,35 @@ async function onArrangementChange(event: Event): Promise<void> {
             {{ arrangementTitle(a) }}（{{ a.event_count }} 音 · {{ a.profile_id }}）
           </option>
         </select>
+        <template v-if="store.selectedArrId.value">
+          <button
+            v-if="confirmDeleteArrId !== store.selectedArrId.value"
+            type="button"
+            class="ghost btn-sm"
+            :disabled="store.busy.value"
+            @click="confirmDeleteArrId = store.selectedArrId.value"
+          >
+            <StudioIcon name="trash" :size="13" />
+            删除版本
+          </button>
+          <template v-else>
+            <button
+              type="button"
+              class="danger btn-sm"
+              :disabled="store.busy.value"
+              @click="confirmDeleteCurrentArrangement"
+            >
+              确认删除
+            </button>
+            <button
+              type="button"
+              class="ghost btn-sm"
+              @click="confirmDeleteArrId = null"
+            >
+              取消
+            </button>
+          </template>
+        </template>
       </div>
 
       <div class="cmd-right">
@@ -178,6 +260,9 @@ async function onArrangementChange(event: Event): Promise<void> {
             v-if="store.arrDetail.value && store.profile.value"
             :keys="store.profile.value.keys"
             :events="store.arrDetail.value.performance.events"
+            :arrangement-id="store.selectedArrId.value"
+            :tracks="store.songTracks.value"
+            :melody-track="effectiveMelodyTrack"
             :saving="store.busy.value"
             :playhead-ms="store.previewCurrentMs.value"
             :is-playing="store.previewPlaying.value"
@@ -305,11 +390,20 @@ async function onArrangementChange(event: Event): Promise<void> {
                   :checked="!track.is_percussion && isTrackIncluded(track.index)"
                   @change="store.toggleTrackIncluded(track.index)"
                 />
+                <span
+                  class="track-dot"
+                  :class="track.is_percussion ? '' : trackColorClass(trackColorMap.get(track.index) ?? 0)"
+                />
                 <span class="track-title">{{ track.name }}</span>
               </label>
               <div class="track-meta-actions">
-                <span class="muted tabular" style="font-size: 12px">
-                  {{ track.note_count }} 音
+                <span class="track-count-delta">
+                  <template v-if="currentArr && !track.is_percussion">
+                    {{ track.note_count }} → {{ arrangedCountByTrack.get(track.index) ?? 0 }} 音
+                  </template>
+                  <template v-else>
+                    {{ track.note_count }} 音
+                  </template>
                 </span>
                 <button
                   v-if="!track.is_percussion"
@@ -324,6 +418,9 @@ async function onArrangementChange(event: Event): Promise<void> {
               </div>
             </li>
           </ul>
+          <p class="muted" style="margin: 0; font-size: 12px">
+            勾选音轨后点击「生成改编版本」生效；21 键映射会去重同键与过密连击，输出音符数通常少于原始音轨。
+          </p>
         </div>
 
         <div class="inspector-section">
@@ -359,6 +456,31 @@ async function onArrangementChange(event: Event): Promise<void> {
                 <dd>{{ store.arrDetail.value.report.stats.semitone_substituted }}</dd>
               </div>
             </dl>
+
+            <div v-if="store.arrDetail.value.report?.stats" class="drop-summary">
+              <div>
+                参与编曲 {{ store.arrDetail.value.report.stats.considered_notes }} 音 → 输出
+                {{ store.arrDetail.value.report.stats.emitted_events }} 音
+                <template
+                  v-if="
+                    (store.arrDetail.value.report.stats.excluded_tracks ?? 0) > 0 ||
+                    (store.arrDetail.value.report.stats.excluded_percussion ?? 0) > 0
+                  "
+                >
+                  （已忽略未选音轨 {{ store.arrDetail.value.report.stats.excluded_tracks ?? 0 }} 音、打击乐
+                  {{ store.arrDetail.value.report.stats.excluded_percussion ?? 0 }} 音）
+                </template>
+              </div>
+              <div v-if="dropBreakdown.length > 0" class="drop-summary-list">
+                <span
+                  v-for="item in dropBreakdown"
+                  :key="item.reason"
+                  class="drop-summary-item"
+                >
+                  {{ item.label }} {{ item.count }}
+                </span>
+              </div>
+            </div>
 
             <p class="muted" style="margin: 0; font-size: 12px">
               此分数衡量相对输入 MIDI 的 21 键可演奏性，不等同于音频转谱识别准确率。
@@ -416,7 +538,7 @@ async function onArrangementChange(event: Event): Promise<void> {
               class="preset-item-btn"
               type="button"
               :title="preset.description"
-              @click="store.applyPreset(preset.id)"
+              @click="store.applyPreset(preset.id, { autoArrange: true })"
             >
               <span>{{ preset.name }}</span>
               <span class="muted" style="font-size: 12px">{{ preset.description }}</span>

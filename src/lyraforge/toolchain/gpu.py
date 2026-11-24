@@ -137,6 +137,11 @@ def set_device(device: str) -> dict[str, Any]:
     else:
         os.environ[DEVICE_ENV] = value
         os.environ["LYRAFORGE_DEMUCS_DEVICE"] = value
+    from lyraforge.separators.demucs import clear_device_cache as clear_demucs_cache
+    from lyraforge.transcribers.dettato import clear_device_cache as clear_dettato_cache
+
+    clear_dettato_cache()
+    clear_demucs_cache()
     return gpu_status()
 
 

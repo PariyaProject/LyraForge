@@ -233,15 +233,54 @@ async function copyText(text: string): Promise<void> {
             <div class="pane-header">
               <div class="button-row">
                 <StudioIcon name="cpu" :size="15" />
-                <strong>dettato GPU 加速</strong>
+                <strong>GPU 推理加速（dettato 与 Demucs 独立环境）</strong>
               </div>
-              <span
-                class="pill"
-                :class="store.gpuStatus.value?.dettato_torch?.cuda_available ? 'pill-ok' : 'pill-warn'"
-              >
-                {{ store.gpuStatus.value?.dettato_torch?.cuda_available ? "CUDA 可用" : "CPU 推理" }}
-              </span>
+              <div class="gpu-pill-pair">
+                <span
+                  class="pill"
+                  :class="
+                    store.gpuStatus.value?.dettato_torch?.cuda_available
+                      ? 'pill-ok'
+                      : store.gpuStatus.value?.dettato_installed
+                        ? 'pill-warn'
+                        : ''
+                  "
+                >
+                  {{
+                    store.gpuStatus.value?.dettato_torch?.cuda_available
+                      ? "dettato: CUDA 可用"
+                      : store.gpuStatus.value?.dettato_installed
+                        ? "dettato: CPU 推理"
+                        : "dettato: 未安装"
+                  }}
+                </span>
+                <span
+                  class="pill"
+                  :class="
+                    store.gpuStatus.value?.demucs_torch?.cuda_available ||
+                    store.gpuStatus.value?.demucs_torch?.mps_available
+                      ? 'pill-ok'
+                      : store.gpuStatus.value?.demucs_installed
+                        ? 'pill-warn'
+                        : ''
+                  "
+                >
+                  {{
+                    store.gpuStatus.value?.demucs_torch?.cuda_available
+                      ? "Demucs: CUDA 可用"
+                      : store.gpuStatus.value?.demucs_torch?.mps_available
+                        ? "Demucs: MPS 可用"
+                        : store.gpuStatus.value?.demucs_installed
+                          ? "Demucs: CPU 推理"
+                          : "Demucs: 未安装"
+                  }}
+                </span>
+              </div>
             </div>
+
+            <p class="muted" style="margin: 0; font-size: 12px">
+              dettato 与 Demucs 使用相互独立的 Python 虚拟环境；若使用 NVIDIA 显卡进行人声分离，请分别确认两者均已安装 CUDA 版 PyTorch（安装后立即生效，无需重启应用）。
+            </p>
 
             <template v-if="store.gpuStatus.value">
               <div class="meta-row">
@@ -264,7 +303,13 @@ async function copyText(text: string): Promise<void> {
                 <span>
                   Demucs PyTorch：{{
                     store.gpuStatus.value.demucs_torch
-                      ? `${store.gpuStatus.value.demucs_torch.version ?? "?"} (CUDA ${store.gpuStatus.value.demucs_torch.cuda_build ?? "无"})`
+                      ? `${store.gpuStatus.value.demucs_torch.version ?? "?"} ${
+                          store.gpuStatus.value.demucs_torch.cuda_available
+                            ? `(CUDA ${store.gpuStatus.value.demucs_torch.cuda_build ?? "?"})`
+                            : store.gpuStatus.value.demucs_torch.mps_available
+                              ? "(MPS 可用)"
+                              : "(CUDA 无)"
+                        }`
                       : store.gpuStatus.value.demucs_installed
                         ? "已安装（无详情）"
                         : "未安装 Demucs"

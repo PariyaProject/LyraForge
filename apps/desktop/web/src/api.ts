@@ -164,6 +164,10 @@ export interface GpuTorchInfo {
   cuda_build: string | null;
   cuda_available: boolean;
   device_count: number;
+  mps_available?: boolean;
+  torchaudio_version?: string | null;
+  torchaudio_ok?: boolean;
+  torchaudio_error?: string | null;
 }
 
 export interface GpuStatus {
@@ -292,11 +296,27 @@ export interface ArrangementDetailResponse {
   report: {
     calibration_status: string;
     stats: {
+      input_notes?: number;
+      excluded_percussion?: number;
+      excluded_tracks?: number;
       emitted_events: number;
       considered_notes: number;
+      direct?: number;
       octave_folded: number;
       semitone_substituted: number;
+      dropped?: {
+        out_of_range?: number;
+        semitone_dropped?: number;
+        duplicate_key?: number;
+        polyphony_limit?: number;
+        repeat_too_fast?: number;
+        [reason: string]: number | undefined;
+      };
       playable_ratio: number;
+      unchanged_ratio?: number;
+      max_chord_size?: number;
+      melody_track?: number | null;
+      arranger_strategy?: string;
     };
     quality?: QualityBreakdown;
   } | null;
@@ -706,6 +726,14 @@ export class LyraForgeApi {
 
   getArrangement(arrangementId: string): Promise<ArrangementDetailResponse> {
     return this.request(`/v1/arrangements/${encodeURIComponent(arrangementId)}`);
+  }
+
+  deleteArrangement(
+    arrangementId: string,
+  ): Promise<{ deleted: boolean; arrangement_id: string; song_id: string; queue: QueueState }> {
+    return this.request(`/v1/arrangements/${encodeURIComponent(arrangementId)}`, {
+      method: "DELETE",
+    });
   }
 
   async fetchPreviewAudioUrl(arrangementId: string): Promise<string> {

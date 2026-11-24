@@ -411,7 +411,42 @@ export function createLyraStore(api: LyraForgeApi) {
     };
   }
 
-  async function refreshSongTracks(songId: string, transcriptionId?: string | null): Promise<void> {
+  function applyTrackSelection(
+    tracks: SongTrackInfo[],
+    detectedMelody: number | null,
+    preserveSelection: boolean,
+  ): void {
+    songTracks.value = tracks;
+    detectedMelodyTrack.value = detectedMelody;
+    if (preserveSelection) {
+      const validSet = new Set(tracks.map((t) => t.index));
+      if (selectedTrackIndices.value !== null) {
+        const prev = selectedTrackIndices.value;
+        const kept = prev.filter((idx) => validSet.has(idx));
+        selectedTrackIndices.value =
+          prev.length > 0 && kept.length === 0
+            ? tracks.filter((t) => !t.is_percussion).map((t) => t.index)
+            : kept;
+      } else {
+        selectedTrackIndices.value = tracks.filter((t) => !t.is_percussion).map((t) => t.index);
+      }
+      if (
+        selectedMelodyTrack.value !== null &&
+        !tracks.some((t) => t.index === selectedMelodyTrack.value && !t.is_percussion)
+      ) {
+        selectedMelodyTrack.value = null;
+      }
+      return;
+    }
+    selectedTrackIndices.value = tracks.filter((t) => !t.is_percussion).map((t) => t.index);
+    selectedMelodyTrack.value = null;
+  }
+
+  async function refreshSongTracks(
+    songId: string,
+    transcriptionId?: string | null,
+    opts?: { preserveSelection?: boolean },
+  ): Promise<void> {
     if (!songId) {
       songTracks.value = [];
       selectedTrackIndices.value = null;
@@ -419,16 +454,12 @@ export function createLyraStore(api: LyraForgeApi) {
       detectedMelodyTrack.value = null;
       return;
     }
+    const preserve = Boolean(opts?.preserveSelection);
     if (typeof api.getSongTracks === "function") {
       try {
         const res = await api.getSongTracks(songId, transcriptionId);
         if (selectedSongId.value !== songId) return;
-        songTracks.value = res.tracks ?? [];
-        detectedMelodyTrack.value = res.detected_melody_track ?? null;
-        selectedTrackIndices.value = songTracks.value
-          .filter((t) => !t.is_percussion)
-          .map((t) => t.index);
-        selectedMelodyTrack.value = null;
+        applyTrackSelection(res.tracks ?? [], res.detected_melody_track ?? null, preserve);
         return;
       } catch {
         // fallback cleanly below when no MIDI/transcription exists yet
@@ -439,10 +470,7 @@ export function createLyraStore(api: LyraForgeApi) {
       songTranscriptions.value[0] ??
       null;
     const trTracks = tr?.tracks ?? [];
-    songTracks.value = trTracks;
-    detectedMelodyTrack.value = trTracks[0]?.index ?? null;
-    selectedTrackIndices.value = trTracks.filter((t) => !t.is_percussion).map((t) => t.index);
-    selectedMelodyTrack.value = null;
+    applyTrackSelection(trTracks, trTracks[0]?.index ?? null, preserve);
   }
 
   function applySongDetail(
@@ -473,7 +501,10 @@ export function createLyraStore(api: LyraForgeApi) {
     arrangements.value = detail.arrangements;
   }
 
-  async function reloadSelectedSongDetail(expectedSongId?: string): Promise<void> {
+  async function reloadSelectedSongDetail(
+    expectedSongId?: string,
+    opts?: { preserveTrackSelection?: boolean },
+  ): Promise<void> {
     const targetId = expectedSongId ?? selectedSongId.value;
     if (!targetId || selectedSongId.value !== targetId) return;
     const seq = selectSongSeq;
@@ -486,7 +517,9 @@ export function createLyraStore(api: LyraForgeApi) {
     ) {
       selectedTranscriptionId.value = songTranscriptions.value[0]?.id ?? null;
     }
-    await refreshSongTracks(targetId, selectedTranscriptionId.value);
+    await refreshSongTracks(targetId, selectedTranscriptionId.value, {
+      preserveSelection: opts?.preserveTrackSelection,
+    });
   }
 
   function ensureJobPolling(): void {
@@ -855,11 +888,10 @@ export function createLyraStore(api: LyraForgeApi) {
       const res = await api.arrangeSong(payload);
       comparisonResult.value = null;
       await refreshSongs({ alsoRefreshAll: true });
-      await selectSong(selectedSongId.value);
       if (activeTr?.id) {
         selectedTranscriptionId.value = activeTr.id;
-        await refreshSongTracks(selectedSongId.value, activeTr.id);
       }
+      await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
       await selectArrangement(res.arrangement.id);
       reportOk(`已生成 ${res.arrangement.style} 版本（${res.arrangement.event_count} 个音符）`);
     } catch (err) {
@@ -914,11 +946,10 @@ export function createLyraStore(api: LyraForgeApi) {
         },
       });
       await refreshSongs({ alsoRefreshAll: true });
-      await selectSong(selectedSongId.value);
       if (trId) {
         selectedTranscriptionId.value = trId;
-        await refreshSongTracks(selectedSongId.value, trId);
       }
+      await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
       comparisonResult.value = res.comparison;
       const pickId =
         res.comparison.winner === res.arrangement_b.id
@@ -943,9 +974,49 @@ export function createLyraStore(api: LyraForgeApi) {
     try {
       const res = await api.editArrangement(selectedArrId.value, payload.events, payload.label);
       await refreshSongs({ alsoRefreshAll: true });
-      await selectSong(selectedSongId.value);
+      await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
       await selectArrangement(res.arrangement.id);
       reportOk(`已保存新版本：${res.arrangement.label ?? "手动编辑"}`);
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function handleDeleteArrangement(arrangementId: string): Promise<void> {
+    if (!arrangementId) return;
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      const res = await api.deleteArrangement(arrangementId);
+      queue.value = res.queue;
+      if (
+        comparisonResult.value &&
+        (comparisonResult.value.id_a === arrangementId ||
+          comparisonResult.value.id_b === arrangementId)
+      ) {
+        comparisonResult.value = null;
+      }
+      await refreshSongs({ alsoRefreshAll: true });
+      if (res.song_id && res.song_id === selectedSongId.value) {
+        await reloadSelectedSongDetail(res.song_id, { preserveTrackSelection: true });
+        if (selectedArrId.value === arrangementId) {
+          const nextArrId = arrangements.value[0]?.id ?? "";
+          if (nextArrId) {
+            await selectArrangement(nextArrId);
+          } else {
+            selectedArrId.value = "";
+            arrDetail.value = null;
+            clearPreviewUrl();
+          }
+        }
+      } else if (selectedArrId.value === arrangementId) {
+        selectedArrId.value = "";
+        arrDetail.value = null;
+        clearPreviewUrl();
+      }
+      reportOk("已删除编曲版本");
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -1408,13 +1479,25 @@ export function createLyraStore(api: LyraForgeApi) {
     presets.value = (await api.listPresets()).presets;
   }
 
-  function applyPreset(presetId: string): void {
+  async function applyPreset(
+    presetId: string,
+    opts?: { autoArrange?: boolean },
+  ): Promise<void> {
     const preset = presets.value.find((item) => item.id === presetId);
     if (!preset) return;
     style.value = preset.style;
     transposeInput.value = preset.transpose === null ? "auto" : String(preset.transpose);
     arpeggiateMs.value = preset.arpeggiate_ms;
     speed.value = preset.speed;
+    if (
+      opts?.autoArrange &&
+      !busy.value &&
+      selectedSongId.value &&
+      canArrange.value
+    ) {
+      await handleArrange();
+      return;
+    }
     pushToast("ok", `已应用预设：${preset.name}`);
   }
 
@@ -1702,6 +1785,7 @@ export function createLyraStore(api: LyraForgeApi) {
     handleArrange,
     handleArrangeAB,
     handleSaveEdited,
+    handleDeleteArrangement,
     handleToggleFavorite,
     handleRenameArrangement,
     handleVote,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1295,6 +1296,36 @@ class LibraryStore:
                 (label.strip(), arrangement_id),
             )
         return self.get_arrangement(arrangement_id)
+
+    def delete_arrangement(self, arrangement_id: str) -> dict[str, Any]:
+        """Delete an arrangement version, its child links, and its generated artifacts."""
+        rec = self.get_arrangement(arrangement_id)
+        stripe = _ARRANGE_PERSIST_STRIPES[
+            hash((str(self.data_dir.resolve()), arrangement_id)) % len(_ARRANGE_PERSIST_STRIPES)
+        ]
+        now = _utc_now_iso()
+        with stripe:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE arrangements SET parent_id = NULL WHERE parent_id = ?",
+                    (arrangement_id,),
+                )
+                self._conn.execute("DELETE FROM arrangements WHERE id = ?", (arrangement_id,))
+                self._conn.execute(
+                    "UPDATE songs SET updated_at = ? WHERE id = ?", (now, rec.song_id)
+                )
+
+            for rel in (rec.performance_path, rec.report_path, rec.preview_path):
+                if not rel:
+                    continue
+                with contextlib.suppress(OSError):
+                    resolve_under(self.data_dir, rel).unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                mid_dir = resolve_under(
+                    self.data_dir, f"songs/{rec.song_id}/midis/{arrangement_id}"
+                )
+                shutil.rmtree(mid_dir, ignore_errors=True)
+        return {"deleted": True, "arrangement_id": arrangement_id, "song_id": rec.song_id}
 
     def set_favorite(self, arrangement_id: str, is_favorite: bool) -> ArrangementRecord:
         self.get_arrangement(arrangement_id)

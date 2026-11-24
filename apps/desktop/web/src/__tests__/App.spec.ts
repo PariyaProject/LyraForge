@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import App from "../App.vue";
-import type { ArrangementRecord, LyraForgeApi, TranscriptionRecord } from "../api";
+import type { ArrangementRecord, LyraForgeApi, SongTrackInfo, TranscriptionRecord } from "../api";
 
 function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
   const arr = {
@@ -261,6 +261,12 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
           warnings: [],
         },
       },
+    }),
+    deleteArrangement: vi.fn().mockResolvedValue({
+      deleted: true,
+      arrangement_id: "arr-1",
+      song_id: "song-1",
+      queue: { items: [], index: 0, mode: "dry-run", realtime: false },
     }),
     playbackStatus: vi.fn().mockResolvedValue({
       state: "idle",
@@ -1072,5 +1078,198 @@ describe("App", () => {
     await flushPromises();
     expect((startBtn.element as HTMLButtonElement).disabled).toBe(false);
     expect(wrapper.text()).toContain("低资源/显式降级模式");
+  });
+
+  it("preserves Studio track selection after arranging, shows drop breakdown, deletes versions with confirmation, and displays dual GPU pills", async () => {
+    window.history.replaceState(null, "", "/");
+    const stub = makeStubApi("midi");
+    const trFullTracks: SongTrackInfo[] = [
+      { index: 1, name: "Vocal Lead", is_percussion: false, note_count: 10, channels: [0], min_pitch: 60, max_pitch: 72 },
+      { index: 2, name: "Accompaniment", is_percussion: false, note_count: 20, channels: [1], min_pitch: 48, max_pitch: 64 },
+    ];
+    const trFull: TranscriptionRecord = {
+      id: "tr-full",
+      pipeline_id: "vocal_split_full",
+      engine: "basic-pitch+dettato",
+      engine_version: "1.0",
+      status: "completed",
+      tracks: trFullTracks,
+      note_count: 30,
+      created_at: "2026-11-24T01:00:00Z",
+    };
+    const songFull = {
+      id: "song-1",
+      title: "C Major Scale",
+      artist: "Tester",
+      tags: ["demo"],
+      arrangement_count: 2,
+      created_at: "2026-11-22T00:00:00Z",
+      updated_at: "2026-11-24T02:00:00Z",
+    };
+    const arr2 = {
+      id: "arr-2",
+      song_id: "song-1",
+      profile_id: "genshin.windsong_lyre.v1",
+      style: "balanced",
+      transpose: 0,
+      arpeggiate_ms: 0,
+      speed: 1.0,
+      playable_ratio: 0.95,
+      event_count: 8,
+      duration_ms: 4000,
+      preview_path: null,
+      is_favorite: false,
+      user_vote: 0,
+      score: 94.0,
+      label: "仅主旋律编排",
+      transcription_id: "tr-full",
+      arranger_strategy: "vocal_lead",
+      created_at: "2026-11-24T02:00:00Z",
+    };
+    const arr1 = {
+      ...arr2,
+      id: "arr-1",
+      label: "均衡版本",
+    };
+    vi.mocked(stub.getSong)
+      .mockResolvedValueOnce({
+        song: songFull,
+        sources: [{ id: "src-1", kind: "midi", original_name: "demo.mid" }],
+        transcriptions: [trFull],
+        arrangements: [arr2, arr1],
+      })
+      .mockResolvedValueOnce({
+        song: songFull,
+        sources: [{ id: "src-1", kind: "midi", original_name: "demo.mid" }],
+        transcriptions: [trFull],
+        arrangements: [arr2, arr1],
+      })
+      .mockResolvedValue({
+        song: { ...songFull, arrangement_count: 1 },
+        sources: [{ id: "src-1", kind: "midi", original_name: "demo.mid" }],
+        transcriptions: [trFull],
+        arrangements: [arr1],
+      });
+    vi.mocked(stub.deleteArrangement).mockResolvedValue({
+      deleted: true,
+      arrangement_id: "arr-2",
+      song_id: "song-1",
+      queue: { items: [], index: 0, mode: "dry-run", realtime: false },
+    });
+    vi.mocked(stub.getSongTracks).mockResolvedValue({
+      song_id: "song-1",
+      source_kind: "midi",
+      pipeline_id: "vocal_split_full",
+      transcription_id: "tr-full",
+      detected_melody_track: 1,
+      tracks: trFullTracks,
+    });
+    vi.mocked(stub.arrangeSong).mockResolvedValue({ arrangement: arr2 });
+    vi.mocked(stub.getArrangement).mockResolvedValue({
+      arrangement: arr2,
+      performance: {
+        arrangement_id: "arr-2",
+        duration_ms: 4000,
+        events: [
+          { at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 1 },
+        ],
+      },
+      report: {
+        calibration_status: "verified",
+        stats: {
+          considered_notes: 10,
+          emitted_events: 8,
+          octave_folded: 1,
+          semitone_substituted: 0,
+          playable_ratio: 0.8,
+          dropped: {
+            duplicate_key: 2,
+            repeat_too_fast: 0,
+            polyphony_limit: 0,
+            semitone_dropped: 0,
+            out_of_range: 0,
+          },
+        },
+        quality: {
+          overall_score: 94.0,
+          melody_preservation: 1.0,
+          rhythmic_fidelity: 0.95,
+          pitch_contour_preservation: 1.0,
+          harmonic_coherence: 0.9,
+          missing_note_penalty: 0,
+          dense_key_conflict_penalty: 0,
+          large_leap_penalty: 0,
+          melody_track: 1,
+          warnings: [],
+        },
+      },
+    });
+    vi.mocked(stub.getGpuStatus).mockResolvedValue({
+      nvidia: { present: true, name: "RTX 4070", driver: "560.94" },
+      dettato_installed: true,
+      dettato_torch: {
+        version: "2.5.1+cu121",
+        cuda_build: "12.1",
+        cuda_available: true,
+        device_count: 1,
+      },
+      demucs_installed: true,
+      demucs_torch: {
+        version: "2.5.1+cpu",
+        cuda_build: null,
+        cuda_available: false,
+        device_count: 0,
+      },
+      device: "auto",
+      device_env: "LYRAFORGE_DETTATO_DEVICE",
+    });
+
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "编曲工作室");
+    await flushPromises();
+
+    // Verify colored track dots & drop reason breakdown render
+    expect(wrapper.find(".track-dot.track-c-0").exists()).toBe(true);
+    expect(wrapper.text()).toContain("同键去重 2");
+
+    // Uncheck track 2 & pin track 1, then arrange -> selection must stay intact!
+    const trackRows = wrapper.findAll("li.track-row");
+    await trackRows[0].find("button").trigger("click");
+    const accompCheck = trackRows[1].find('input[type="checkbox"]');
+    await accompCheck.setValue(false);
+    await flushPromises();
+
+    const arrangeBtn = wrapper.findAll("button").find((b) => b.text().includes("生成改编版本"))!;
+    await arrangeBtn.trigger("click");
+    await flushPromises();
+
+    expect((wrapper.findAll("li.track-row")[1].find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false);
+    expect(wrapper.findAll("li.track-row")[0].find("button").text()).toContain("主旋律");
+
+    // Two-step delete in Studio
+    const studioDelBtn = wrapper.findAll("button").find((b) => b.text().includes("删除版本"))!;
+    await studioDelBtn.trigger("click");
+    expect(stub.deleteArrangement).not.toHaveBeenCalled();
+    const confirmStudioDel = wrapper.findAll("button").find((b) => b.text().trim() === "确认删除")!;
+    await confirmStudioDel.trigger("click");
+    await flushPromises();
+    expect(stub.deleteArrangement).toHaveBeenCalledWith("arr-2");
+
+    // Two-step delete in Library
+    await clickNav(wrapper, "本地曲库");
+    await flushPromises();
+    const libDelBtn = wrapper.find('button[aria-label="删除编曲版本"]');
+    await libDelBtn.trigger("click");
+    const confirmLibDel = wrapper.findAll("button").find((b) => b.text().trim() === "确认删除")!;
+    await confirmLibDel.trigger("click");
+    await flushPromises();
+    expect(stub.deleteArrangement).toHaveBeenCalledWith("arr-1");
+
+    // Dual GPU pills in Settings
+    await clickNav(wrapper, "设置");
+    await flushPromises();
+    expect(wrapper.text()).toContain("dettato: CUDA 可用");
+    expect(wrapper.text()).toContain("Demucs: CPU 推理");
   });
 });
