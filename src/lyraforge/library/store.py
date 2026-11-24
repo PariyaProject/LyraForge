@@ -33,15 +33,15 @@ from lyraforge.music_core.arranger import (
     SemitonePolicy,
     Style,
     arrange,
+    detect_melody_track,
 )
 from lyraforge.music_core.canonical import pretty_json
-from lyraforge.music_core.cleanup import clean_score
 from lyraforge.music_core.midi_export import (
     arrangement_to_midi_bytes,
     performance_to_midi_bytes,
-    score_to_midi_bytes,
 )
 from lyraforge.music_core.midi_import import ImportLimits, load_midi_file, parse_midi_bytes
+from lyraforge.music_core.models import NormalizedScore
 from lyraforge.music_core.performance import (
     build_performance,
     build_report,
@@ -49,6 +49,7 @@ from lyraforge.music_core.performance import (
 )
 from lyraforge.music_core.scoring import compare_arrangements as compare_reports
 from lyraforge.music_core.scoring import score_arrangement
+from lyraforge.pipelines import DEFAULT_PIPELINE_ID, PipelineRequest, get_pipeline
 from lyraforge.playback.guards import StopToken
 from lyraforge.playback.player import PlaybackResult
 from lyraforge.preview.synth import DEFAULT_SAMPLE_RATE, synthesize_performance_to_wav
@@ -146,6 +147,8 @@ class ArrangementRecord:
     score: float | None = None
     user_vote: int = 0
     label: str | None = None
+    transcription_id: str | None = None
+    arranger_strategy: str = "classic"
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -168,6 +171,8 @@ class ArrangementRecord:
             "score": self.score,
             "user_vote": self.user_vote,
             "label": self.label,
+            "transcription_id": self.transcription_id,
+            "arranger_strategy": self.arranger_strategy,
             "created_at": self.created_at,
         }
 
@@ -184,6 +189,8 @@ class TranscriptionRecord:
     status: str
     note_count: int
     created_at: str
+    pipeline_id: str = DEFAULT_PIPELINE_ID
+    tracks: tuple[dict[str, Any], ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -192,12 +199,38 @@ class TranscriptionRecord:
             "source_id": self.source_id,
             "engine": self.engine,
             "engine_version": self.engine_version,
+            "pipeline_id": self.pipeline_id,
+            "tracks": list(self.tracks),
             "raw_midi_path": self.raw_midi_path,
             "cleaned_midi_path": self.cleaned_midi_path,
             "status": self.status,
             "note_count": self.note_count,
             "created_at": self.created_at,
         }
+
+
+def _summarize_score_tracks(score: NormalizedScore) -> list[dict[str, Any]]:
+    by_track: dict[int, list[Any]] = {}
+    for n in score.notes:
+        by_track.setdefault(n.track, []).append(n)
+    meta = {t.index: t.name for t in score.tracks}
+    out: list[dict[str, Any]] = []
+    for idx in sorted(by_track):
+        t_notes = by_track[idx]
+        pitches = [n.pitch for n in t_notes]
+        channels = sorted({n.channel for n in t_notes})
+        out.append(
+            {
+                "index": idx,
+                "name": meta.get(idx) or f"track_{idx}",
+                "note_count": len(t_notes),
+                "channels": channels,
+                "is_percussion": all(n.is_percussion for n in t_notes),
+                "min_pitch": min(pitches),
+                "max_pitch": max(pitches),
+            }
+        )
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +338,7 @@ class LibraryStore:
         )
 
     def _row_to_arrangement(self, row: sqlite3.Row) -> ArrangementRecord:
+        keys = set(row.keys())
         return ArrangementRecord(
             id=row["id"],
             song_id=row["song_id"],
@@ -325,10 +359,25 @@ class LibraryStore:
             score=float(row["score"]) if row["score"] is not None else None,
             user_vote=int(row["user_vote"]),
             label=row["label"],
+            transcription_id=row["transcription_id"] if "transcription_id" in keys else None,
+            arranger_strategy=(
+                str(row["arranger_strategy"] or "classic")
+                if "arranger_strategy" in keys
+                else "classic"
+            ),
             created_at=row["created_at"],
         )
 
     def _row_to_transcription(self, row: sqlite3.Row) -> TranscriptionRecord:
+        keys = set(row.keys())
+        raw_tracks: list[dict[str, Any]] = []
+        if "tracks_json" in keys and row["tracks_json"]:
+            try:
+                parsed = json.loads(row["tracks_json"])
+                if isinstance(parsed, list):
+                    raw_tracks = [item for item in parsed if isinstance(item, dict)]
+            except (TypeError, ValueError):
+                raw_tracks = []
         return TranscriptionRecord(
             id=row["id"],
             song_id=row["song_id"],
@@ -339,6 +388,12 @@ class LibraryStore:
             cleaned_midi_path=row["cleaned_midi_path"],
             status=row["status"],
             note_count=int(row["note_count"]),
+            pipeline_id=(
+                str(row["pipeline_id"] or DEFAULT_PIPELINE_ID)
+                if "pipeline_id" in keys
+                else DEFAULT_PIPELINE_ID
+            ),
+            tracks=tuple(raw_tracks),
             created_at=row["created_at"],
         )
 
@@ -627,11 +682,14 @@ class LibraryStore:
         song_id: str,
         *,
         engine_id: str = DEFAULT_TRANSCRIBER_ID,
+        pipeline_id: str = DEFAULT_PIPELINE_ID,
+        vocal_engine_id: str | None = None,
+        accomp_engine_id: str | None = None,
         options: TranscribeOptions | None = None,
         on_progress: ProgressCallback | None = None,
         stop_token: StopToken | None = None,
     ) -> TranscriptionRecord:
-        """Extract audio, run the chosen transcriber, and persist raw/cleaned MIDI."""
+        """Extract audio, run the chosen pipeline, and persist raw/cleaned MIDI."""
         detail = self.get_song(song_id)
         audio_sources = [s for s in detail.sources if s.kind == "audio"]
         if not audio_sources:
@@ -640,29 +698,34 @@ class LibraryStore:
             )
         source = audio_sources[0]
         src_audio = resolve_under(self.data_dir, source.local_path)
-        transcriber = get_transcriber(engine_id)
+        pipeline = get_pipeline(pipeline_id)
         opts = options or TranscribeOptions()
+        opts.validate()
 
         with tempfile.TemporaryDirectory(prefix="lyraforge-tr-") as tmpdir:
             wav_path = Path(tmpdir) / "extracted.wav"
             extract_audio_to_wav(src_audio, wav_path, stop_token=stop_token)
-            res = transcriber.transcribe(
+            res = pipeline.run(
                 wav_path,
-                options=opts,
+                PipelineRequest(
+                    engine_id=engine_id,
+                    vocal_engine_id=vocal_engine_id,
+                    accomp_engine_id=accomp_engine_id,
+                    options=opts,
+                    transcriber_resolver=get_transcriber,
+                ),
                 on_progress=on_progress,
                 stop_token=stop_token,
             )
 
-        raw_score = parse_midi_bytes(res.midi_bytes)
-        cleaned_score, _ = clean_score(raw_score)
-        cleaned_bytes = score_to_midi_bytes(cleaned_score)
         _check_stop(stop_token, "transcription cancelled")
+        tracks_summary = _summarize_score_tracks(parse_midi_bytes(res.cleaned_midi_bytes))
 
         tr_id = str(uuid.uuid4())
         rel_raw = f"songs/{song_id}/midis/{tr_id}/raw.mid"
         rel_cleaned = f"songs/{song_id}/midis/{tr_id}/cleaned.mid"
-        atomic_write_bytes(resolve_under(self.data_dir, rel_raw), res.midi_bytes)
-        atomic_write_bytes(resolve_under(self.data_dir, rel_cleaned), cleaned_bytes)
+        atomic_write_bytes(resolve_under(self.data_dir, rel_raw), res.raw_midi_bytes)
+        atomic_write_bytes(resolve_under(self.data_dir, rel_cleaned), res.cleaned_midi_bytes)
 
         if stop_token is not None and stop_token.stopped:
             shutil.rmtree(
@@ -679,9 +742,10 @@ class LibraryStore:
                 """
                 INSERT INTO transcriptions(
                     id, song_id, source_id, engine, engine_version, options_json,
-                    raw_midi_path, cleaned_midi_path, status, note_count, created_at
+                    raw_midi_path, cleaned_midi_path, status, note_count,
+                    pipeline_id, tracks_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tr_id,
@@ -693,7 +757,9 @@ class LibraryStore:
                     rel_raw,
                     rel_cleaned,
                     "completed",
-                    len(cleaned_score.notes),
+                    len(res.cleaned_score.notes),
+                    res.pipeline_id,
+                    json.dumps(tracks_summary, ensure_ascii=False),
                     now,
                 ),
             )
@@ -701,6 +767,61 @@ class LibraryStore:
         row = self._conn.execute("SELECT * FROM transcriptions WHERE id = ?", (tr_id,)).fetchone()
         assert row is not None
         return self._row_to_transcription(row)
+
+    def get_song_tracks(
+        self,
+        song_id: str,
+        *,
+        transcription_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Inspect per-track note stats and auto-detected lead track for a song/transcription."""
+        detail = self.get_song(song_id)
+        midi_sources = [s for s in detail.sources if s.kind == "midi"]
+        src_file: Path | None = None
+        source_kind: str | None = None
+        resolved_tr: TranscriptionRecord | None = None
+
+        if transcription_id is not None:
+            resolved_tr = next(
+                (t for t in detail.transcriptions if t.id == transcription_id), None
+            )
+            if resolved_tr is None:
+                raise LyraError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    f"transcription {transcription_id} not found for song {song_id}",
+                )
+            src_file = resolve_under(self.data_dir, resolved_tr.cleaned_midi_path)
+            source_kind = "transcription"
+        elif midi_sources:
+            src_file = resolve_under(self.data_dir, midi_sources[0].local_path)
+            source_kind = "midi"
+        elif detail.transcriptions:
+            resolved_tr = next(
+                (t for t in detail.transcriptions if t.status == "completed"),
+                detail.transcriptions[0],
+            )
+            src_file = resolve_under(self.data_dir, resolved_tr.cleaned_midi_path)
+            source_kind = "transcription"
+
+        if src_file is None or not src_file.is_file():
+            return {
+                "song_id": song_id,
+                "source_kind": source_kind,
+                "transcription_id": resolved_tr.id if resolved_tr else None,
+                "pipeline_id": resolved_tr.pipeline_id if resolved_tr else None,
+                "detected_melody_track": None,
+                "tracks": [],
+            }
+
+        score = load_midi_file(src_file)
+        return {
+            "song_id": song_id,
+            "source_kind": source_kind,
+            "transcription_id": resolved_tr.id if resolved_tr else None,
+            "pipeline_id": resolved_tr.pipeline_id if resolved_tr else "midi",
+            "detected_melody_track": detect_melody_track(score),
+            "tracks": _summarize_score_tracks(score),
+        }
 
     def get_arrangement(self, arrangement_id: str) -> ArrangementRecord:
         row = self._conn.execute(
@@ -757,6 +878,7 @@ class LibraryStore:
         options: ArrangeOptions | None = None,
         parent_id: str | None = None,
         label: str | None = None,
+        transcription_id: str | None = None,
         stop_token: StopToken | None = None,
     ) -> ArrangementRecord:
         """Create (or return existing identical) arrangement version for a song."""
@@ -765,12 +887,34 @@ class LibraryStore:
         if not detail.sources:
             raise LyraError(ErrorCode.SOURCE_UNAVAILABLE, f"song {song_id} has no sources")
         midi_sources = [s for s in detail.sources if s.kind == "midi"]
-        if midi_sources:
+        resolved_tr: TranscriptionRecord | None = None
+        if transcription_id is not None:
+            resolved_tr = next(
+                (t for t in detail.transcriptions if t.id == transcription_id), None
+            )
+            if resolved_tr is None:
+                raise LyraError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    f"transcription {transcription_id} not found for song {song_id}",
+                )
+            source = next(
+                (s for s in detail.sources if s.id == resolved_tr.source_id),
+                detail.sources[0],
+            )
+            src_file = resolve_under(self.data_dir, resolved_tr.cleaned_midi_path)
+        elif midi_sources:
             source = midi_sources[0]
             src_file = resolve_under(self.data_dir, source.local_path)
         elif detail.transcriptions:
-            source = detail.sources[0]
-            src_file = resolve_under(self.data_dir, detail.transcriptions[0].cleaned_midi_path)
+            resolved_tr = next(
+                (t for t in detail.transcriptions if t.status == "completed"),
+                detail.transcriptions[0],
+            )
+            source = next(
+                (s for s in detail.sources if s.id == resolved_tr.source_id),
+                detail.sources[0],
+            )
+            src_file = resolve_under(self.data_dir, resolved_tr.cleaned_midi_path)
         else:
             raise LyraError(
                 ErrorCode.SOURCE_UNAVAILABLE,
@@ -786,7 +930,13 @@ class LibraryStore:
             is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
         )
         _check_stop(stop_token, "arrangement cancelled")
-        perf = build_performance(score, profile, arr)
+        provenance_extra: dict[str, Any] = {
+            "transcriber": resolved_tr.engine if resolved_tr else "none",
+            "pipeline_id": resolved_tr.pipeline_id if resolved_tr else "midi",
+        }
+        if resolved_tr is not None:
+            provenance_extra["transcription_id"] = resolved_tr.id
+        perf = build_performance(score, profile, arr, provenance_extra=provenance_extra)
         validate_performance(perf, profile)
         report = build_report(score, profile, arr)
 
@@ -832,9 +982,10 @@ class LibraryStore:
                     INSERT OR IGNORE INTO arrangements(
                         id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
                         playable_ratio, event_count, duration_ms, performance_path, report_path,
-                        preview_path, is_favorite, parent_id, score, user_vote, label, created_at
+                        preview_path, is_favorite, parent_id, score, user_vote, label,
+                        transcription_id, arranger_strategy, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?, ?)
                     """,
                     (
                         arr_id,
@@ -854,6 +1005,8 @@ class LibraryStore:
                         parent_id,
                         quality_score,
                         label,
+                        resolved_tr.id if resolved_tr else None,
+                        opts.arranger_strategy,
                         now,
                     ),
                 )
@@ -970,10 +1123,18 @@ class LibraryStore:
         quality_score = parent.score
         detail = self.get_song(parent.song_id)
         src_file: Path | None = None
-        for src in detail.sources:
-            if src.id == parent.source_id and src.kind == "midi":
-                src_file = resolve_under(self.data_dir, src.local_path)
-                break
+        if parent.transcription_id:
+            matched_tr = next(
+                (t for t in detail.transcriptions if t.id == parent.transcription_id),
+                None,
+            )
+            if matched_tr is not None:
+                src_file = resolve_under(self.data_dir, matched_tr.cleaned_midi_path)
+        if src_file is None:
+            for src in detail.sources:
+                if src.id == parent.source_id and src.kind == "midi":
+                    src_file = resolve_under(self.data_dir, src.local_path)
+                    break
         if src_file is None and detail.transcriptions:
             src_file = resolve_under(self.data_dir, detail.transcriptions[0].cleaned_midi_path)
         if src_file is not None and src_file.is_file():
@@ -991,6 +1152,11 @@ class LibraryStore:
                 exclude_percussion=bool(tr.get("exclude_percussion", True)),
                 arpeggiate_ms=int(tr.get("arpeggiate_ms", 0)),
                 prefer_melody_track=bool(tr.get("prefer_melody_track", True)),
+                arranger_strategy=str(tr.get("arranger_strategy", parent.arranger_strategy)),
+                melody_track=tr.get("melody_track"),
+                vocal_ducking=bool(tr.get("vocal_ducking", True)),
+                melody_ceiling=bool(tr.get("melody_ceiling", True)),
+                anti_clash_semitones=bool(tr.get("anti_clash_semitones", True)),
             )
             perf_events = tuple(
                 PerformanceEvent(
@@ -1033,9 +1199,10 @@ class LibraryStore:
                 INSERT INTO arrangements(
                     id, song_id, source_id, profile_id, profile_hash, style, transpose, speed,
                     playable_ratio, event_count, duration_ms, performance_path, report_path,
-                    preview_path, is_favorite, parent_id, score, user_vote, label, created_at
+                    preview_path, is_favorite, parent_id, score, user_vote, label,
+                    transcription_id, arranger_strategy, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?, ?)
                 """,
                 (
                     arr_id,
@@ -1055,6 +1222,8 @@ class LibraryStore:
                     arrangement_id,
                     quality_score,
                     label or "手动编辑",
+                    parent.transcription_id,
+                    parent.arranger_strategy,
                     now,
                 ),
             )

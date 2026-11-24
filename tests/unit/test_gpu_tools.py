@@ -65,10 +65,67 @@ def test_device_preference_is_persisted_and_injected(
 
     gpu.set_device("cuda")
     assert gpu.device_setting() == "cuda"
-    assert runtime.managed_env({"PATH": ""})["LYRAFORGE_DETTATO_DEVICE"] == "cuda"
+    env = runtime.managed_env({"PATH": ""})
+    assert env["LYRAFORGE_DETTATO_DEVICE"] == "cuda"
+    assert env["LYRAFORGE_DEMUCS_DEVICE"] == "cuda"
 
     gpu.set_device("auto")
-    assert "LYRAFORGE_DETTATO_DEVICE" not in runtime.managed_env({"PATH": ""})
+    env_auto = runtime.managed_env({"PATH": ""})
+    assert "LYRAFORGE_DETTATO_DEVICE" not in env_auto
+    assert "LYRAFORGE_DEMUCS_DEVICE" not in env_auto
+
+
+def test_probe_demucs_torch_and_gpu_status(
+    tools_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    python = venv_python("demucs")
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("", encoding="utf-8")
+    payload = {"torch": "2.6.0+cu124", "cuda": "12.4", "available": True, "devices": 1}
+    monkeypatch.setattr(
+        gpu.subprocess,
+        "run",
+        lambda *_a, **_kw: types.SimpleNamespace(returncode=0, stdout=json.dumps(payload)),
+    )
+    probe = gpu.probe_demucs_torch()
+    assert probe is not None
+    assert probe["cuda_available"] is True
+    assert probe["cuda_build"] == "12.4"
+
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    st = gpu.gpu_status()
+    assert st["demucs_installed"] is True
+    assert st["demucs_torch"]["cuda_available"] is True
+
+
+def test_install_demucs_gpu_reinstalls_torch_and_torchaudio(
+    tools_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from lyraforge.toolchain import installer
+
+    python = venv_python("demucs")
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(installer, "install_uv", lambda progress=None: Path("uv.exe"))
+    monkeypatch.setattr(installer, "_run", fake_run)
+    monkeypatch.setattr(
+        gpu,
+        "probe_demucs_torch",
+        lambda: {"cuda_available": True, "version": "2.6.0+cu130"},
+    )
+    result = installer.install_demucs_gpu()
+    assert result["installed"] is True
+    cmd = calls[0]
+    assert "torch" in cmd and "torchaudio" in cmd
+    assert cmd[cmd.index("--index-url") + 1].endswith("/cu130")
 
 
 def test_install_dettato_gpu_reinstalls_torch_from_cuda_index(
@@ -138,6 +195,12 @@ def test_gpu_api_status_device_and_install(
     changed = client.post("/v1/gpu/device", headers=headers, json={"device": "cuda"})
     assert changed.status_code == 200
     assert changed.json()["device"] == "cuda"
+
+    demucs_start = client.post("/v1/gpu/install/demucs", headers=headers)
+    assert demucs_start.status_code == 200
+    assert demucs_start.json()["install"]["tool_id"] == "demucs-gpu"
+    bad = client.post("/v1/gpu/install?tool_id=nope", headers=headers)
+    assert bad.status_code == 400
 
     installed = client.post("/v1/gpu/install", headers=headers)
     assert installed.status_code == 200

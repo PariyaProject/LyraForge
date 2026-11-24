@@ -38,7 +38,7 @@ def _validator() -> Draft202012Validator:
 
 def transform_json(arr: Arrangement) -> dict[str, Any]:
     o = arr.options
-    return {
+    doc: dict[str, Any] = {
         "strategy": str(o.style),
         "transpose_semitones": arr.transpose,
         "transpose_mode": "auto" if o.transpose is None else "fixed",
@@ -51,10 +51,22 @@ def transform_json(arr: Arrangement) -> dict[str, Any]:
         "arpeggiate_ms": o.arpeggiate_ms,
         "prefer_melody_track": o.prefer_melody_track,
     }
+    if o.arranger_strategy != "classic" or o.melody_track is not None:
+        doc["arranger_strategy"] = o.arranger_strategy
+        doc["melody_track"] = o.melody_track
+        doc["vocal_ducking"] = o.vocal_ducking
+        doc["melody_ceiling"] = o.melody_ceiling
+        doc["anti_clash_semitones"] = o.anti_clash_semitones
+    return doc
 
 
-def build_performance(score: NormalizedScore, profile: InstrumentProfile,
-                      arr: Arrangement) -> dict[str, Any]:
+def build_performance(
+    score: NormalizedScore,
+    profile: InstrumentProfile,
+    arr: Arrangement,
+    *,
+    provenance_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     transform = transform_json(arr)
     song_id = uuid.uuid5(LYRAFORGE_NS, f"song:{score.source_sha256}")
     arr_key = hashlib.sha256(canonical_json_bytes({
@@ -62,6 +74,16 @@ def build_performance(score: NormalizedScore, profile: InstrumentProfile,
         "arranger": ARRANGER_VERSION,
     })).hexdigest()
     arrangement_id = uuid.uuid5(LYRAFORGE_NS, f"arrangement:{arr_key}")
+    provenance: dict[str, Any] = {
+        "input_sha256": score.source_sha256,
+        "transcriber": "none",
+        "arranger_version": ARRANGER_VERSION,
+        "lyraforge_version": __version__,
+    }
+    if provenance_extra:
+        for key, value in provenance_extra.items():
+            if value is not None:
+                provenance[key] = value
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "lyraforge.performance",
@@ -73,12 +95,7 @@ def build_performance(score: NormalizedScore, profile: InstrumentProfile,
         "duration_ms": arr.stats["duration_ms"],
         "events": [e.to_json() for e in arr.events],
         "transform": transform,
-        "provenance": {
-            "input_sha256": score.source_sha256,
-            "transcriber": "none",
-            "arranger_version": ARRANGER_VERSION,
-            "lyraforge_version": __version__,
-        },
+        "provenance": provenance,
     }
 
 

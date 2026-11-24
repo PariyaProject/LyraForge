@@ -506,7 +506,12 @@ def test_tools_status_and_background_install(
     assert listing.status_code == 200
     payload = listing.json()
     assert payload["tools_dir"] == str(tmp_path / "tools")
-    assert {item["id"] for item in payload["tools"]} == {"ffmpeg", "basic-pitch", "dettato"}
+    assert {item["id"] for item in payload["tools"]} == {
+        "ffmpeg",
+        "basic-pitch",
+        "dettato",
+        "demucs",
+    }
     assert all(isinstance(item["installed"], bool) for item in payload["tools"])
 
     assert client.get("/v1/tools").status_code == 401

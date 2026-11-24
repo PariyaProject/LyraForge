@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import App from "../App.vue";
-import type { LyraForgeApi } from "../api";
+import type { ArrangementRecord, LyraForgeApi, TranscriptionRecord } from "../api";
 
 function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
   const arr = {
@@ -80,6 +80,64 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
         },
       ],
     }),
+    listPipelines: vi.fn().mockResolvedValue({
+      pipelines: [
+        {
+          id: "direct",
+          display_name: "经典直转（原流程）",
+          description: "直接单引擎转谱",
+          recommended_for: "纯钢琴 / 独奏",
+          stages: ["音频提取", "单引擎转谱"],
+          required_tools: [],
+          available: true,
+          missing_tools: [],
+          default_engine_id: "builtin-mono",
+          default_vocal_engine_id: null,
+          default_accomp_engine_id: null,
+          default_arranger_strategy: "classic",
+          supports_engine_override: true,
+        },
+        {
+          id: "vocal_split_full",
+          display_name: "人声分离 · 主旋律 + 无鼓伴奏双轨",
+          description: "Demucs 分离并去鼓后分别转谱合流",
+          recommended_for: "人声流行歌",
+          stages: ["Demucs 4 轨分离与去鼓", "人声主旋律识别", "无鼓伴奏识别", "双角色多轨 MIDI 融合"],
+          required_tools: ["demucs"],
+          available: true,
+          missing_tools: [],
+          default_engine_id: "basic-pitch",
+          default_vocal_engine_id: "basic-pitch",
+          default_accomp_engine_id: "basic-pitch",
+          default_arranger_strategy: "vocal_lead",
+          supports_engine_override: false,
+        },
+      ],
+    }),
+    listArrangers: vi.fn().mockResolvedValue({
+      strategies: [
+        {
+          id: "classic",
+          display_name: "经典基线",
+          description: "原有平衡规则",
+          recommended_for: "纯乐器 MIDI",
+        },
+        {
+          id: "vocal_lead",
+          display_name: "人声主旋律增强",
+          description: "75% 主旋律权重移调、天花板、避让与间奏交接",
+          recommended_for: "人声与多轨编曲",
+        },
+      ],
+    }),
+    getSongTracks: vi.fn().mockResolvedValue({
+      song_id: "song-1",
+      source_kind: sourceKind,
+      transcription_id: null,
+      pipeline_id: sourceKind === "midi" ? "midi" : null,
+      detected_melody_track: 0,
+      tracks: [],
+    }),
     listTools: vi.fn().mockResolvedValue({
       tools_dir: "/tmp/lyraforge-tools",
       tools: [
@@ -150,6 +208,7 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
     }),
     setDettatoDevice: vi.fn(),
     installDettatoGpu: vi.fn(),
+    installDemucsGpu: vi.fn(),
     addToQueue: vi.fn(),
     clearQueue: vi.fn(),
     stepQueue: vi.fn(),
@@ -704,6 +763,251 @@ describe("App", () => {
       await wrapper.find("#topbar-song-select").setValue("song-b");
       await flushPromises();
       expect((wrapper.find("#topbar-song-select").element as HTMLSelectElement).value).toBe("song-b");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("supports selectable vocal-split pipeline, transcription switching, arranger strategy, and track selection in Studio", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, "", "/");
+      const stub = makeStubApi("audio");
+      const trDirect: TranscriptionRecord = {
+        id: "tr-direct",
+        engine: "builtin-mono",
+        engine_version: "1.0",
+        pipeline_id: "direct",
+        tracks: [],
+        status: "completed",
+        note_count: 18,
+        created_at: "2026-11-24T00:00:00Z",
+      };
+      const vocalTracks = [
+        {
+          index: 1,
+          name: "Vocal Lead",
+          note_count: 42,
+          channels: [0],
+          is_percussion: false,
+          min_pitch: 60,
+          max_pitch: 76,
+        },
+        {
+          index: 2,
+          name: "Accompaniment",
+          note_count: 64,
+          channels: [1],
+          is_percussion: false,
+          min_pitch: 48,
+          max_pitch: 72,
+        },
+      ];
+      const trFull: TranscriptionRecord = {
+        id: "tr-full",
+        engine: "vocal:basic-pitch+accomp:dettato",
+        engine_version: "pipeline:vocal_split_full",
+        pipeline_id: "vocal_split_full",
+        tracks: vocalTracks,
+        status: "completed",
+        note_count: 106,
+        created_at: "2026-11-24T01:00:00Z",
+      };
+
+      let transcriptions: TranscriptionRecord[] = [trDirect];
+      vi.mocked(stub.listTranscribers).mockResolvedValue({
+        transcribers: [
+          {
+            id: "builtin-mono",
+            display_name: "内置单音旋律识别 (YIN)",
+            available: true,
+            license: "Self-authored",
+            scope_note: "适合独奏",
+          },
+          {
+            id: "basic-pitch",
+            display_name: "Spotify Basic Pitch",
+            available: true,
+            license: "Apache-2.0",
+            scope_note: "多音识别",
+          },
+          {
+            id: "dettato",
+            display_name: "dettato",
+            available: true,
+            license: "Apache-2.0",
+            scope_note: "伴奏识别",
+          },
+        ],
+      });
+      vi.mocked(stub.getSong).mockImplementation(async () => ({
+        song: {
+          id: "song-1",
+          title: "Vocal Pop Demo",
+          artist: "Tester",
+          tags: ["demo"],
+          arrangement_count: 0,
+          created_at: "2026-11-24T00:00:00Z",
+          updated_at: "2026-11-24T00:00:00Z",
+        },
+        sources: [{ id: "src-1", kind: "audio", original_name: "pop.wav" }],
+        transcriptions,
+        arrangements: [],
+      }));
+      vi.mocked(stub.getSongTracks).mockImplementation(async (_songId, trId) => ({
+        song_id: "song-1",
+        source_kind: "transcription",
+        transcription_id: trId ?? trFull.id,
+        pipeline_id: "vocal_split_full",
+        detected_melody_track: 2,
+        tracks: vocalTracks,
+      }));
+      vi.mocked(stub.submitTranscribeJob).mockResolvedValue({
+        job: {
+          id: "job-split",
+          song_id: "song-1",
+          engine_id: "vocal:basic-pitch+accomp:dettato",
+          pipeline_id: "vocal_split_full",
+          status: "running",
+          stage: "separating",
+          progress: 0.25,
+          transcription: null,
+          error: null,
+        },
+      });
+      vi.mocked(stub.getJob).mockImplementation(async () => {
+        transcriptions = [trFull, trDirect];
+        return {
+          job: {
+            id: "job-split",
+            song_id: "song-1",
+            engine_id: "vocal:basic-pitch+accomp:dettato",
+            pipeline_id: "vocal_split_full",
+            status: "completed",
+            stage: "done",
+            progress: 1,
+            transcription: trFull,
+            error: null,
+          },
+        };
+      });
+      const newArr: ArrangementRecord = {
+        id: "arr-vocal-1",
+        song_id: "song-1",
+        profile_id: "genshin.windsong_lyre.v1",
+        style: "balanced",
+        transpose: -2,
+        speed: 1.0,
+        playable_ratio: 0.96,
+        event_count: 88,
+        duration_ms: 4000,
+        preview_path: null,
+        is_favorite: false,
+        user_vote: 0,
+        score: 94.0,
+        label: "vocal_split_full · 主旋律增强 · balanced",
+        transcription_id: "tr-full",
+        arranger_strategy: "vocal_lead",
+        created_at: "2026-11-24T01:05:00Z",
+      };
+      vi.mocked(stub.arrangeSong).mockResolvedValue({ arrangement: newArr });
+      vi.mocked(stub.getArrangement).mockResolvedValue({
+        arrangement: newArr,
+        performance: {
+          arrangement_id: newArr.id,
+          duration_ms: 4000,
+          events: [],
+        },
+        report: {
+          calibration_status: "experimental",
+          quality: {
+            overall_score: 94.0,
+            melody_preservation: 98.0,
+            rhythmic_fidelity: 95.0,
+            pitch_contour_preservation: 96.0,
+            harmonic_coherence: 92.0,
+            missing_note_penalty: 1.0,
+            dense_key_conflict_penalty: 0.5,
+            large_leap_penalty: 0.5,
+            melody_track: 1,
+            warnings: [],
+          },
+          stats: {
+            emitted_events: 88,
+            considered_notes: 90,
+            octave_folded: 4,
+            semitone_substituted: 0,
+            playable_ratio: 0.96,
+          },
+        },
+      });
+
+      const wrapper = mount(App, { props: { client: stub } });
+      await flushPromises();
+      await clickNav(wrapper, "音频转谱");
+
+      const pipeSelect = wrapper.find("#transcribe-pipeline-select");
+      expect(pipeSelect.exists()).toBe(true);
+      await pipeSelect.setValue("vocal_split_full");
+      await flushPromises();
+
+      await wrapper.find("#transcribe-vocal-engine").setValue("basic-pitch");
+      await wrapper.find("#transcribe-accomp-engine").setValue("dettato");
+      await flushPromises();
+
+      const startBtn = wrapper.findAll("button").find((b) => b.text().includes("开始音频转谱"))!;
+      await startBtn.trigger("click");
+      await flushPromises();
+
+      expect(stub.submitTranscribeJob).toHaveBeenCalledWith("song-1", "builtin-mono", {
+        pipelineId: "vocal_split_full",
+        vocalEngineId: "basic-pitch",
+        accompEngineId: "dettato",
+      });
+
+      await vi.advanceTimersByTimeAsync(1100);
+      await flushPromises();
+
+      const useBtn = wrapper.findAll("button").find((b) => b.text().includes("以此编曲"))!;
+      expect(useBtn).toBeDefined();
+      await useBtn.trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find("h1").text()).toContain("编曲工作室");
+      expect(
+        (wrapper.find("#studio-transcription-select").element as HTMLSelectElement).value,
+      ).toBe("tr-full");
+      expect(
+        (wrapper.find("#studio-arranger-strategy").element as HTMLSelectElement).value,
+      ).toBe("vocal_lead");
+      expect(wrapper.text()).toContain("MIDI 分轨与主旋律");
+      expect(wrapper.text()).toContain("Vocal Lead");
+      expect(wrapper.text()).toContain("Accompaniment");
+
+      // Pin Vocal Lead (track 1) as melody and uncheck Accompaniment (track 2)
+      const trackRows = wrapper.findAll("li.track-row");
+      expect(trackRows).toHaveLength(2);
+      const pinVocalBtn = trackRows[0].find("button");
+      await pinVocalBtn.trigger("click");
+      const accompCheckbox = trackRows[1].find('input[type="checkbox"]');
+      await accompCheckbox.setValue(false);
+      await flushPromises();
+
+      const arrangeBtn = wrapper
+        .findAll("button")
+        .find((b) => b.text().includes("生成改编版本"))!;
+      await arrangeBtn.trigger("click");
+      await flushPromises();
+
+      expect(stub.arrangeSong).toHaveBeenCalledWith(
+        expect.objectContaining({
+          song_id: "song-1",
+          transcription_id: "tr-full",
+          arranger_strategy: "vocal_lead",
+          include_tracks: [1],
+          melody_track: 1,
+        }),
+      );
     } finally {
       vi.useRealTimers();
     }

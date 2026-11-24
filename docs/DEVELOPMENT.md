@@ -135,8 +135,20 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
    ```
 
    - dettato 的 `-o` 是输出**目录**，它会在其中写入 `<曲名>.mid`；CPU 推理约 4 秒音频 / 20 秒耗时。
-   - **GPU 加速**：桌面 **设置 →「转谱引擎与 GPU」→ dettato GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE`）。若只装了 CPU 版 torch，点「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu130` 完成（下载约 1.9 GiB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。注意 PyPI 的 CPU wheel 可能比 CUDA 索引里的最新版本更新（例如 2.15.0+cpu 对 2.14.1+cu130），所以必须 `--reinstall-package torch` 强制降级替换，普通 `--upgrade` 会“无变更”并继续报 CUDA 不可用。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps`。
+   - **GPU 加速**：桌面 **设置 →「转谱引擎与 GPU」→ dettato / Demucs GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE` 与 `LYRAFORGE_DEMUCS_DEVICE`）。若只装了 CPU 版 torch，点对应工具的「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu130` 完成（下载约 1.9 GiB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。注意 PyPI 的 CPU wheel 可能比 CUDA 索引里的最新版本更新（例如 2.15.0+cpu 对 2.14.1+cu130），所以必须 `--reinstall-package torch` 强制降级替换，普通 `--upgrade` 会“无变更”并继续报 CUDA 不可用。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE` / `LYRAFORGE_DEMUCS_DEVICE`。
    - **超时**：转录子进程预算会随音频长度增长（dettato 约 10× 实时 + 180 秒余量，Basic Pitch 约 3× + 60 秒），不再固定 5 分钟。
+
+   **demucs（MIT，可选 4 轨人声/伴奏源分离）**
+
+   ```bash
+   uv venv ~/.lyraforge-tools/demucs --python 3.11
+   uv pip install --python ~/.lyraforge-tools/demucs/bin/python demucs==4.0.1 soundfile
+   export LYRAFORGE_DEMUCS_PYTHON=~/.lyraforge-tools/demucs/bin/python
+   # Windows：...\demucs\Scripts\python.exe
+   ```
+
+   - 可用于 `vocal_split_full`（人声 + bass+other 去鼓伴奏双轨）、`vocal_split_lead`（纯人声）与 `vocal_split_accomp`（纯去鼓伴奏）流水线；预训练 `htdemucs` 权重首次执行分离时按需下载。
+   - CLI 可直接对比不同流水线与编曲策略：`lyraforge transcribe <song_id> --pipeline vocal_split_full --vocal-engine basic-pitch --accomp-engine dettato`，随后 `lyraforge arrange <song_id> --transcription-id <tr_id> --arranger-strategy vocal_lead --melody-track 1`。
 3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
 
 > Windows 如需让桌面应用长期看到上述变量，可用
@@ -201,11 +213,14 @@ lyraforge_starter/
 │  ├─ secrets.py / secrets_win32.py  # 跨平台凭据管理与日志脱敏
 │  ├─ music_core/             # 无头纯 Python 音乐核心（MIDI/Tempo/编曲/分离式质量评价）
 │  ├─ instruments/            # 乐器预设（风物之诗琴/镜花之琴/老旧的诗琴）
-│  ├─ media/ / transcribers/  # WAV 提取、YIN 转录与隔离进程外部 ML 适配器
+│  ├─ media/                  # FFmpeg / 音频标准化提取
+│  ├─ separators/             # 可插拔音轨源分离层（Demucs 4 轨去鼓人声/伴奏）
+│  ├─ transcribers/           # YIN 转录与隔离进程外部 ML 适配器
+│  ├─ pipelines/              # 可选转谱流水线注册表（direct / vocal_split_*）
 │  ├─ sources/                # 本地库/目录 + 规范化许可判定开放曲库 + DNS 固定直链获取
 │  ├─ agent/                  # 离线规则指令解析与可选 OpenAI-compatible HTTP 提供器
 │  ├─ mcp/                    # 零依赖 stdio JSON-RPC MCP Server 与任务取消注册表
-│  ├─ library/                # SQLite (WAL v3) 曲库、.lyrapack 与原子回滚备份恢复
+│  ├─ library/                # SQLite (WAL v4) 曲库、.lyrapack 与原子回滚备份恢复
 │  ├─ preview/                # 纯 Python 拨弦 WAV 试听合成器
 │  ├─ api/ / desktop/         # 127.0.0.1 FastAPI 服务 + PyWebView 桌面壳
 │  └─ playback/               # 跨平台调度器、DryRun 与隔离 Windows SendInput 驱动

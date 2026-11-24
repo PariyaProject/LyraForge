@@ -53,9 +53,9 @@ def detect_nvidia() -> dict[str, Any]:
     }
 
 
-def probe_dettato_torch() -> dict[str, Any] | None:
-    """Return the torch build/availability inside the dettato virtualenv, if present."""
-    python = venv_python("dettato")
+def probe_torch_env(tool_id: str) -> dict[str, Any] | None:
+    """Return the torch build/availability inside an isolated tool virtualenv, if present."""
+    python = venv_python(tool_id)
     if not python.is_file():
         return None
     try:
@@ -85,6 +85,16 @@ def probe_dettato_torch() -> dict[str, Any] | None:
     }
 
 
+def probe_dettato_torch() -> dict[str, Any] | None:
+    """Return the torch build/availability inside the dettato virtualenv, if present."""
+    return probe_torch_env("dettato")
+
+
+def probe_demucs_torch() -> dict[str, Any] | None:
+    """Return the torch build/availability inside the demucs virtualenv, if present."""
+    return probe_torch_env("demucs")
+
+
 def device_setting() -> str:
     value = str(get_tool_setting("dettato_device", "auto") or "auto").lower()
     return value if value in VALID_DEVICES else "auto"
@@ -101,19 +111,21 @@ def set_device(device: str) -> dict[str, Any]:
             f"dettato device must be one of {sorted(VALID_DEVICES)}",
         )
     set_tool_setting("dettato_device", value)
-    if value == "auto":
-        os.environ.pop(DEVICE_ENV, None)
-    else:
-        os.environ[DEVICE_ENV] = value
+    for env_key in (DEVICE_ENV, "LYRAFORGE_DEMUCS_DEVICE"):
+        if value == "auto":
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = value
     return gpu_status()
 
 
 def gpu_status() -> dict[str, Any]:
-    python = venv_python("dettato")
     return {
         "nvidia": detect_nvidia(),
-        "dettato_installed": python.is_file(),
+        "dettato_installed": venv_python("dettato").is_file(),
         "dettato_torch": probe_dettato_torch(),
+        "demucs_installed": venv_python("demucs").is_file(),
+        "demucs_torch": probe_demucs_torch(),
         "device": device_setting(),
         "device_env": DEVICE_ENV,
     }
@@ -125,6 +137,8 @@ __all__ = [
     "detect_nvidia",
     "device_setting",
     "gpu_status",
+    "probe_demucs_torch",
     "probe_dettato_torch",
+    "probe_torch_env",
     "set_device",
 ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS songs (
@@ -155,4 +155,34 @@ def apply_migrations(conn: sqlite3.Connection) -> int:
                 (3, _utc_now_iso()),
             )
         current = 3
+    if current < 4:
+        tr_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(transcriptions)").fetchall()
+        }
+        arr_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(arrangements)").fetchall()
+        }
+        with conn:
+            if "pipeline_id" not in tr_cols:
+                conn.execute(
+                    "ALTER TABLE transcriptions "
+                    "ADD COLUMN pipeline_id TEXT NOT NULL DEFAULT 'direct'"
+                )
+            if "tracks_json" not in tr_cols:
+                conn.execute(
+                    "ALTER TABLE transcriptions "
+                    "ADD COLUMN tracks_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "transcription_id" not in arr_cols:
+                conn.execute("ALTER TABLE arrangements ADD COLUMN transcription_id TEXT")
+            if "arranger_strategy" not in arr_cols:
+                conn.execute(
+                    "ALTER TABLE arrangements "
+                    "ADD COLUMN arranger_strategy TEXT NOT NULL DEFAULT 'classic'"
+                )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (4, _utc_now_iso()),
+            )
+        current = 4
     return current

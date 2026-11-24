@@ -49,6 +49,11 @@ function jobStageLabel(job: TranscriptionJob | null): string {
   const labels: Record<string, string> = {
     queued: "排队中",
     extracting: "提取音频",
+    separating: "分离人声与伴奏",
+    separated: "声部已分离",
+    transcribing_vocal: "识别人声主旋律",
+    transcribing_accomp: "识别无鼓伴奏",
+    merging: "合并多轨 MIDI",
     analyzing: "分析音高",
     transcribing: "识别中",
     running: "识别中",
@@ -58,6 +63,23 @@ function jobStageLabel(job: TranscriptionJob | null): string {
   };
   return labels[job.stage ?? ""] ?? labels[job.status] ?? job.stage ?? job.status;
 }
+
+const pipelineNameById = computed(() => {
+  const map: Record<string, string> = {};
+  for (const p of props.store.pipelines.value) {
+    map[p.id] = p.display_name;
+  }
+  return map;
+});
+
+const canStartCurrentPipeline = computed(() => {
+  const pipe = props.store.selectedPipelineInfo.value;
+  if (!pipe || !pipe.available) return false;
+  if (pipe.supports_engine_override) {
+    return Boolean(props.store.selectedEngineInfo.value?.available);
+  }
+  return true;
+});
 
 const stageLabel = computed(() => jobStageLabel(currentJob.value));
 
@@ -179,6 +201,63 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
 
         <div class="field">
+          <label for="transcribe-pipeline-select">转谱处理流水线（可保留多套结果随时切换对比）</label>
+          <select id="transcribe-pipeline-select" v-model="store.selectedPipelineId.value">
+            <option
+              v-for="pipe in store.pipelines.value"
+              :key="pipe.id"
+              :value="pipe.id"
+            >
+              {{ pipe.display_name }}（{{ pipe.available ? "可用" : `需安装 ${pipe.missing_tools.join("/")}` }}）
+            </option>
+          </select>
+        </div>
+
+        <div v-if="store.selectedPipelineInfo.value" class="banner-info">
+          <StudioIcon name="sparkles" :size="15" />
+          <div style="min-inline-size: 0; flex: 1">
+            <strong>{{ store.selectedPipelineInfo.value.display_name }}</strong>
+            <div class="muted" style="font-size: 12px; margin-block-start: var(--space-3xs)">
+              {{ store.selectedPipelineInfo.value.description }}
+            </div>
+            <div class="meta-row" style="margin-block-start: var(--space-2xs)">
+              <span class="pill">适用：{{ store.selectedPipelineInfo.value.recommended_for }}</span>
+              <span
+                v-for="(st, idx) in store.selectedPipelineInfo.value.stages"
+                :key="st"
+                class="pill"
+              >
+                {{ idx + 1 }}. {{ st }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="store.selectedPipelineInfo.value && !store.selectedPipelineInfo.value.available"
+          class="banner-warn"
+        >
+          <StudioIcon name="alert" :size="15" />
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); flex: 1">
+            <span>
+              该流水线需要安装
+              <strong>{{ store.selectedPipelineInfo.value.missing_tools.join("、") }}</strong>
+              独立工具链（仍可随时使用默认直转流程）。
+            </span>
+            <button
+              type="button"
+              class="secondary btn-sm"
+              @click="store.setView('settings')"
+            >
+              前往设置一键安装
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="store.selectedPipelineInfo.value?.supports_engine_override ?? true"
+          class="field"
+        >
           <label for="transcribe-engine-select">转谱引擎</label>
           <select id="transcribe-engine-select" v-model="store.selectedEngineId.value">
             <option
@@ -192,7 +271,54 @@ function onAgentKeydown(event: KeyboardEvent): void {
           </select>
         </div>
 
-        <div v-if="store.selectedEngineInfo.value" class="banner-info">
+        <div v-else class="row">
+          <div
+            v-if="store.selectedPipelineInfo.value?.default_vocal_engine_id"
+            class="field"
+            style="flex: 1 1 200px"
+          >
+            <label for="transcribe-vocal-engine">人声主旋律引擎</label>
+            <select id="transcribe-vocal-engine" v-model="store.selectedVocalEngineId.value">
+              <option value="auto">
+                自动推荐（优先 Basic Pitch，未装则内置单音）
+              </option>
+              <option
+                v-for="eng in store.availableTranscribers.value"
+                :key="eng.id"
+                :value="eng.id"
+              >
+                {{ eng.display_name }}
+              </option>
+            </select>
+          </div>
+          <div
+            v-if="store.selectedPipelineInfo.value?.default_accomp_engine_id"
+            class="field"
+            style="flex: 1 1 200px"
+          >
+            <label for="transcribe-accomp-engine">去鼓伴奏引擎</label>
+            <select id="transcribe-accomp-engine" v-model="store.selectedAccompEngineId.value">
+              <option value="auto">
+                自动推荐（优先 dettato，其次 Basic Pitch）
+              </option>
+              <option
+                v-for="eng in store.availableTranscribers.value"
+                :key="eng.id"
+                :value="eng.id"
+              >
+                {{ eng.display_name }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div
+          v-if="
+            (store.selectedPipelineInfo.value?.supports_engine_override ?? true) &&
+            store.selectedEngineInfo.value
+          "
+          class="banner-info"
+        >
           <StudioIcon name="info" :size="15" />
           <div style="min-inline-size: 0">
             <strong>{{ store.selectedEngineInfo.value.display_name }}</strong>
@@ -210,7 +336,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
             :disabled="
               !store.hasAudioSource.value ||
               store.busy.value ||
-              !store.selectedEngineInfo.value?.available ||
+              !canStartCurrentPipeline ||
               currentJobRunning
             "
             @click="store.handleStartTranscribe"
@@ -246,6 +372,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <progress max="100" :value="jobProgressValue" aria-label="音频转谱任务进度" />
           <div class="meta-row">
             <span>曲目：{{ jobSongTitle }}</span>
+            <span>流水线：{{ pipelineNameById[currentJob.pipeline_id ?? "direct"] ?? currentJob.pipeline_id ?? "direct" }}</span>
             <span>引擎：{{ currentJob.engine_id }}</span>
           </div>
           <p class="muted" style="margin: 0; font-size: 12px">
@@ -314,14 +441,26 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <ul v-if="store.songTranscriptions.value.length > 0" class="line-list">
             <li v-for="tr in store.songTranscriptions.value" :key="tr.id" class="line-list-row">
               <div class="meta-row">
+                <span class="pill">
+                  {{ pipelineNameById[tr.pipeline_id ?? "direct"] ?? tr.pipeline_id ?? "direct" }}
+                </span>
                 <span class="pill" :class="tr.status === 'completed' ? 'pill-ok' : ''">
                   {{ tr.engine }}
                 </span>
-                <span>{{ tr.status }}</span>
+                <span v-if="tr.tracks && tr.tracks.length > 0">{{ tr.tracks.length }} 音轨</span>
               </div>
-              <span class="tabular" style="font-size: 13px; font-weight: var(--weight-medium)">
-                {{ tr.note_count }} 音符
-              </span>
+              <div class="button-row" style="flex-shrink: 0">
+                <span class="tabular" style="font-size: 13px; font-weight: var(--weight-medium)">
+                  {{ tr.note_count }} 音符
+                </span>
+                <button
+                  type="button"
+                  class="secondary btn-sm"
+                  @click="store.openTranscriptionInStudio(store.selectedSongId.value ?? '', tr.id)"
+                >
+                  以此编曲
+                </button>
+              </div>
             </li>
           </ul>
           <p v-else class="muted" style="margin: 0; font-size: 12px">

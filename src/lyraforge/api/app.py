@@ -39,11 +39,18 @@ from lyraforge.library import (
     restore_backup_zip,
 )
 from lyraforge.media import SUPPORTED_MEDIA_EXTENSIONS, MediaLimits
-from lyraforge.music_core.arranger import ArrangeOptions, SemitonePolicy, Style
+from lyraforge.music_core.arranger import (
+    ArrangeOptions,
+    SemitonePolicy,
+    Style,
+    list_arranger_strategies,
+)
 from lyraforge.music_core.midi_import import ImportLimits
+from lyraforge.pipelines import DEFAULT_PIPELINE_ID, list_pipelines
 from lyraforge.playback import PlaybackMode, is_windows_playback_available
 from lyraforge.presets import list_presets
 from lyraforge.preview import DEFAULT_SAMPLE_RATE
+from lyraforge.separators import list_separators
 from lyraforge.toolchain import status as toolchain_status
 from lyraforge.toolchain import tools_root as toolchain_tools_root
 from lyraforge.toolchain.gpu import gpu_status
@@ -155,31 +162,20 @@ class _LibraryAccessGate:
 class TranscribeJobRequest(BaseModel):
     song_id: str
     engine_id: str = DEFAULT_TRANSCRIBER_ID
+    pipeline_id: str = DEFAULT_PIPELINE_ID
+    vocal_engine_id: str | None = None
+    accomp_engine_id: str | None = None
     min_pitch: int = 36
     max_pitch: int = 96
     min_note_ms: int = 60
+    onset_threshold: float | None = None
+    frame_threshold: float | None = None
     async_mode: bool = False
 
 
 class SettingUpdateRequest(BaseModel):
     key: str
     value: Any
-
-
-class ArrangeJobRequest(BaseModel):
-    song_id: str
-    instrument_profile_id: str = DEFAULT_PROFILE_ID
-    style: Style = Style.BALANCED
-    transpose: int | None = None
-    semitone_policy: SemitonePolicy = SemitonePolicy.NEAREST
-    max_chord_keys: int | None = None
-    chord_window_ms: int = 20
-    speed: float = 1.0
-    include_tracks: list[int] | None = None
-    exclude_percussion: bool = True
-    arpeggiate_ms: int = 0
-    prefer_melody_track: bool = True
-    label: str | None = None
 
 
 class ArrangeVariantConfig(BaseModel):
@@ -193,12 +189,24 @@ class ArrangeVariantConfig(BaseModel):
     exclude_percussion: bool = True
     arpeggiate_ms: int = 0
     prefer_melody_track: bool = True
+    arranger_strategy: str = "classic"
+    melody_track: int | None = None
+    vocal_ducking: bool = True
+    melody_ceiling: bool = True
+    anti_clash_semitones: bool = True
+    transcription_id: str | None = None
     label: str | None = None
+
+
+class ArrangeJobRequest(ArrangeVariantConfig):
+    song_id: str
+    instrument_profile_id: str = DEFAULT_PROFILE_ID
 
 
 class ArrangeABRequest(BaseModel):
     song_id: str
     instrument_profile_id: str = DEFAULT_PROFILE_ID
+    transcription_id: str | None = None
     variant_a: ArrangeVariantConfig | None = None
     variant_b: ArrangeVariantConfig | None = None
 
@@ -628,9 +636,29 @@ def create_app(
         with open_store() as store:
             return store.get_song(song_id).to_json()
 
+    @app.get("/v1/library/songs/{song_id}/tracks", dependencies=[Depends(require_token)])
+    def get_song_tracks_route(
+        song_id: str,
+        transcription_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        with open_store() as store:
+            return store.get_song_tracks(song_id, transcription_id=transcription_id)
+
     @app.get("/v1/transcribers", dependencies=[Depends(require_token)])
     def get_transcribers() -> dict[str, Any]:
         return {"transcribers": [m.to_json() for m in list_transcribers()]}
+
+    @app.get("/v1/pipelines", dependencies=[Depends(require_token)])
+    def get_pipelines_route() -> dict[str, Any]:
+        return {"pipelines": [p.to_json() for p in list_pipelines()]}
+
+    @app.get("/v1/separators", dependencies=[Depends(require_token)])
+    def get_separators_route() -> dict[str, Any]:
+        return {"separators": [s.to_json() for s in list_separators()]}
+
+    @app.get("/v1/arrangers", dependencies=[Depends(require_token)])
+    def get_arrangers_route() -> dict[str, Any]:
+        return {"strategies": [s.to_json() for s in list_arranger_strategies()]}
 
     @app.get("/v1/presets", dependencies=[Depends(require_token)])
     def get_presets(profile_id: str | None = Query(default=None)) -> dict[str, Any]:
@@ -657,8 +685,39 @@ def create_app(
         return set_dettato_device(req.device)
 
     @app.post("/v1/gpu/install", dependencies=[Depends(require_token)])
-    def install_gpu_torch() -> dict[str, Any]:
-        return {"install": tool_manager.start("dettato-gpu")}
+    def install_gpu_torch(tool_id: str = Query(default="dettato")) -> dict[str, Any]:
+        if tool_id == "dettato":
+            return {"install": tool_manager.start("dettato-gpu")}
+        if tool_id == "demucs":
+            return {"install": tool_manager.start("demucs-gpu")}
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"unsupported GPU target: {tool_id!r}",
+            {"supported": ["dettato", "demucs"]},
+        )
+
+    @app.post("/v1/gpu/install/demucs", dependencies=[Depends(require_token)])
+    def install_demucs_gpu_torch() -> dict[str, Any]:
+        return {"install": tool_manager.start("demucs-gpu")}
+
+    def _variant_to_arrange_options(v: ArrangeVariantConfig) -> ArrangeOptions:
+        return ArrangeOptions(
+            style=v.style,
+            transpose=v.transpose,
+            semitone_policy=v.semitone_policy,
+            max_chord_keys=v.max_chord_keys,
+            chord_window_ms=v.chord_window_ms,
+            speed=v.speed,
+            include_tracks=tuple(v.include_tracks) if v.include_tracks is not None else None,
+            exclude_percussion=v.exclude_percussion,
+            arpeggiate_ms=v.arpeggiate_ms,
+            prefer_melody_track=v.prefer_melody_track,
+            arranger_strategy=v.arranger_strategy,
+            melody_track=v.melody_track,
+            vocal_ducking=v.vocal_ducking,
+            melody_ceiling=v.melody_ceiling,
+            anti_clash_semitones=v.anti_clash_semitones,
+        )
 
     @app.post("/v1/jobs/transcribe", dependencies=[Depends(require_token)])
     def transcribe_job(req: TranscribeJobRequest) -> dict[str, Any]:
@@ -666,18 +725,30 @@ def create_app(
             min_pitch=req.min_pitch,
             max_pitch=req.max_pitch,
             min_note_ms=req.min_note_ms,
+            onset_threshold=req.onset_threshold,
+            frame_threshold=req.frame_threshold,
         )
         if req.async_mode:
             with library_gate.use():
                 job = job_manager.submit(
                     req.song_id,
                     engine_id=req.engine_id,
+                    pipeline_id=req.pipeline_id,
+                    vocal_engine_id=req.vocal_engine_id,
+                    accomp_engine_id=req.accomp_engine_id,
                     options=opts,
                     data_dir=app.state.data_dir,
                 )
             return {"job": job}
         with open_store() as store:
-            rec = store.transcribe_song(req.song_id, engine_id=req.engine_id, options=opts)
+            rec = store.transcribe_song(
+                req.song_id,
+                engine_id=req.engine_id,
+                pipeline_id=req.pipeline_id,
+                vocal_engine_id=req.vocal_engine_id,
+                accomp_engine_id=req.accomp_engine_id,
+                options=opts,
+            )
         return {"transcription": rec.to_json()}
 
     @app.get("/v1/jobs", dependencies=[Depends(require_token)])
@@ -694,24 +765,14 @@ def create_app(
 
     @app.post("/v1/jobs/arrange", dependencies=[Depends(require_token)])
     def arrange_job(req: ArrangeJobRequest) -> dict[str, Any]:
-        opts = ArrangeOptions(
-            style=req.style,
-            transpose=req.transpose,
-            semitone_policy=req.semitone_policy,
-            max_chord_keys=req.max_chord_keys,
-            chord_window_ms=req.chord_window_ms,
-            speed=req.speed,
-            include_tracks=tuple(req.include_tracks) if req.include_tracks is not None else None,
-            exclude_percussion=req.exclude_percussion,
-            arpeggiate_ms=req.arpeggiate_ms,
-            prefer_melody_track=req.prefer_melody_track,
-        )
+        opts = _variant_to_arrange_options(req)
         with open_store() as store:
             rec = store.arrange_song(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
                 options=opts,
                 label=req.label,
+                transcription_id=req.transcription_id,
             )
         return {"arrangement": rec.to_json()}
 
@@ -720,40 +781,30 @@ def create_app(
         va = req.variant_a or ArrangeVariantConfig(
             style=Style.BALANCED,
             arpeggiate_ms=0,
-            label="A · 均衡主旋律",
+            arranger_strategy="classic",
+            label="A · 经典基线",
         )
         vb = req.variant_b or ArrangeVariantConfig(
-            style=Style.RICH,
-            arpeggiate_ms=20,
-            label="B · 丰满琶音",
+            style=Style.BALANCED,
+            arpeggiate_ms=0,
+            arranger_strategy="vocal_lead",
+            label="B · 主旋律增强",
         )
-
-        def _opts(v: ArrangeVariantConfig) -> ArrangeOptions:
-            return ArrangeOptions(
-                style=v.style,
-                transpose=v.transpose,
-                semitone_policy=v.semitone_policy,
-                max_chord_keys=v.max_chord_keys,
-                chord_window_ms=v.chord_window_ms,
-                speed=v.speed,
-                include_tracks=tuple(v.include_tracks) if v.include_tracks is not None else None,
-                exclude_percussion=v.exclude_percussion,
-                arpeggiate_ms=v.arpeggiate_ms,
-                prefer_melody_track=v.prefer_melody_track,
-            )
 
         with open_store() as store:
             rec_a = store.arrange_song(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
-                options=_opts(va),
+                options=_variant_to_arrange_options(va),
                 label=va.label or "A",
+                transcription_id=va.transcription_id or req.transcription_id,
             )
             rec_b = store.arrange_song(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
-                options=_opts(vb),
+                options=_variant_to_arrange_options(vb),
                 label=vb.label or "B",
+                transcription_id=vb.transcription_id or req.transcription_id,
             )
             diff = store.compare_arrangements(rec_a.id, rec_b.id)
         return {

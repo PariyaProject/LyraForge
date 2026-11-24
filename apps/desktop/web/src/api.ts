@@ -35,13 +35,57 @@ export interface SourceRecord {
   original_name: string;
 }
 
+export interface SongTrackInfo {
+  index: number;
+  name: string;
+  note_count: number;
+  channels: number[];
+  is_percussion: boolean;
+  min_pitch: number;
+  max_pitch: number;
+}
+
+export interface SongTracksResponse {
+  song_id: string;
+  source_kind: string | null;
+  transcription_id: string | null;
+  pipeline_id: string | null;
+  detected_melody_track: number | null;
+  tracks: SongTrackInfo[];
+}
+
 export interface TranscriptionRecord {
   id: string;
   engine: string;
   engine_version: string;
+  pipeline_id?: string;
+  tracks?: SongTrackInfo[];
   status: string;
   note_count: number;
   created_at: string;
+}
+
+export interface PipelineInfo {
+  id: string;
+  display_name: string;
+  description: string;
+  recommended_for: string;
+  stages: string[];
+  required_tools: string[];
+  available: boolean;
+  missing_tools: string[];
+  default_engine_id: string;
+  default_vocal_engine_id: string | null;
+  default_accomp_engine_id: string | null;
+  default_arranger_strategy: string;
+  supports_engine_override: boolean;
+}
+
+export interface ArrangerStrategyInfo {
+  id: string;
+  display_name: string;
+  description: string;
+  recommended_for: string;
 }
 
 export interface TranscriberInfo {
@@ -115,6 +159,8 @@ export interface GpuStatus {
   nvidia: { present: boolean; name: string | null; driver: string | null };
   dettato_installed: boolean;
   dettato_torch: GpuTorchInfo | null;
+  demucs_installed?: boolean;
+  demucs_torch?: GpuTorchInfo | null;
   device: string;
   device_env: string;
 }
@@ -137,6 +183,7 @@ export interface TranscriptionJob {
   id: string;
   song_id: string;
   engine_id: string;
+  pipeline_id?: string;
   status: "queued" | "running" | "completed" | "cancelled" | "failed";
   stage: string;
   progress: number;
@@ -173,6 +220,8 @@ export interface ArrangementRecord {
   score?: number | null;
   user_vote?: number;
   label?: string | null;
+  transcription_id?: string | null;
+  arranger_strategy?: string;
   created_at: string;
 }
 
@@ -381,6 +430,21 @@ export class LyraForgeApi {
     return this.request<{ transcribers: TranscriberInfo[] }>("/v1/transcribers");
   }
 
+  listPipelines(): Promise<{ pipelines: PipelineInfo[] }> {
+    return this.request<{ pipelines: PipelineInfo[] }>("/v1/pipelines");
+  }
+
+  listArrangers(): Promise<{ strategies: ArrangerStrategyInfo[] }> {
+    return this.request<{ strategies: ArrangerStrategyInfo[] }>("/v1/arrangers");
+  }
+
+  getSongTracks(songId: string, transcriptionId?: string | null): Promise<SongTracksResponse> {
+    const qs = transcriptionId ? `?transcription_id=${encodeURIComponent(transcriptionId)}` : "";
+    return this.request<SongTracksResponse>(
+      `/v1/library/songs/${encodeURIComponent(songId)}/tracks${qs}`,
+    );
+  }
+
   listTools(): Promise<ToolsResponse> {
     return this.request<ToolsResponse>("/v1/tools");
   }
@@ -473,6 +537,12 @@ export class LyraForgeApi {
     });
   }
 
+  installDemucsGpu(): Promise<{ install: ToolInstallState }> {
+    return this.request<{ install: ToolInstallState }>("/v1/tools/demucs-gpu/install", {
+      method: "POST",
+    });
+  }
+
   importMedia(file: File, title: string, artist: string, tags: string): Promise<{ song: SongSummary }> {
     const fd = new FormData();
     fd.append("file", file);
@@ -482,11 +552,31 @@ export class LyraForgeApi {
     return this.request("/v1/imports", { method: "POST", body: fd });
   }
 
-  submitTranscribeJob(songId: string, engineId: string): Promise<{ job: TranscriptionJob }> {
+  submitTranscribeJob(
+    songId: string,
+    engineId: string,
+    opts?: {
+      pipelineId?: string;
+      vocalEngineId?: string | null;
+      accompEngineId?: string | null;
+    },
+  ): Promise<{ job: TranscriptionJob }> {
+    const payload: Record<string, unknown> = {
+      song_id: songId,
+      engine_id: engineId,
+      async_mode: true,
+    };
+    if (opts?.pipelineId) payload.pipeline_id = opts.pipelineId;
+    if (opts?.vocalEngineId && opts.vocalEngineId !== "auto") {
+      payload.vocal_engine_id = opts.vocalEngineId;
+    }
+    if (opts?.accompEngineId && opts.accompEngineId !== "auto") {
+      payload.accomp_engine_id = opts.accompEngineId;
+    }
     return this.request("/v1/jobs/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ song_id: songId, engine_id: engineId, async_mode: true }),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -510,6 +600,13 @@ export class LyraForgeApi {
     transpose: number | null;
     arpeggiate_ms?: number;
     prefer_melody_track?: boolean;
+    transcription_id?: string | null;
+    arranger_strategy?: string;
+    include_tracks?: number[] | null;
+    melody_track?: number | null;
+    vocal_ducking?: boolean;
+    melody_ceiling?: boolean;
+    anti_clash_semitones?: boolean;
     label?: string | null;
   }): Promise<{ arrangement: ArrangementRecord }> {
     return this.request("/v1/jobs/arrange", {
@@ -522,11 +619,15 @@ export class LyraForgeApi {
   arrangeAB(payload: {
     song_id: string;
     instrument_profile_id?: string;
+    transcription_id?: string | null;
     variant_a?: {
       style: "melody" | "balanced" | "rich";
       speed: number;
       transpose: number | null;
       arpeggiate_ms?: number;
+      arranger_strategy?: string;
+      include_tracks?: number[] | null;
+      melody_track?: number | null;
       label?: string;
     };
     variant_b?: {
@@ -534,6 +635,9 @@ export class LyraForgeApi {
       speed: number;
       transpose: number | null;
       arpeggiate_ms?: number;
+      arranger_strategy?: string;
+      include_tracks?: number[] | null;
+      melody_track?: number | null;
       label?: string;
     };
   }): Promise<{

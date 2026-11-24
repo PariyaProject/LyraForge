@@ -20,6 +20,33 @@ const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string }> = [
 
 const currentArr = computed(() => props.store.arrDetail.value?.arrangement ?? null);
 
+const activeStrategyInfo = computed(
+  () =>
+    props.store.arrangerStrategies.value.find(
+      (s) => s.id === props.store.selectedArrangerStrategy.value,
+    ) ?? null,
+);
+
+const effectiveMelodyTrack = computed(
+  () => props.store.selectedMelodyTrack.value ?? props.store.detectedMelodyTrack.value,
+);
+
+async function onTranscriptionSelect(event: Event): Promise<void> {
+  const trId = (event.target as HTMLSelectElement).value;
+  await props.store.selectTranscriptionForStudio(trId);
+}
+
+function isTrackIncluded(index: number): boolean {
+  const sel = props.store.selectedTrackIndices.value;
+  if (sel === null) return true;
+  return sel.includes(index);
+}
+
+function toggleMelodyTrack(index: number): void {
+  props.store.selectedMelodyTrack.value =
+    props.store.selectedMelodyTrack.value === index ? null : index;
+}
+
 const profilePresets = computed(() =>
   props.store.presets.value.filter(
     (preset) => preset.profile_id === props.store.selectedProfileId.value,
@@ -212,6 +239,93 @@ async function onArrangementChange(event: Event): Promise<void> {
         class="studio-inspector"
         aria-label="编曲属性与质量检查器"
       >
+        <div class="inspector-section">
+          <h2 class="subsection-heading">转谱源与编曲算法</h2>
+          <div
+            v-if="!store.hasMidiSource.value && store.songTranscriptions.value.length > 0"
+            class="field"
+          >
+            <label for="studio-transcription-select">当前使用的转谱版本</label>
+            <select
+              id="studio-transcription-select"
+              :value="store.selectedTranscriptionId.value ?? ''"
+              @change="onTranscriptionSelect"
+            >
+              <option
+                v-for="tr in store.songTranscriptions.value"
+                :key="tr.id"
+                :value="tr.id"
+              >
+                {{ tr.pipeline_id ?? "direct" }} · {{ tr.engine }} ({{ tr.note_count }} 音符)
+              </option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="studio-arranger-strategy">编曲映射策略</label>
+            <select
+              id="studio-arranger-strategy"
+              v-model="store.selectedArrangerStrategy.value"
+            >
+              <option
+                v-for="strat in store.arrangerStrategies.value"
+                :key="strat.id"
+                :value="strat.id"
+              >
+                {{ strat.display_name }}
+              </option>
+            </select>
+          </div>
+          <p v-if="activeStrategyInfo" class="muted" style="margin: 0; font-size: 12px">
+            {{ activeStrategyInfo.description }}
+          </p>
+        </div>
+
+        <div v-if="store.songTracks.value.length > 0" class="inspector-section">
+          <div class="pane-header">
+            <h2 class="subsection-heading">MIDI 分轨与主旋律</h2>
+            <button
+              v-if="store.selectedMelodyTrack.value !== null"
+              type="button"
+              class="ghost btn-sm"
+              @click="store.selectedMelodyTrack.value = null"
+            >
+              自动识别
+            </button>
+          </div>
+          <ul class="line-list">
+            <li
+              v-for="track in store.songTracks.value"
+              :key="track.index"
+              class="track-row"
+            >
+              <label class="track-check-label">
+                <input
+                  type="checkbox"
+                  :disabled="track.is_percussion"
+                  :checked="!track.is_percussion && isTrackIncluded(track.index)"
+                  @change="store.toggleTrackIncluded(track.index)"
+                />
+                <span class="track-title">{{ track.name }}</span>
+              </label>
+              <div class="track-meta-actions">
+                <span class="muted tabular" style="font-size: 12px">
+                  {{ track.note_count }} 音
+                </span>
+                <button
+                  v-if="!track.is_percussion"
+                  type="button"
+                  class="btn-sm"
+                  :class="effectiveMelodyTrack === track.index ? 'active-pill' : 'ghost'"
+                  @click="toggleMelodyTrack(track.index)"
+                >
+                  {{ effectiveMelodyTrack === track.index ? "主旋律" : "设为主旋律" }}
+                </button>
+                <span v-else class="pill">打击乐</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+
         <div class="inspector-section">
           <div class="pane-header">
             <h2 class="subsection-heading">编曲适配评分</h2>
@@ -537,6 +651,43 @@ async function onArrangementChange(event: Event): Promise<void> {
 .preset-list {
   display: flex;
   flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.track-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  padding-block: var(--space-2xs);
+  border-block-end: var(--rule-hair) solid var(--color-rule);
+}
+
+.track-row:last-child {
+  border-block-end: 0;
+}
+
+.track-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-inline-size: 0;
+  cursor: pointer;
+}
+
+.track-title {
+  font-size: 12px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-inline-size: 124px;
+}
+
+.track-meta-actions {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-2xs);
 }
 

@@ -65,7 +65,23 @@ DETTATO = ToolSpec(
     dist_name="dettato",
 )
 
-TOOL_SPECS: tuple[ToolSpec, ...] = (FFMPEG, BASIC_PITCH, DETTATO)
+DEMUCS = ToolSpec(
+    id="demucs",
+    display_name="Demucs 音源分离 (htdemucs)",
+    license="MIT（代码；预训练权重含研究数据来源，按需本地下载）",
+    description=(
+        "将音频拆分为人声、低音、其他乐器与鼓组 4 轨，自动去鼓并提取干净人声主旋律与伴奏"
+        "（PyTorch，支持 CUDA/MPS）。"
+    ),
+    kind="python",
+    download_mb=650,
+    env_var="LYRAFORGE_DEMUCS_PYTHON",
+    packages=("demucs==4.0.1", "soundfile"),
+    probe_module="demucs",
+    dist_name="demucs",
+)
+
+TOOL_SPECS: tuple[ToolSpec, ...] = (FFMPEG, BASIC_PITCH, DETTATO, DEMUCS)
 
 
 def tool_spec(tool_id: str) -> ToolSpec | None:

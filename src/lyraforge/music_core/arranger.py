@@ -1,31 +1,18 @@
-"""Rule-based baseline arranger: NormalizedScore + InstrumentProfile -> key events.
+"""Rule-based and music-theory 21-key arrangers: NormalizedScore + InstrumentProfile -> key events.
 
-Pipeline (PROJECT_SPEC §4.2, baseline subset), every step deterministic:
-
-1. Track filter (drop GM percussion channel by default, optional track whitelist).
-2. Global transposition: fixed, or auto-search minimizing an integer cost
-   (0 = direct key, 1 = needs octave fold, 2 = chromatic note missing on the
-   instrument); ties broken by smallest |k|, then lowest k. Uniform
-   transposition preserves every interval, so it cannot make a melody "out of
-   tune" relative to itself; the semitone cost prevents choosing a key that
-   forces many substitutions.
-3. Range: out-of-range notes are folded by whole octaves (recorded).
-4. Missing semitones: ``nearest`` (tie -> lower pitch, max 2 semitones) or ``drop``.
-5. Same key at the same millisecond -> keep one (unadjusted, louder, longer first).
-6. Chord limit per onset cluster (``chord_window_ms``): keep highest, then
-   lowest, then remaining from high to low.
-7. Same-key retrigger faster than ``min_same_key_interval_ms`` -> dropped.
-8. Tap events with hold clamped to profile timing and never overlapping the
-   next press of the same key.
-
-Every dropped or altered note is recorded so previews can show what changed.
+Supports extensible arrangement strategies via ``list_arranger_strategies()``:
+* ``classic`` — Original deterministic baseline arranger (preserved verbatim).
+* ``vocal_lead`` — Music-theory vocal-first arranger with weighted transposition,
+  asymmetric-scale folding checks, accompaniment pitch ceiling, psychoacoustic
+  anti-clash semitone handling, vocal ducking and interlude handoff.
 """
 
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
@@ -38,6 +25,7 @@ from lyraforge.music_core.profile import InstrumentProfile
 ARRANGER_VERSION = "0.1.0"
 
 MAX_SUBSTITUTION_SEMITONES = 2
+_CONSONANT_INTERVALS = frozenset({0, 3, 4, 5, 7, 8, 9})
 
 
 class Style(StrEnum):
@@ -67,6 +55,67 @@ class DropReason(StrEnum):
     REPEAT_TOO_FAST = "repeat_too_fast"
 
 
+@dataclass(frozen=True, slots=True)
+class ArrangerStrategyInfo:
+    id: str
+    display_name: str
+    description: str
+    recommended_for: str
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "display_name": self.display_name,
+            "description": self.description,
+            "recommended_for": self.recommended_for,
+        }
+
+
+_STRATEGIES: dict[str, ArrangerStrategyInfo] = {}
+
+
+def register_arranger_strategy(info: ArrangerStrategyInfo) -> None:
+    """Register or update an arrangement strategy metadata descriptor."""
+    _STRATEGIES[info.id] = info
+
+
+def list_arranger_strategies() -> list[ArrangerStrategyInfo]:
+    """Return all registered arrangement strategies in registration order."""
+    return list(_STRATEGIES.values())
+
+
+def get_arranger_strategy(strategy_id: str) -> ArrangerStrategyInfo:
+    info = _STRATEGIES.get(strategy_id)
+    if info is None:
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"unknown arranger strategy: {strategy_id!r}",
+            {"available": sorted(_STRATEGIES)},
+        )
+    return info
+
+
+register_arranger_strategy(
+    ArrangerStrategyInfo(
+        id="classic",
+        display_name="经典基线（原算法）",
+        description="保留原始全局均衡移调与高音优先和弦裁剪逻辑，适合纯钢琴、独奏与现成精选 MIDI。",
+        recommended_for="纯器乐 / 独奏 / 精选 MIDI",
+    )
+)
+register_arranger_strategy(
+    ArrangerStrategyInfo(
+        id="vocal_lead",
+        display_name="主旋律优先 · 音乐学增强",
+        description=(
+            "以人声/主旋律为最高权重移调并自动校准非对称音阶；"
+            "伴奏限制低于主旋律且回避二度撞音，人声段伴奏让路、前奏/间奏自动放开。"
+        ),
+        recommended_for="人声流行歌 / 分轨转录 / 复杂混音",
+    )
+)
+
+
 @dataclass(frozen=True)
 class ArrangeOptions:
     style: Style = Style.BALANCED
@@ -80,6 +129,11 @@ class ArrangeOptions:
     exclude_percussion: bool = True
     arpeggiate_ms: int = 0
     prefer_melody_track: bool = True
+    arranger_strategy: str = "classic"
+    melody_track: int | None = None
+    vocal_ducking: bool = True
+    melody_ceiling: bool = True
+    anti_clash_semitones: bool = True
 
     def validate(self) -> None:
         problems: list[str] = []
@@ -98,6 +152,10 @@ class ArrangeOptions:
             problems.append("include_tracks must be non-negative")
         if not 0 <= self.arpeggiate_ms <= 60:
             problems.append("arpeggiate_ms must be within [0, 60]")
+        if self.arranger_strategy not in _STRATEGIES:
+            problems.append(f"unknown arranger_strategy: {self.arranger_strategy!r}")
+        if self.melody_track is not None and self.melody_track < 0:
+            problems.append("melody_track must be >= 0")
         if problems:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "invalid arrange options",
                             {"problems": problems})
@@ -169,6 +227,18 @@ class _Cand:
     at_ms: int
     dur_ms: int
     adj: tuple[str, ...]
+    above_melody: bool = False
+
+
+def _fold_pitch_to_range(pitch: int, lo: int, hi: int) -> tuple[int, list[str]]:
+    adj: list[str] = []
+    if pitch < lo:
+        pitch += 12 * math.ceil((lo - pitch) / 12)
+        adj.append(Adjustment.OCTAVE_FOLDED)
+    elif pitch > hi:
+        pitch -= 12 * math.ceil((pitch - hi) / 12)
+        adj.append(Adjustment.OCTAVE_FOLDED)
+    return pitch, adj
 
 
 def _transpose_cost(notes: list[Note], k: int, pitch_set: frozenset[int],
@@ -179,6 +249,26 @@ def _transpose_cost(notes: list[Note], k: int, pitch_set: frozenset[int],
         if p in pitch_set:
             continue
         cost += 1 if (p % 12) in pcs else 2
+    return cost
+
+
+def _weighted_transpose_cost(
+    weighted_notes: Sequence[tuple[Note, int, bool]],
+    k: int,
+    pitch_set: frozenset[int],
+    lo: int,
+    hi: int,
+) -> int:
+    cost = 0
+    for n, weight, is_mel in weighted_notes:
+        p = n.pitch + k
+        if p in pitch_set:
+            continue
+        folded, _ = _fold_pitch_to_range(p, lo, hi)
+        if lo <= folded <= hi and folded in pitch_set:
+            cost += weight
+        else:
+            cost += weight * (3 if is_mel else 2)
     return cost
 
 
@@ -200,6 +290,46 @@ def _search_transpose(
     for k in range(-search, search + 1):
         _check_cancel(is_cancelled)
         scored_list.append((k, _transpose_cost(notes, k, pitch_set, pcs)))
+    scored = sorted(scored_list, key=lambda kc: (kc[1], abs(kc[0]), kc[0]))
+    return scored[0][0], tuple(scored[:5])
+
+
+def _search_transpose_vocal_lead(
+    notes: list[Note],
+    profile: InstrumentProfile,
+    search: int,
+    *,
+    melody_track: int | None,
+    multi_track: bool,
+    speed: Fraction,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> tuple[int, tuple[tuple[int, int], ...]]:
+    pitch_set = frozenset(profile.pitches)
+    lo, hi = profile.min_pitch, profile.max_pitch
+    weighted: list[tuple[Note, int, bool]] = []
+    if multi_track and melody_track is not None:
+        mel_count = sum(1 for n in notes if n.track == melody_track)
+        acc_count = len(notes) - mel_count
+        mel_weight = max(4, round(3 * acc_count / max(1, mel_count))) if acc_count > 0 else 4
+        for n in notes:
+            is_mel = n.track == melody_track
+            weighted.append((n, mel_weight if is_mel else 1, is_mel))
+    else:
+        bucket_peak: dict[int, int] = {}
+        for n in notes:
+            bucket = _scale_ms(n.start_us, speed) // 120
+            prev = bucket_peak.get(bucket)
+            if prev is None or n.pitch > prev:
+                bucket_peak[bucket] = n.pitch
+        for n in notes:
+            bucket = _scale_ms(n.start_us, speed) // 120
+            is_peak = n.pitch == bucket_peak.get(bucket)
+            weighted.append((n, 3 if is_peak else 1, is_peak))
+
+    scored_list: list[tuple[int, int]] = []
+    for k in range(-search, search + 1):
+        _check_cancel(is_cancelled)
+        scored_list.append((k, _weighted_transpose_cost(weighted, k, pitch_set, lo, hi)))
     scored = sorted(scored_list, key=lambda kc: (kc[1], abs(kc[0]), kc[0]))
     return scored[0][0], tuple(scored[:5])
 
@@ -235,7 +365,7 @@ def _detect_melody_track_from_notes(
         presence = min(1.0, len(t_notes) / max(1, max_notes))
         mono_weight = min(1.0, len(t_notes) / 4.0)
         name = track_names.get(track_id, "")
-        name_bonus = 0.15 if any(h in name for h in _MELODY_NAME_HINTS) else 0.0
+        name_bonus = 0.45 if any(h in name for h in _MELODY_NAME_HINTS) else 0.0
         if any(h in name for h in _ACCOMP_NAME_HINTS):
             name_bonus -= 0.10
         score_val = (
@@ -259,6 +389,371 @@ def detect_melody_track(score: NormalizedScore) -> int | None:
 
 def _scale_ms(us: int, speed: Fraction) -> int:
     return round(Fraction(us, 1000) / speed)
+
+
+def _map_notes_classic(
+    notes: list[Note],
+    k: int,
+    speed: Fraction,
+    profile: InstrumentProfile,
+    options: ArrangeOptions,
+    dropped: list[DroppedNote],
+    is_cancelled: Callable[[], bool] | None,
+) -> list[_Cand]:
+    lo, hi = profile.min_pitch, profile.max_pitch
+    available = profile.pitches
+    cands: list[_Cand] = []
+    for n in notes:
+        _check_cancel(is_cancelled)
+        at_ms = _scale_ms(n.start_us, speed)
+        p, adj = _fold_pitch_to_range(n.pitch + k, lo, hi)
+        if not lo <= p <= hi:
+            dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
+            continue
+        key = profile.key_for_pitch(p)
+        if key is None:
+            nearest = min(available, key=lambda c: (abs(c - p), c))
+            if (options.semitone_policy == SemitonePolicy.DROP
+                    or abs(nearest - p) > MAX_SUBSTITUTION_SEMITONES):
+                dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
+                continue
+            p = nearest
+            adj.append(Adjustment.SEMITONE_SUBSTITUTED)
+            key = profile.key_for_pitch(p)
+            assert key is not None
+        cands.append(_Cand(n, p, key.key_id, at_ms, _scale_ms(n.duration_us, speed), tuple(adj)))
+    return cands
+
+
+def _build_melody_windows(
+    mel_cands: Sequence[_Cand],
+) -> tuple[list[tuple[int, int, int]], list[int]]:
+    windows = sorted(
+        (
+            (c.at_ms - 40, max(c.at_ms + c.dur_ms, c.at_ms + 220), c.mapped)
+            for c in mel_cands
+        ),
+        key=lambda w: (w[0], w[1]),
+    )
+    onsets = sorted(c.at_ms for c in mel_cands)
+    return windows, onsets
+
+
+def _active_melody_pitches_at(
+    windows: Sequence[tuple[int, int, int]],
+    at_ms: int,
+    cursor: int,
+) -> tuple[list[int], int]:
+    while cursor < len(windows) and windows[cursor][1] < at_ms:
+        cursor += 1
+    pitches: list[int] = []
+    idx = cursor
+    while idx < len(windows) and windows[idx][0] <= at_ms:
+        if at_ms <= windows[idx][1]:
+            pitches.append(windows[idx][2])
+        idx += 1
+    return pitches, cursor
+
+
+def _map_notes_vocal_lead(
+    notes: list[Note],
+    k: int,
+    speed: Fraction,
+    profile: InstrumentProfile,
+    options: ArrangeOptions,
+    melody_track: int | None,
+    use_melody_priority: bool,
+    dropped: list[DroppedNote],
+    is_cancelled: Callable[[], bool] | None,
+) -> tuple[list[_Cand], list[tuple[int, int, int]], list[int]]:
+    if not (use_melody_priority and melody_track is not None):
+        return _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled), [], []
+
+    lo, hi = profile.min_pitch, profile.max_pitch
+    available = profile.pitches
+    mel_notes = sorted(
+        (n for n in notes if n.track == melody_track),
+        key=lambda n: (n.start_us, -n.pitch),
+    )
+    acc_notes = sorted(
+        (n for n in notes if n.track != melody_track),
+        key=lambda n: (n.start_us, n.pitch),
+    )
+
+    mel_cands: list[_Cand] = []
+    prev_mel_pitch: int | None = None
+    for n in mel_notes:
+        _check_cancel(is_cancelled)
+        at_ms = _scale_ms(n.start_us, speed)
+        p, adj = _fold_pitch_to_range(n.pitch + k, lo, hi)
+        if not lo <= p <= hi:
+            dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
+            continue
+        key = profile.key_for_pitch(p)
+        if key is None:
+            sub_cands = [c for c in available if abs(c - p) <= MAX_SUBSTITUTION_SEMITONES]
+            if options.semitone_policy == SemitonePolicy.DROP or not sub_cands:
+                dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
+                continue
+            p = min(
+                sub_cands,
+                key=lambda c: (
+                    abs(c - p),
+                    abs(c - prev_mel_pitch) if prev_mel_pitch is not None else 0,
+                    c,
+                ),
+            )
+            adj.append(Adjustment.SEMITONE_SUBSTITUTED)
+            key = profile.key_for_pitch(p)
+            assert key is not None
+        prev_mel_pitch = p
+        mel_cands.append(
+            _Cand(n, p, key.key_id, at_ms, _scale_ms(n.duration_us, speed), tuple(adj))
+        )
+
+    windows, mel_onsets = _build_melody_windows(mel_cands)
+    cursor = 0
+    acc_cands: list[_Cand] = []
+
+    for n in acc_notes:
+        _check_cancel(is_cancelled)
+        at_ms = _scale_ms(n.start_us, speed)
+        active_pitches, cursor = _active_melody_pitches_at(windows, at_ms, cursor)
+        active_max = max(active_pitches) if active_pitches else None
+
+        p, adj = _fold_pitch_to_range(n.pitch + k, lo, hi)
+        if not lo <= p <= hi:
+            dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
+            continue
+
+        if options.melody_ceiling and active_max is not None and p >= active_max:
+            shifted = False
+            while p >= active_max and p - 12 >= lo:
+                p -= 12
+                shifted = True
+            if shifted and Adjustment.OCTAVE_FOLDED not in adj:
+                adj.append(Adjustment.OCTAVE_FOLDED)
+
+        above_mel = bool(options.melody_ceiling and active_max is not None and p >= active_max)
+        key = profile.key_for_pitch(p)
+        if key is None:
+            sub_cands = [c for c in available if abs(c - p) <= MAX_SUBSTITUTION_SEMITONES]
+            if options.semitone_policy == SemitonePolicy.DROP or not sub_cands:
+                dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
+                continue
+            if options.anti_clash_semitones and active_pitches:
+                non_clashing = [
+                    c for c in sub_cands
+                    if not any(abs(c - mp) in (1, 2) for mp in active_pitches)
+                ]
+                sub_cands = non_clashing
+            if options.melody_ceiling and active_max is not None and sub_cands:
+                below = [c for c in sub_cands if c < active_max]
+                if below:
+                    sub_cands = below
+                elif options.anti_clash_semitones:
+                    sub_cands = []
+            if not sub_cands:
+                dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
+                continue
+            p = min(sub_cands, key=lambda c: (abs(c - p), c))
+            adj.append(Adjustment.SEMITONE_SUBSTITUTED)
+            key = profile.key_for_pitch(p)
+            assert key is not None
+            above_mel = bool(
+                options.melody_ceiling and active_max is not None and p >= active_max
+            )
+
+        acc_cands.append(
+            _Cand(
+                n,
+                p,
+                key.key_id,
+                at_ms,
+                _scale_ms(n.duration_us, speed),
+                tuple(adj),
+                above_melody=above_mel,
+            )
+        )
+
+    return [*mel_cands, *acc_cands], windows, mel_onsets
+
+
+def _pick_balanced_voices(
+    cluster: Sequence[_Cand],
+    limit: int,
+    *,
+    consonant_ref: int | None = None,
+) -> list[_Cand]:
+    if len(cluster) <= limit:
+        return list(cluster)
+    if limit <= 0:
+        return []
+    bass = min(cluster, key=lambda c: (c.mapped, c.at_ms))
+    picked = [bass]
+    remaining = [c for c in cluster if c is not bass]
+    if consonant_ref is not None:
+        remaining.sort(
+            key=lambda c: (
+                0 if ((consonant_ref - c.mapped) % 12) in _CONSONANT_INTERVALS else 1,
+                -c.mapped,
+                -c.note.velocity,
+                c.at_ms,
+            )
+        )
+    else:
+        remaining.sort(key=lambda c: (-c.mapped, -c.note.velocity, c.at_ms))
+    for cand in remaining:
+        if len(picked) >= limit:
+            break
+        picked.append(cand)
+    return picked
+
+
+def _select_vocal_lead_clusters(
+    deduped: list[_Cand],
+    *,
+    max_chord: int,
+    profile: InstrumentProfile,
+    options: ArrangeOptions,
+    melody_track: int | None,
+    use_melody_priority: bool,
+    mel_windows: Sequence[tuple[int, int, int]],
+    mel_onsets: Sequence[int],
+    dropped: list[DroppedNote],
+    is_cancelled: Callable[[], bool] | None,
+) -> list[_Cand]:
+    limited: list[_Cand] = []
+    cursor = 0
+    prev_mel_pitch: int | None = None
+    lo = profile.min_pitch
+
+    i = 0
+    while i < len(deduped):
+        _check_cancel(is_cancelled)
+        start = deduped[i].at_ms
+        j = i
+        while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
+            j += 1
+        cluster = deduped[i:j]
+
+        clash_ids: set[int] = set()
+        if use_melody_priority and melody_track is not None:
+            mel_in = sorted(
+                (c for c in cluster if c.note.track == melody_track),
+                key=lambda c: (-c.mapped, c.at_ms),
+            )
+            acc_in = [c for c in cluster if c.note.track != melody_track]
+            active_win_pitches, cursor = _active_melody_pitches_at(mel_windows, start, cursor)
+            active_refs = [c.mapped for c in mel_in] or active_win_pitches
+
+            pos = bisect_left(mel_onsets, start)
+            since_prev = start - mel_onsets[pos - 1] if pos > 0 else math.inf
+            until_next = mel_onsets[pos] - start if pos < len(mel_onsets) else math.inf
+            is_interlude = (
+                not mel_in
+                and not active_win_pitches
+                and (not mel_onsets or (since_prev >= 600 and until_next >= 300))
+            )
+
+            if is_interlude:
+                cap = (
+                    min(2, profile.polyphony_limit or 2)
+                    if options.style == Style.MELODY
+                    else max_chord
+                )
+                by_pitch = sorted(cluster, key=lambda c: (-c.mapped, c.at_ms))
+                priority = [by_pitch[0]]
+                if len(by_pitch) > 1:
+                    priority.append(by_pitch[-1])
+                priority.extend(by_pitch[1:-1])
+                kept_cluster = priority[:cap]
+            else:
+                kept_mel = mel_in[:max_chord]
+                clean_acc: list[_Cand] = []
+                ref_max = max(active_refs) if active_refs else None
+                for c in acc_in:
+                    if options.anti_clash_semitones and any(
+                        abs(c.mapped - mp) in (1, 2) for mp in active_refs
+                    ):
+                        clash_ids.add(id(c))
+                        continue
+                    if options.melody_ceiling and (
+                        c.above_melody or (ref_max is not None and c.mapped >= ref_max)
+                    ):
+                        continue
+                    clean_acc.append(c)
+
+                rem = max_chord - len(kept_mel)
+                if options.vocal_ducking:
+                    if options.style == Style.MELODY:
+                        acc_budget = 0
+                    elif options.style == Style.BALANCED:
+                        acc_budget = min(rem, 2)
+                    else:
+                        acc_budget = rem
+                else:
+                    acc_budget = rem
+
+                primary_ref = active_refs[0] if active_refs else None
+                kept_acc = _pick_balanced_voices(
+                    clean_acc, acc_budget, consonant_ref=primary_ref
+                )
+                kept_cluster = [*kept_mel, *kept_acc]
+        else:
+            # Single-track vocal_lead: track melodic contour continuity + clean accompaniment below
+            if len(cluster) == 1:
+                kept_cluster = list(cluster)
+                if prev_mel_pitch is None or cluster[0].mapped >= lo + 7:
+                    prev_mel_pitch = cluster[0].mapped
+            else:
+                def _lead_score(
+                    cand: _Cand, prev: int | None = prev_mel_pitch
+                ) -> tuple[float, int]:
+                    pitch_term = (cand.mapped / 127.0) * 0.55
+                    vel_term = (cand.note.velocity / 127.0) * 0.10
+                    cont = 0.0
+                    if prev is not None:
+                        dist = abs(cand.mapped - prev)
+                        cont = 0.35 if dist <= 7 else max(0.0, 0.25 - dist * 0.02)
+                    return (round(pitch_term + vel_term + cont, 6), cand.mapped)
+
+                lead = max(cluster, key=_lead_score)
+                prev_mel_pitch = lead.mapped
+                if max_chord <= 1:
+                    kept_cluster = [lead]
+                else:
+                    others: list[_Cand] = []
+                    for c in cluster:
+                        if c is lead:
+                            continue
+                        if options.anti_clash_semitones and abs(c.mapped - lead.mapped) in (1, 2):
+                            clash_ids.add(id(c))
+                            continue
+                        if options.melody_ceiling and c.mapped > lead.mapped:
+                            continue
+                        others.append(c)
+                    kept_acc = _pick_balanced_voices(
+                        others, max_chord - 1, consonant_ref=lead.mapped
+                    )
+                    kept_cluster = [lead, *kept_acc]
+
+        keep_ids = {id(c) for c in kept_cluster}
+        for c in cluster:
+            if id(c) in keep_ids:
+                limited.append(c)
+            else:
+                reason = (
+                    DropReason.SEMITONE_DROPPED
+                    if id(c) in clash_ids
+                    else DropReason.POLYPHONY_LIMIT
+                )
+                dropped.append(
+                    DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track, reason)
+                )
+        i = j
+
+    return limited
 
 
 def arrange(
@@ -295,13 +790,34 @@ def arrange(
                          "excluded_tracks": excluded_tracks})
 
     distinct_tracks = {n.track for n in notes}
-    melody_track = _detect_melody_track_from_notes(notes, score.tracks)
+    if options.melody_track is not None and options.melody_track in distinct_tracks:
+        melody_track: int | None = options.melody_track
+    else:
+        melody_track = _detect_melody_track_from_notes(notes, score.tracks)
+
+    use_melody_priority = (
+        options.prefer_melody_track
+        and melody_track is not None
+        and len(distinct_tracks) > 1
+    )
+    vocal_lead_mode = options.arranger_strategy == "vocal_lead"
 
     # 2. transposition
     if options.transpose is None:
-        k, candidates = _search_transpose(
-            notes, profile, options.transpose_search, is_cancelled=is_cancelled
-        )
+        if vocal_lead_mode:
+            k, candidates = _search_transpose_vocal_lead(
+                notes,
+                profile,
+                options.transpose_search,
+                melody_track=melody_track,
+                multi_track=use_melody_priority,
+                speed=speed,
+                is_cancelled=is_cancelled,
+            )
+        else:
+            k, candidates = _search_transpose(
+                notes, profile, options.transpose_search, is_cancelled=is_cancelled
+            )
     else:
         _check_cancel(is_cancelled)
         k = options.transpose
@@ -310,43 +826,23 @@ def arrange(
         candidates = ((k, _transpose_cost(notes, k, pitch_set, pcs)),)
 
     # 3-4. range folding + semitone handling
-    lo, hi = profile.min_pitch, profile.max_pitch
-    available = profile.pitches
-    cands: list[_Cand] = []
-    for n in notes:
-        _check_cancel(is_cancelled)
-        at_ms = _scale_ms(n.start_us, speed)
-        p = n.pitch + k
-        adj: list[str] = []
-        if p < lo:
-            p += 12 * math.ceil((lo - p) / 12)
-            adj.append(Adjustment.OCTAVE_FOLDED)
-        elif p > hi:
-            p -= 12 * math.ceil((p - hi) / 12)
-            adj.append(Adjustment.OCTAVE_FOLDED)
-        if not lo <= p <= hi:
-            dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
-            continue
-        key = profile.key_for_pitch(p)
-        if key is None:
-            nearest = min(available, key=lambda c: (abs(c - p), c))
-            if (options.semitone_policy == SemitonePolicy.DROP
-                    or abs(nearest - p) > MAX_SUBSTITUTION_SEMITONES):
-                dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
-                continue
-            p = nearest
-            adj.append(Adjustment.SEMITONE_SUBSTITUTED)
-            key = profile.key_for_pitch(p)
-            assert key is not None
-        cands.append(_Cand(n, p, key.key_id, at_ms, _scale_ms(n.duration_us, speed), tuple(adj)))
+    if vocal_lead_mode:
+        cands, mel_windows, mel_onsets = _map_notes_vocal_lead(
+            notes,
+            k,
+            speed,
+            profile,
+            options,
+            melody_track,
+            use_melody_priority,
+            dropped,
+            is_cancelled,
+        )
+    else:
+        cands = _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled)
+        mel_windows, mel_onsets = [], []
 
     cands.sort(key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch))
-
-    use_melody_priority = (
-        options.prefer_melody_track
-        and melody_track is not None
-        and len(distinct_tracks) > 1
-    )
 
     # 5. same key, same millisecond -> keep best
     groups: dict[tuple[int, str], list[_Cand]] = defaultdict(list)
@@ -375,56 +871,91 @@ def arrange(
                                        DropReason.DUPLICATE_KEY))
 
     # 6. chord limit per onset cluster (+ optional arpeggiation stagger)
-    limited: list[_Cand] = []
-    i = 0
-    while i < len(deduped):
-        _check_cancel(is_cancelled)
-        start = deduped[i].at_ms
-        j = i
-        while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
-            j += 1
-        cluster = deduped[i:j]
-        if len(cluster) <= max_chord:
-            kept_cluster = list(cluster)
-        else:
-            if use_melody_priority:
-                mel_cands = sorted(
-                    (c for c in cluster if c.note.track == melody_track),
-                    key=lambda c: (-c.mapped, c.at_ms),
-                )
-                other_cands = sorted(
-                    (c for c in cluster if c.note.track != melody_track),
-                    key=lambda c: (-c.mapped, c.at_ms),
-                )
-                priority = list(mel_cands)
-                if other_cands:
-                    priority.append(other_cands[-1])
-                    if len(other_cands) > 1:
-                        priority.append(other_cands[0])
-                        priority.extend(other_cands[1:-1])
+    if vocal_lead_mode:
+        limited = _select_vocal_lead_clusters(
+            deduped,
+            max_chord=max_chord,
+            profile=profile,
+            options=options,
+            melody_track=melody_track,
+            use_melody_priority=use_melody_priority,
+            mel_windows=mel_windows,
+            mel_onsets=mel_onsets,
+            dropped=dropped,
+            is_cancelled=is_cancelled,
+        )
+        # Re-apply arpeggiation stagger across onset clusters if requested
+        if options.arpeggiate_ms > 0:
+            limited.sort(
+                key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch)
+            )
+            idx_a = 0
+            while idx_a < len(limited):
+                start_a = limited[idx_a].at_ms
+                idx_b = idx_a
+                while (
+                    idx_b < len(limited)
+                    and limited[idx_b].at_ms - start_a <= options.chord_window_ms
+                ):
+                    idx_b += 1
+                grp = limited[idx_a:idx_b]
+                if len(grp) > 1:
+                    grp.sort(key=lambda c: (c.mapped, c.at_ms, c.key_id))
+                    base_at = min(c.at_ms for c in grp)
+                    for idx_arp, cand in enumerate(grp):
+                        cand.at_ms = base_at + idx_arp * options.arpeggiate_ms
+                idx_a = idx_b
+    else:
+        limited = []
+        i = 0
+        while i < len(deduped):
+            _check_cancel(is_cancelled)
+            start = deduped[i].at_ms
+            j = i
+            while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
+                j += 1
+            cluster = deduped[i:j]
+            if len(cluster) <= max_chord:
+                kept_cluster = list(cluster)
             else:
-                by_pitch = sorted(cluster, key=lambda c: (-c.mapped, c.at_ms))
-                priority = [by_pitch[0]]
-                if len(by_pitch) > 1:
-                    priority.append(by_pitch[-1])
-                priority.extend(by_pitch[1:-1])
-            keep = {id(c) for c in priority[:max_chord]}
-            kept_cluster = []
-            for c in cluster:
-                if id(c) in keep:
-                    kept_cluster.append(c)
+                if use_melody_priority:
+                    mel_cands = sorted(
+                        (c for c in cluster if c.note.track == melody_track),
+                        key=lambda c: (-c.mapped, c.at_ms),
+                    )
+                    other_cands = sorted(
+                        (c for c in cluster if c.note.track != melody_track),
+                        key=lambda c: (-c.mapped, c.at_ms),
+                    )
+                    priority = list(mel_cands)
+                    if other_cands:
+                        priority.append(other_cands[-1])
+                        if len(other_cands) > 1:
+                            priority.append(other_cands[0])
+                            priority.extend(other_cands[1:-1])
                 else:
-                    dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
-                                               DropReason.POLYPHONY_LIMIT))
-        if options.arpeggiate_ms > 0 and len(kept_cluster) > 1:
-            kept_cluster.sort(key=lambda c: (c.mapped, c.at_ms, c.key_id))
-            base_at = min(c.at_ms for c in kept_cluster)
-            for idx_arp, cand in enumerate(kept_cluster):
-                cand.at_ms = base_at + idx_arp * options.arpeggiate_ms
-        limited.extend(kept_cluster)
-        i = j
+                    by_pitch = sorted(cluster, key=lambda c: (-c.mapped, c.at_ms))
+                    priority = [by_pitch[0]]
+                    if len(by_pitch) > 1:
+                        priority.append(by_pitch[-1])
+                    priority.extend(by_pitch[1:-1])
+                keep = {id(c) for c in priority[:max_chord]}
+                kept_cluster = []
+                for c in cluster:
+                    if id(c) in keep:
+                        kept_cluster.append(c)
+                    else:
+                        dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
+                                                   DropReason.POLYPHONY_LIMIT))
+            if options.arpeggiate_ms > 0 and len(kept_cluster) > 1:
+                kept_cluster.sort(key=lambda c: (c.mapped, c.at_ms, c.key_id))
+                base_at = min(c.at_ms for c in kept_cluster)
+                for idx_arp, cand in enumerate(kept_cluster):
+                    cand.at_ms = base_at + idx_arp * options.arpeggiate_ms
+            limited.extend(kept_cluster)
+            i = j
 
-    if options.arpeggiate_ms > 0:
+    if options.arpeggiate_ms > 0 or vocal_lead_mode:
         limited.sort(key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch))
 
     # 7. same-key retrigger guard
@@ -486,6 +1017,7 @@ def arrange(
         "max_keys_per_second": _max_in_window([e.at_ms for e in events], 1000),
         "duration_ms": max(e.at_ms + e.hold_ms for e in events),
         "melody_track": melody_track,
+        "arranger_strategy": options.arranger_strategy,
     }
     return Arrangement(
         events=tuple(events), dropped=tuple(dropped), transpose=k,

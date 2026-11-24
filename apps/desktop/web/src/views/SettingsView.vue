@@ -253,17 +253,28 @@ async function copyText(text: string): Promise<void> {
                   }}
                 </span>
                 <span>
-                  PyTorch：{{
+                  dettato PyTorch：{{
                     store.gpuStatus.value.dettato_torch
                       ? `${store.gpuStatus.value.dettato_torch.version ?? "?"} (CUDA ${store.gpuStatus.value.dettato_torch.cuda_build ?? "无"})`
-                      : "未安装 dettato"
+                      : store.gpuStatus.value.dettato_installed
+                        ? "已安装（无详情）"
+                        : "未安装 dettato"
+                  }}
+                </span>
+                <span>
+                  Demucs PyTorch：{{
+                    store.gpuStatus.value.demucs_torch
+                      ? `${store.gpuStatus.value.demucs_torch.version ?? "?"} (CUDA ${store.gpuStatus.value.demucs_torch.cuda_build ?? "无"})`
+                      : store.gpuStatus.value.demucs_installed
+                        ? "已安装（无详情）"
+                        : "未安装 Demucs"
                   }}
                 </span>
               </div>
 
               <div class="row">
                 <div class="field" style="flex: 1 1 240px">
-                  <label for="dettato-device">推理设备</label>
+                  <label for="dettato-device">推理设备（dettato 与 Demucs 共用）</label>
                   <select
                     id="dettato-device"
                     :value="store.gpuStatus.value.device"
@@ -283,14 +294,34 @@ async function copyText(text: string): Promise<void> {
                   @click="store.handleInstallGpuTorch"
                 >
                   <StudioIcon name="download" :size="14" />
-                  安装 CUDA 版 PyTorch（约 2.5 GB）
+                  安装 dettato CUDA 版 PyTorch（约 2.5 GB）
+                </button>
+                <button
+                  v-if="
+                    store.gpuStatus.value.demucs_installed &&
+                    !store.gpuStatus.value.demucs_torch?.cuda_available
+                  "
+                  class="secondary"
+                  type="button"
+                  :disabled="!store.gpuStatus.value.nvidia.present || store.toolBusy.value !== null"
+                  @click="store.handleInstallDemucsGpu"
+                >
+                  <StudioIcon name="download" :size="14" />
+                  安装 Demucs CUDA 版 PyTorch（约 2.5 GB）
                 </button>
               </div>
               <div v-if="store.toolInstalls.value['dettato-gpu']" class="muted" style="font-size: 12px">
-                {{ store.toolInstalls.value["dettato-gpu"]?.message }}
+                dettato GPU：{{ store.toolInstalls.value["dettato-gpu"]?.message }}
                 （{{ Math.round((store.toolInstalls.value["dettato-gpu"]?.progress ?? 0) * 100) }}%）
                 <span v-if="store.toolInstalls.value['dettato-gpu']?.error">
                   {{ store.toolInstalls.value["dettato-gpu"]?.error }}
+                </span>
+              </div>
+              <div v-if="store.toolInstalls.value['demucs-gpu']" class="muted" style="font-size: 12px">
+                Demucs GPU：{{ store.toolInstalls.value["demucs-gpu"]?.message }}
+                （{{ Math.round((store.toolInstalls.value["demucs-gpu"]?.progress ?? 0) * 100) }}%）
+                <span v-if="store.toolInstalls.value['demucs-gpu']?.error">
+                  {{ store.toolInstalls.value["demucs-gpu"]?.error }}
                 </span>
               </div>
             </template>

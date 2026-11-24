@@ -111,7 +111,17 @@ def test_library_and_preview_have_no_windows_or_gui_imports() -> None:
         "PyQt6",
         "PySide6",
     }
-    for pkg in ("library", "preview", "api", "media", "transcribers", "agent", "sources"):
+    for pkg in (
+        "library",
+        "preview",
+        "api",
+        "media",
+        "transcribers",
+        "separators",
+        "pipelines",
+        "agent",
+        "sources",
+    ):
         for py_file in (SRC / pkg).rglob("*.py"):
             imps = _imported_roots(py_file)
             hits = imps & forbidden
