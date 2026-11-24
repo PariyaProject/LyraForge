@@ -411,6 +411,37 @@
     overflow: hidden;
   }
 
+  .topbar-song-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    color: var(--color-ink);
+  }
+
+  .topbar-song-select {
+    inline-size: auto;
+    min-inline-size: 120px;
+    max-inline-size: min(260px, 100%);
+    min-block-size: 32px;
+    padding-block: var(--space-3xs);
+    padding-inline: var(--space-xs);
+    background: var(--color-paper-3);
+    border: var(--rule-hair) solid var(--color-rule-strong);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
+  }
+
+  @media (hover: hover) {
+    .topbar-song-select:hover:not(:disabled) {
+      background: var(--color-paper-4);
+      border-color: var(--color-field-edge);
+    }
+  }
+
   .ctx-crumb {
     display: inline-flex;
     align-items: center;
@@ -440,6 +471,12 @@
     align-items: center;
     gap: var(--space-xs);
     flex-shrink: 0;
+  }
+
+  .topbar-job-pill {
+    max-inline-size: 240px;
+    min-inline-size: 0;
+    overflow: hidden;
   }
 
   /* Workspace Viewport */

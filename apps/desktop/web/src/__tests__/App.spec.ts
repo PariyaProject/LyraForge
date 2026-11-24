@@ -276,6 +276,7 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
         error: null,
       },
     }),
+    listJobs: vi.fn().mockResolvedValue({ jobs: [] }),
     cancelJob: vi.fn().mockResolvedValue({
       job: {
         id: "job-1",
@@ -552,6 +553,159 @@ describe("App", () => {
       clickSpy.mockRestore();
       globalThis.URL.createObjectURL = originalCreateObjectURL;
       globalThis.URL.revokeObjectURL = originalRevokeObjectURL;
+    }
+  });
+
+  it("keeps transcription status per-song, syncs song selection across views, and lets topbar switch songs under filters", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, "", "/");
+      const songA = {
+        id: "song-a",
+        title: "Song A",
+        artist: "Artist A",
+        tags: ["alpha"],
+        arrangement_count: 0,
+        created_at: "2026-11-24T00:00:00Z",
+        updated_at: "2026-11-24T00:00:00Z",
+      };
+      const songB = {
+        id: "song-b",
+        title: "Song B",
+        artist: "Artist B",
+        tags: ["beta"],
+        arrangement_count: 0,
+        created_at: "2026-11-24T00:00:01Z",
+        updated_at: "2026-11-24T00:00:01Z",
+      };
+      let songATranscribed = false;
+      const stub = makeStubApi("audio");
+      vi.mocked(stub.listSongs).mockImplementation(async (query = "") => {
+        const all = [songA, songB];
+        if (!query.trim()) return { songs: all };
+        const q = query.trim().toLowerCase();
+        return { songs: all.filter((s) => s.title.toLowerCase().includes(q)) };
+      });
+      vi.mocked(stub.getSong).mockImplementation(async (songId: string) => {
+        if (songId === "song-a") {
+          return {
+            song: songA,
+            sources: [{ id: "src-a", kind: "audio", original_name: "a.mp3" }],
+            transcriptions: songATranscribed
+              ? [
+                  {
+                    id: "tr-a",
+                    engine: "builtin-mono",
+                    engine_version: "1.0",
+                    status: "completed",
+                    note_count: 24,
+                    created_at: "2026-11-24T00:01:00Z",
+                  },
+                ]
+              : [],
+            arrangements: [],
+          };
+        }
+        return {
+          song: songB,
+          sources: [{ id: "src-b", kind: "audio", original_name: "b.mp3" }],
+          transcriptions: [],
+          arrangements: [],
+        };
+      });
+      vi.mocked(stub.submitTranscribeJob).mockResolvedValueOnce({
+        job: {
+          id: "job-a",
+          song_id: "song-a",
+          engine_id: "builtin-mono",
+          status: "running",
+          stage: "analyzing",
+          progress: 0.4,
+          transcription: null,
+          error: null,
+        },
+      });
+      vi.mocked(stub.getJob).mockImplementation(async () => {
+        songATranscribed = true;
+        return {
+          job: {
+            id: "job-a",
+            song_id: "song-a",
+            engine_id: "builtin-mono",
+            status: "completed",
+            stage: "completed",
+            progress: 1.0,
+            transcription: {
+              id: "tr-a",
+              engine: "builtin-mono",
+              engine_version: "1.0",
+              status: "completed",
+              note_count: 24,
+              created_at: "2026-11-24T00:01:00Z",
+            },
+            error: null,
+          },
+        };
+      });
+
+      const wrapper = mount(App, { props: { client: stub } });
+      await flushPromises();
+
+      // Navigate to Transcribe and start job on Song A
+      await clickNav(wrapper, "音频转谱");
+      const startBtn = wrapper.findAll("button").find((b) => b.text().includes("开始音频转谱"))!;
+      await startBtn.trigger("click");
+      await flushPromises();
+      expect(stub.submitTranscribeJob).toHaveBeenCalledWith("song-a", "builtin-mono");
+      expect(wrapper.find(".topbar-job-pill").text()).toContain("转谱中：Song A 40%");
+
+      // Switch to Song B via #transcribe-song-select while Song A is running
+      await wrapper.find("#transcribe-song-select").setValue("song-b");
+      await flushPromises();
+
+      // Topbar must sync to Song B, and TranscribeView stepper must NOT show Song A's running state
+      expect((wrapper.find("#topbar-song-select").element as HTMLSelectElement).value).toBe("song-b");
+      const steps = wrapper.findAll(".pipeline-stepper .pipe-step");
+      expect(steps[0].classes()).toContain("done");
+      expect(steps[1].classes()).not.toContain("current");
+      expect(steps[1].classes()).not.toContain("done");
+      expect(wrapper.text()).toContain("当前选中曲目：Song B");
+      expect(wrapper.text()).toContain("其他曲目的转谱任务 (1)");
+
+      // Navigating to Studio on untranscribed Song B guides back to Transcribe
+      await clickNav(wrapper, "编曲工作室");
+      expect(wrapper.text()).toContain("当前曲目「Song B」尚未完成音频转谱");
+      const goTrBtn = wrapper.findAll("button").find((b) => b.text().includes("前往音频转谱"))!;
+      await goTrBtn.trigger("click");
+      await flushPromises();
+      expect(wrapper.find("h1").text()).toContain("音频转谱");
+
+      // Poll completes job-a in the background while user remains on Song B
+      await vi.advanceTimersByTimeAsync(450);
+      await flushPromises();
+
+      // Active song stays Song B (no hijack), while Song A offers "去编曲"
+      expect((wrapper.find("#topbar-song-select").element as HTMLSelectElement).value).toBe("song-b");
+      const goStudioOtherBtn = wrapper.findAll("button").find((b) => b.text().trim() === "去编曲")!;
+      await goStudioOtherBtn.trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find("h1").text()).toContain("编曲工作室");
+      expect((wrapper.find("#topbar-song-select").element as HTMLSelectElement).value).toBe("song-a");
+      expect(wrapper.text()).toContain("当前曲目「Song A」尚无改编版本");
+
+      // Even under a Library search filter narrowing `songs` to Song A, topbar still switches to Song B
+      await clickNav(wrapper, "本地曲库");
+      await wrapper.find("#library-search").setValue("Song A");
+      const libSearchBtn = wrapper.findAll("button").find((b) => b.text().trim() === "搜索")!;
+      await libSearchBtn.trigger("click");
+      await flushPromises();
+
+      await wrapper.find("#topbar-song-select").setValue("song-b");
+      await flushPromises();
+      expect((wrapper.find("#topbar-song-select").element as HTMLSelectElement).value).toBe("song-b");
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

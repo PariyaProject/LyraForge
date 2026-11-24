@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { TranscriptionJob } from "../api";
 import StudioIcon from "../components/StudioIcon.vue";
 import { isImeEnter, type LyraStore } from "../composables/useLyraStore";
 
@@ -13,25 +14,37 @@ const AGENT_PRESETS = [
   "将当前曲目转调至最适合 21 键风物之诗琴的调式，保留连贯高潮乐句",
 ];
 
+const currentJob = computed(() => props.store.currentSongJob.value);
+
+const currentJobRunning = computed(() => {
+  const st = currentJob.value?.status;
+  return st === "running" || st === "queued";
+});
+
 const pipelineStage = computed<number>(() => {
-  const job = props.store.activeJob.value;
+  const job = currentJob.value;
   if (job?.status === "completed") return 4;
-  if ((job?.status === "running" || job?.status === "queued") && (job.progress ?? 0) >= 0.7) {
-    return 3;
+  if (currentJobRunning.value) {
+    return (job?.progress ?? 0) >= 0.7 ? 3 : 2;
   }
-  if (job?.status === "running" || job?.status === "queued") return 2;
-  if (props.store.transcribeTranscriptions.value.some((t) => t.status === "completed")) return 4;
-  if (props.store.transcribeHasAudio.value) return 1;
+  if (
+    props.store.songTranscriptions.value.some((t) => t.status === "completed") ||
+    props.store.hasMidiSource.value
+  ) {
+    return 4;
+  }
+  if (props.store.hasAudioSource.value) return 1;
   return 0;
 });
 
-const jobProgressValue = computed(() => {
-  const raw = props.store.activeJob.value?.progress ?? 0;
+function jobProgressPercent(job: TranscriptionJob | null): number {
+  const raw = job?.progress ?? 0;
   return Math.round(raw <= 1 ? raw * 100 : raw);
-});
+}
 
-const stageLabel = computed(() => {
-  const job = props.store.activeJob.value;
+const jobProgressValue = computed(() => jobProgressPercent(currentJob.value));
+
+function jobStageLabel(job: TranscriptionJob | null): string {
   if (!job) return "";
   const labels: Record<string, string> = {
     queued: "排队中",
@@ -44,18 +57,20 @@ const stageLabel = computed(() => {
     cancelled: "已取消",
   };
   return labels[job.stage ?? ""] ?? labels[job.status] ?? job.stage ?? job.status;
-});
+}
+
+const stageLabel = computed(() => jobStageLabel(currentJob.value));
 
 const jobSongTitle = computed(() => {
-  const job = props.store.activeJob.value;
+  const job = currentJob.value;
   if (!job) return "";
-  return props.store.songs.value.find((song) => song.id === job.song_id)?.title ?? job.song_id;
+  return props.store.songTitleById(job.song_id);
 });
 
 async function onSongChange(event: Event): Promise<void> {
   const songId = (event.target as HTMLSelectElement).value;
   if (songId) {
-    await props.store.selectTranscribeSong(songId);
+    await props.store.selectSong(songId);
   }
 }
 
@@ -120,23 +135,29 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <h2>音频转 MIDI 转录</h2>
           <span
             class="pill"
-            :class="store.transcribeHasAudio.value ? 'pill-ok' : ''"
+            :class="store.hasAudioSource.value || store.hasMidiSource.value ? 'pill-ok' : ''"
           >
-            {{ store.transcribeHasAudio.value ? "含音频来源" : "等待导入音频" }}
+            {{
+              store.hasAudioSource.value
+                ? "含音频来源"
+                : store.hasMidiSource.value
+                  ? "纯 MIDI 来源"
+                  : "等待导入音频"
+            }}
           </span>
         </div>
 
         <div class="field">
-          <label for="transcribe-song-select">目标转谱曲目（与底部试听播放相互独立）</label>
+          <label for="transcribe-song-select">当前转谱曲目（与顶部工作区曲目同步）</label>
           <select
             id="transcribe-song-select"
-            :value="store.transcribeSongId.value ?? ''"
-            :disabled="store.songs.value.length === 0"
+            :value="store.selectedSongId.value ?? ''"
+            :disabled="store.allSongs.value.length === 0"
             @change="onSongChange"
           >
-            <option v-if="store.songs.value.length === 0" value="">暂无曲目，请先导入</option>
-            <option v-for="s in store.songs.value" :key="s.id" :value="s.id">
-              {{ s.title }}
+            <option v-if="store.allSongs.value.length === 0" value="">暂无曲目，请先导入</option>
+            <option v-for="s in store.allSongs.value" :key="s.id" :value="s.id">
+              {{ s.title }}{{ store.isSongTranscribing(s.id) ? "（转谱中）" : "" }}
             </option>
           </select>
         </div>
@@ -186,17 +207,22 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <button
             class="primary"
             type="button"
-            :disabled="!store.transcribeHasAudio.value || store.busy.value || !store.selectedEngineInfo.value?.available"
+            :disabled="
+              !store.hasAudioSource.value ||
+              store.busy.value ||
+              !store.selectedEngineInfo.value?.available ||
+              currentJobRunning
+            "
             @click="store.handleStartTranscribe"
           >
             <StudioIcon name="sparkles" :size="15" />
-            开始音频转谱
+            {{ currentJobRunning ? "正在转谱中…" : "开始音频转谱" }}
           </button>
           <button
-            v-if="store.activeJob.value && (store.activeJob.value.status === 'running' || store.activeJob.value.status === 'queued')"
+            v-if="currentJobRunning && currentJob"
             class="danger"
             type="button"
-            @click="store.handleCancelTranscribe"
+            @click="store.handleCancelTranscribe(currentJob.id)"
           >
             <StudioIcon name="stop" :size="15" />
             取消转谱
@@ -206,34 +232,45 @@ function onAgentKeydown(event: KeyboardEvent): void {
 
       <div class="pane">
         <div class="pane-header">
-          <h2>任务状态与输出记录</h2>
-          <span v-if="store.activeJob.value" class="pill tabular">{{ jobProgressValue }}%</span>
+          <h2>当前曲目任务状态</h2>
+          <span v-if="currentJob" class="pill tabular">{{ jobProgressValue }}%</span>
         </div>
 
-        <div v-if="store.activeJob.value" class="job-panel">
+        <div v-if="currentJob" class="job-panel">
           <div class="pane-header">
             <strong>{{ stageLabel }}</strong>
             <span class="muted tabular" style="font-size: 12px">
-              已运行 {{ Math.round(store.activeJob.value.elapsed_s ?? 0) }} 秒
+              已运行 {{ Math.round(currentJob.elapsed_s ?? 0) }} 秒
             </span>
           </div>
           <progress max="100" :value="jobProgressValue" aria-label="音频转谱任务进度" />
           <div class="meta-row">
             <span>曲目：{{ jobSongTitle }}</span>
-            <span>引擎：{{ store.activeJob.value.engine_id }}</span>
+            <span>引擎：{{ currentJob.engine_id }}</span>
           </div>
           <p class="muted" style="margin: 0; font-size: 12px">
             切换到其他曲目或页面不会中断本任务。dettato 首次运行需加载模型权重，3 到 4 分钟曲目可能需要数分钟。
           </p>
-          <div v-if="store.activeJob.value.transcription" class="banner-info">
+          <div v-if="currentJob.transcription || currentJob.status === 'completed'" class="banner-info">
             <StudioIcon name="check" :size="15" />
-            <span>
-              已完成入库，共识别 <strong>{{ store.activeJob.value.transcription.note_count }}</strong> 个原始音符，可直接前往编曲工作室。
-            </span>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); flex: 1">
+              <span>
+                已完成入库，共识别
+                <strong>{{ currentJob.transcription?.note_count ?? 0 }}</strong>
+                个原始音符，可直接前往编曲工作室。
+              </span>
+              <button
+                type="button"
+                class="secondary btn-sm"
+                @click="store.openSongInView(currentJob.song_id, 'studio')"
+              >
+                前往编曲工作室
+              </button>
+            </div>
           </div>
-          <div v-if="store.activeJob.value.error" class="banner-error">
+          <div v-if="currentJob.error" class="banner-error">
             <div>
-              <div>{{ store.activeJob.value.error.message }}</div>
+              <div>{{ currentJob.error.message }}</div>
               <div class="muted" style="font-size: 12px; margin-block-start: var(--space-3xs)">
                 建议检查 FFmpeg / 引擎安装路径，或尝试更换内置单音 / Basic Pitch 引擎后重试。
               </div>
@@ -243,26 +280,39 @@ function onAgentKeydown(event: KeyboardEvent): void {
 
         <div v-else class="banner-info">
           <StudioIcon name="info" :size="15" />
-          <div>
+          <div style="display: flex; flex-direction: column; gap: var(--space-xs); flex: 1; min-inline-size: 0">
             <div>
-              当前选中曲目：<strong>{{ store.transcribeSongTitle.value || "未选择" }}</strong>
+              当前选中曲目：<strong>{{ store.selectedSong.value?.title || "未选择" }}</strong>
             </div>
-            <div class="muted" style="font-size: 12px; margin-block-start: var(--space-3xs)">
+            <div class="muted" style="font-size: 12px">
               {{
-                store.transcribeHasAudio.value
-                  ? "已检测到音频或视频源，选择引擎后点击「开始音频转谱」即可提交后台任务。"
-                  : "当前曲目为纯 MIDI 来源，无需 AI 转谱，可直接前往编曲工作室调整指法。"
+                !store.selectedSong.value
+                  ? "请先导入音频/MIDI，或从顶部和左侧曲库选择曲目。"
+                  : store.hasAudioSource.value
+                    ? store.songTranscriptions.value.some((t) => t.status === "completed")
+                      ? "本曲目已有可用转谱记录，可直接进入编曲工作室或更换引擎重新转谱。"
+                      : "已检测到音频或视频源，选择引擎后点击「开始音频转谱」即可提交后台任务。"
+                    : "当前曲目为纯 MIDI 来源，无需 AI 转谱，可直接前往编曲工作室调整指法。"
               }}
+            </div>
+            <div v-if="store.canArrange.value">
+              <button
+                type="button"
+                class="secondary btn-sm"
+                @click="store.setView('studio')"
+              >
+                前往编曲工作室
+              </button>
             </div>
           </div>
         </div>
 
         <div class="section-block">
           <h3 class="subsection-heading">
-            本曲目转谱记录 ({{ store.transcribeTranscriptions.value.length }})
+            本曲目转谱记录 ({{ store.songTranscriptions.value.length }})
           </h3>
-          <ul v-if="store.transcribeTranscriptions.value.length > 0" class="line-list">
-            <li v-for="tr in store.transcribeTranscriptions.value" :key="tr.id" class="line-list-row">
+          <ul v-if="store.songTranscriptions.value.length > 0" class="line-list">
+            <li v-for="tr in store.songTranscriptions.value" :key="tr.id" class="line-list-row">
               <div class="meta-row">
                 <span class="pill" :class="tr.status === 'completed' ? 'pill-ok' : ''">
                   {{ tr.engine }}
@@ -277,6 +327,70 @@ function onAgentKeydown(event: KeyboardEvent): void {
           <p v-else class="muted" style="margin: 0; font-size: 12px">
             尚无转谱记录；完成后将自动保存为标准 MIDI 供 21 键编曲器使用。
           </p>
+        </div>
+
+        <div
+          v-if="store.otherSongJobs.value.length > 0"
+          class="section-block"
+          style="padding-block-start: var(--space-sm)"
+        >
+          <h3 class="subsection-heading">
+            其他曲目的转谱任务 ({{ store.otherSongJobs.value.length }})
+          </h3>
+          <ul class="line-list">
+            <li v-for="job in store.otherSongJobs.value" :key="job.id" class="line-list-row">
+              <div style="min-inline-size: 0; flex: 1">
+                <div style="font-size: 13px; font-weight: var(--weight-medium)" class="truncate">
+                  {{ store.songTitleById(job.song_id) }}
+                </div>
+                <div class="meta-row">
+                  <span
+                    class="pill"
+                    :class="
+                      job.status === 'completed'
+                        ? 'pill-ok'
+                        : job.status === 'failed'
+                          ? 'pill-danger'
+                          : job.status === 'running' || job.status === 'queued'
+                            ? 'pill-accent'
+                            : ''
+                    "
+                  >
+                    {{ jobStageLabel(job) }}
+                    <template v-if="job.status === 'running' || job.status === 'queued'">
+                      {{ jobProgressPercent(job) }}%
+                    </template>
+                  </span>
+                  <span>{{ job.engine_id }}</span>
+                </div>
+              </div>
+              <div class="button-row" style="flex-shrink: 0">
+                <button
+                  v-if="job.status === 'completed'"
+                  type="button"
+                  class="secondary btn-sm"
+                  @click="store.openSongInView(job.song_id, 'studio')"
+                >
+                  去编曲
+                </button>
+                <button
+                  type="button"
+                  class="secondary btn-sm"
+                  @click="store.selectSong(job.song_id)"
+                >
+                  {{ job.status === 'running' || job.status === 'queued' ? "切换查看" : "查看" }}
+                </button>
+                <button
+                  v-if="job.status === 'running' || job.status === 'queued'"
+                  type="button"
+                  class="danger btn-sm"
+                  @click="store.handleCancelTranscribe(job.id)"
+                >
+                  取消
+                </button>
+              </div>
+            </li>
+          </ul>
         </div>
 
         <div class="section-block" style="padding-block-start: var(--space-sm)">
