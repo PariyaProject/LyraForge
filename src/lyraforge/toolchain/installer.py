@@ -503,8 +503,9 @@ def _install_cuda_torch(
 def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
     """Install a CUDA-enabled PyTorch build into the dettato virtualenv."""
     from lyraforge.toolchain.gpu import probe_dettato_torch
+    from lyraforge.transcribers.dettato import clear_device_cache as clear_dettato_cache
 
-    return _install_cuda_torch(
+    result = _install_cuda_torch(
         "dettato",
         packages=("torch",),
         missing_msg="请先安装 dettato，再安装 GPU 加速版 PyTorch",
@@ -513,13 +514,16 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
         probe_fn=probe_dettato_torch,
         progress=progress,
     )
+    clear_dettato_cache()
+    return result
 
 
 def install_demucs_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
     """Install CUDA-enabled torch & torchaudio into the demucs virtualenv."""
+    from lyraforge.separators.demucs import clear_device_cache as clear_demucs_cache
     from lyraforge.toolchain.gpu import probe_demucs_torch
 
-    return _install_cuda_torch(
+    result = _install_cuda_torch(
         "demucs",
         packages=("torch", "torchaudio"),
         missing_msg="请先安装 Demucs，再安装 GPU 加速版 PyTorch",
@@ -528,6 +532,8 @@ def install_demucs_gpu(progress: ProgressCallback | None = None) -> dict[str, An
         probe_fn=probe_demucs_torch,
         progress=progress,
     )
+    clear_demucs_cache()
+    return result
 
 
 def install(tool_id: str, progress: ProgressCallback | None = None) -> dict[str, Any]:
@@ -552,6 +558,14 @@ def install(tool_id: str, progress: ProgressCallback | None = None) -> dict[str,
             install_ffmpeg(progress)
         else:
             install_python_tool(spec, progress)
+    if tool_id == "dettato":
+        from lyraforge.transcribers.dettato import clear_device_cache as clear_dettato_cache
+
+        clear_dettato_cache()
+    elif tool_id == "demucs":
+        from lyraforge.separators.demucs import clear_device_cache as clear_demucs_cache
+
+        clear_demucs_cache()
     return next(item for item in status() if item["id"] == tool_id)
 
 

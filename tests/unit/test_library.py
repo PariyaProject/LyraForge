@@ -204,3 +204,28 @@ def test_v1_to_v2_migration_and_audio_transcribe_arrange_flow(tmp_path: Path) ->
         settings = store2.get_settings()
         assert settings["default_style"] == "melody"
         assert settings["windows_allowed_titles"] == "Genshin Impact, 原神"
+
+        # Deleting parent clears child parent_id & removes generated artifacts
+        detail2 = store2.get_song(imp.song.id)
+        orig_id = detail2.arrangements[0].id
+        perf = store2.load_arrangement_performance(orig_id)
+        edited = store2.save_edited_arrangement(orig_id, perf["events"][:2], label="Trimmed")
+        orig_perf_path = data_dir / detail2.arrangements[0].performance_path
+        orig_rep_path = data_dir / detail2.arrangements[0].report_path
+        orig_mid_dir = data_dir / f"songs/{imp.song.id}/midis/{orig_id}"
+        assert orig_perf_path.is_file()
+        assert orig_mid_dir.is_dir()
+
+        del_res = store2.delete_arrangement(orig_id)
+        assert del_res == {"deleted": True, "arrangement_id": orig_id, "song_id": imp.song.id}
+        assert not orig_perf_path.exists()
+        assert not orig_rep_path.exists()
+        assert not orig_mid_dir.exists()
+
+        remaining = store2.get_song(imp.song.id).arrangements
+        assert [a.id for a in remaining] == [edited.id]
+        assert remaining[0].parent_id is None
+
+        with pytest.raises(LyraError) as exc_missing:
+            store2.delete_arrangement(orig_id)
+        assert exc_missing.value.code == ErrorCode.SOURCE_UNAVAILABLE

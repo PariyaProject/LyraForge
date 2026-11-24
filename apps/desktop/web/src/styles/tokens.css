@@ -68,6 +68,28 @@
     /* Overlays, Selection & Scrollbars */
     --color-backdrop: oklch(8% 0.008 55 / 0.68);
     --color-selection: oklch(75% 0.155 68 / 0.28);
+    --color-marquee-fill: oklch(75% 0.155 68 / 0.18);
+    --color-marquee-border: oklch(78% 0.155 68 / 0.85);
+
+    /* Multi-track Piano Roll Palette (deterministic 6-slot OKLCH rotation) */
+    --color-track-0: oklch(74% 0.145 72);
+    --color-track-0-ink: oklch(14% 0.02 60);
+    --color-track-0-edge: oklch(84% 0.15 72);
+    --color-track-1: oklch(72% 0.13 190);
+    --color-track-1-ink: oklch(13% 0.02 195);
+    --color-track-1-edge: oklch(83% 0.14 190);
+    --color-track-2: oklch(70% 0.15 18);
+    --color-track-2-ink: oklch(14% 0.02 18);
+    --color-track-2-edge: oklch(82% 0.15 18);
+    --color-track-3: oklch(74% 0.135 142);
+    --color-track-3-ink: oklch(13% 0.02 142);
+    --color-track-3-edge: oklch(84% 0.14 142);
+    --color-track-4: oklch(71% 0.14 258);
+    --color-track-4-ink: oklch(13% 0.02 258);
+    --color-track-4-edge: oklch(82% 0.14 258);
+    --color-track-5: oklch(72% 0.145 310);
+    --color-track-5-ink: oklch(14% 0.02 310);
+    --color-track-5-edge: oklch(83% 0.15 310);
     --shadow-overlay: 0 8px 18px oklch(5% 0.008 55 / 0.48);
     --sb-thumb: oklch(40% 0.010 58);
     --sb-track: oklch(15% 0.008 55);
@@ -172,6 +194,26 @@
       --color-note-selected: Highlight;
       --color-note-selected-ink: HighlightText;
       --color-note-selected-ring: CanvasText;
+      --color-marquee-fill: Highlight;
+      --color-marquee-border: Highlight;
+      --color-track-0: ButtonFace;
+      --color-track-0-ink: ButtonText;
+      --color-track-0-edge: ButtonText;
+      --color-track-1: ButtonFace;
+      --color-track-1-ink: ButtonText;
+      --color-track-1-edge: ButtonText;
+      --color-track-2: ButtonFace;
+      --color-track-2-ink: ButtonText;
+      --color-track-2-edge: ButtonText;
+      --color-track-3: ButtonFace;
+      --color-track-3-ink: ButtonText;
+      --color-track-3-edge: ButtonText;
+      --color-track-4: ButtonFace;
+      --color-track-4-ink: ButtonText;
+      --color-track-4-edge: ButtonText;
+      --color-track-5: ButtonFace;
+      --color-track-5-ink: ButtonText;
+      --color-track-5-edge: ButtonText;
       --shadow-overlay: none;
     }
   }

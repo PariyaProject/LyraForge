@@ -1570,8 +1570,16 @@
     box-shadow: inset 2px 0 0 var(--color-octave-mid);
     position: sticky;
     inset-inline-start: 0;
-    z-index: 4;
+    z-index: 6;
+    cursor: pointer;
+    user-select: none;
     font-variant-numeric: tabular-nums;
+  }
+
+  @media (hover: hover) {
+    .pr-key-label:hover {
+      background: var(--color-paper-4);
+    }
   }
 
   .pr-key-label.zone-high {
@@ -1631,8 +1639,8 @@
 
   @media (hover: hover) {
     .pr-note:hover:not(:disabled) {
-      background: var(--color-note-kept-hover);
       border-color: var(--color-ink);
+      filter: brightness(1.08);
     }
   }
 
@@ -1679,6 +1687,183 @@
       background: var(--color-paper-4);
       border-color: transparent;
     }
+  }
+
+  /* Track-colored Piano Roll notes, focus filter, marquee & Studio drop stats */
+  .pr-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-xs) var(--space-sm);
+    border-block-end: var(--rule-hair) solid var(--color-rule);
+    background: var(--color-paper-2);
+  }
+
+  .pr-legend-label {
+    font-size: 12px;
+    color: var(--color-ink-3);
+    margin-inline-end: var(--space-2xs);
+  }
+
+  .pr-legend-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-block-size: 24px;
+    padding: 0 var(--space-xs);
+    border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--color-ink-2);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pr-legend-btn.is-active {
+    background: var(--color-paper-4);
+    border-color: var(--color-accent);
+    color: var(--color-ink);
+  }
+
+  .track-dot {
+    display: inline-block;
+    inline-size: 8px;
+    block-size: 8px;
+    flex-shrink: 0;
+    border-radius: var(--radius-pill);
+    background: var(--color-ink-3);
+  }
+
+  .track-dot.track-c-0 { background: var(--color-track-0); }
+  .track-dot.track-c-1 { background: var(--color-track-1); }
+  .track-dot.track-c-2 { background: var(--color-track-2); }
+  .track-dot.track-c-3 { background: var(--color-track-3); }
+  .track-dot.track-c-4 { background: var(--color-track-4); }
+  .track-dot.track-c-5 { background: var(--color-track-5); }
+
+  .pr-note.track-c-0 {
+    background: var(--color-track-0);
+    color: var(--color-track-0-ink);
+    border-color: var(--color-track-0-edge);
+  }
+
+  .pr-note.track-c-1 {
+    background: var(--color-track-1);
+    color: var(--color-track-1-ink);
+    border-color: var(--color-track-1-edge);
+  }
+
+  .pr-note.track-c-2 {
+    background: var(--color-track-2);
+    color: var(--color-track-2-ink);
+    border-color: var(--color-track-2-edge);
+  }
+
+  .pr-note.track-c-3 {
+    background: var(--color-track-3);
+    color: var(--color-track-3-ink);
+    border-color: var(--color-track-3-edge);
+  }
+
+  .pr-note.track-c-4 {
+    background: var(--color-track-4);
+    color: var(--color-track-4-ink);
+    border-color: var(--color-track-4-edge);
+  }
+
+  .pr-note.track-c-5 {
+    background: var(--color-track-5);
+    color: var(--color-track-5-ink);
+    border-color: var(--color-track-5-edge);
+  }
+
+  .pr-note.is-adjusted {
+    border-block-end: 2px dashed currentColor;
+  }
+
+  .pr-note.is-dimmed {
+    opacity: 0.24;
+  }
+
+  .pr-note.selected,
+  .pr-note.is-selected {
+    background: var(--color-note-selected);
+    color: var(--color-note-selected-ink);
+    border-color: var(--color-note-selected-ring);
+    box-shadow: 0 0 0 2px var(--color-note-selected-ring);
+    z-index: 3;
+  }
+
+  .pr-rows-wrap {
+    position: relative;
+  }
+
+  .pr-marquee {
+    position: absolute;
+    z-index: 4;
+    pointer-events: none;
+    background: var(--color-marquee-fill);
+    border: var(--rule-hair) solid var(--color-marquee-border);
+    border-radius: var(--radius-xs);
+  }
+
+  .pr-inline-time {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pr-inline-time input {
+    inline-size: 88px;
+    min-block-size: 28px;
+    padding: 0 var(--space-xs);
+  }
+
+  .pr-follow-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: 12px;
+    color: var(--color-ink-2);
+    white-space: nowrap;
+  }
+
+  .drop-summary {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding-block-start: var(--space-xs);
+    border-block-start: var(--rule-hair) solid var(--color-rule);
+    font-size: 12px;
+    color: var(--color-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .drop-summary-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+
+  .drop-summary-item {
+    color: var(--color-ink-3);
+  }
+
+  .gpu-pill-pair {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .track-count-delta {
+    font-size: 12px;
+    color: var(--color-ink-3);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   /* Toast Stack */

@@ -92,3 +92,21 @@ def test_queue_api_set_step_add_and_clear(tmp_path: Path) -> None:
     )
     assert renamed.status_code == 200
     assert renamed.json()["arrangement"]["label"] == "我的版本"
+
+    # Re-queue both versions, then DELETE arrangement_ids[0] -> removes from DB & playback queue
+    requeue = client.post(
+        "/v1/playback/queue",
+        headers=headers,
+        json={"arrangement_ids": arrangement_ids, "mode": "dry-run"},
+    )
+    assert requeue.status_code == 200
+    deleted = client.delete(f"/v1/arrangements/{arrangement_ids[0]}", headers=headers)
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["deleted"] is True
+    assert body["arrangement_id"] == arrangement_ids[0]
+    assert [i["arrangement_id"] for i in body["queue"]["items"]] == [arrangement_ids[1]]
+    get_gone = client.get(f"/v1/arrangements/{arrangement_ids[0]}", headers=headers)
+    del_gone = client.delete(f"/v1/arrangements/{arrangement_ids[0]}", headers=headers)
+    assert get_gone.status_code == 404
+    assert del_gone.status_code == 404

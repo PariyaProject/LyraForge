@@ -46,6 +46,11 @@ _DEVICE_PROBE = (
 )
 _DEVICE_CACHE: dict[str, str] = {}
 
+
+def clear_device_cache() -> None:
+    """Invalidate cached torch device probe results (e.g. after installing CUDA wheels)."""
+    _DEVICE_CACHE.clear()
+
 _DEMUCS_RUN_SCRIPT = r"""
 import json, pathlib, sys
 import numpy as np

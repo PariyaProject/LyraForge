@@ -14,6 +14,12 @@ const props = defineProps<{
 const editingId = ref<string | null>(null);
 const editingLabel = ref("");
 const importDrawerOpen = ref(false);
+const confirmDeleteArrId = ref<string | null>(null);
+
+async function confirmDeleteArrangement(arrangementId: string): Promise<void> {
+  confirmDeleteArrId.value = null;
+  await props.store.handleDeleteArrangement(arrangementId);
+}
 
 function startRename(arrangementId: string, current: string): void {
   editingId.value = arrangementId;
@@ -396,6 +402,34 @@ function onRestoreFileChange(event: Event): void {
                   >
                     试听 / 演奏
                   </button>
+                  <button
+                    v-if="confirmDeleteArrId !== arr.id"
+                    class="ghost btn-sm"
+                    type="button"
+                    aria-label="删除编曲版本"
+                    :disabled="store.busy.value"
+                    @click="confirmDeleteArrId = arr.id"
+                  >
+                    <StudioIcon name="trash" :size="13" />
+                    删除
+                  </button>
+                  <template v-else>
+                    <button
+                      class="danger btn-sm"
+                      type="button"
+                      :disabled="store.busy.value"
+                      @click="confirmDeleteArrangement(arr.id)"
+                    >
+                      确认删除
+                    </button>
+                    <button
+                      class="ghost btn-sm"
+                      type="button"
+                      @click="confirmDeleteArrId = null"
+                    >
+                      取消
+                    </button>
+                  </template>
                 </div>
               </li>
             </ul>

@@ -182,6 +182,48 @@ def test_install_dettato_gpu_reinstalls_torch_from_cuda_index(
     assert cmd[cmd.index("--index-url") + 1].endswith("/cu130")
 
 
+def test_gpu_install_and_set_device_clear_subprocess_device_caches(
+    tools_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from lyraforge.separators import demucs
+    from lyraforge.toolchain import installer
+    from lyraforge.transcribers import dettato
+
+    demucs_py = venv_python("demucs")
+    demucs_py.parent.mkdir(parents=True, exist_ok=True)
+    demucs_py.write_text("", encoding="utf-8")
+
+    # Seed stale CPU entries before CUDA PyTorch installation
+    dettato._DEVICE_CACHE["fake-dt"] = "cpu"
+    demucs._DEVICE_CACHE[str(demucs_py)] = "cpu"
+
+    monkeypatch.setattr(installer, "install_uv", lambda progress=None: Path("uv.exe"))
+    monkeypatch.setattr(
+        installer, "_run", lambda _cmd, **_kw: SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
+    monkeypatch.setattr(
+        gpu,
+        "probe_demucs_torch",
+        lambda: {"cuda_available": True, "torchaudio_ok": True, "version": "2.14.1+cu130"},
+    )
+
+    res = installer.install_demucs_gpu()
+    assert res["installed"] is True
+    assert str(demucs_py) not in demucs._DEVICE_CACHE
+
+    # Explicit set_device also clears both caches so subsequent runs pick up changes immediately
+    dettato._DEVICE_CACHE["fake-dt"] = "cpu"
+    demucs._DEVICE_CACHE["fake-dm"] = "cpu"
+    try:
+        gpu.set_device("auto")
+        assert dettato._DEVICE_CACHE == {}
+        assert demucs._DEVICE_CACHE == {}
+    finally:
+        gpu.set_device("auto")
+
+
 def test_gpu_api_status_device_and_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

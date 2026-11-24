@@ -867,6 +867,13 @@ def create_app(
             )
         return {"arrangement": rec.to_json(), "performance": perf, "report": report}
 
+    @app.delete("/v1/arrangements/{arrangement_id}", dependencies=[Depends(require_token)])
+    def delete_arrangement_route(arrangement_id: str) -> dict[str, Any]:
+        with open_store() as store:
+            res = store.delete_arrangement(arrangement_id)
+        queue_manager.remove_arrangement(arrangement_id)
+        return {**res, "queue": queue_manager.snapshot()}
+
     @app.post("/v1/preview", dependencies=[Depends(require_token)])
     def render_preview(req: PreviewRequest) -> dict[str, Any]:
         with open_store() as store:

@@ -557,3 +557,24 @@
 5. **环境边界（如实标注）**：
    - macOS Apple Silicon 上真实端到端运行并对比 `ffmpeg 9.0`、`demucs 4.0.1`、`basic-pitch 0.4.0`、`dettato 2.0.0`、`swift-f0 0.3.0` 与 `builtin-mono`；物理 Windows 10/11 NVIDIA CUDA 上实测多轨分离/转录速度与真机《原神》游戏内实际敲键演奏未在本会话物理机复测，待用户在 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 上实机验证。
 
+---
+
+## 29. Round 27：Piano Roll 60s 截断与交互升级、分轨配色与保留、版本删除及 Demucs GPU 缓存修复
+
+针对真实使用中的 6 项核心痛点（60s 后网格线消失、编曲后右侧音轨勾选重置与音符数差值不透明、无版本删除能力、Piano Roll 交互自由度不足、分轨音符视觉混淆、`dettato`/`Demucs` 独立虚拟环境与 GPU 缓存未失效）完成端到端修复与验证：
+
+1. **后端与工具链修复**：
+   - [src/lyraforge/library/store.py](../src/lyraforge/library/store.py)、[src/lyraforge/api/queue_service.py](../src/lyraforge/api/queue_service.py)、[src/lyraforge/api/app.py](../src/lyraforge/api/app.py)：新增 `DELETE /v1/arrangements/{arrangement_id}`（`LibraryStore.delete_arrangement()` 条带锁事务删除数据库记录与产物并清理 `parent_id`，`PlaybackQueueManager.remove_arrangement()` 同步裁剪播放队列）。
+   - [src/lyraforge/separators/demucs.py](../src/lyraforge/separators/demucs.py)、[src/lyraforge/transcribers/dettato.py](../src/lyraforge/transcribers/dettato.py)、[src/lyraforge/toolchain/gpu.py](../src/lyraforge/toolchain/gpu.py)、[src/lyraforge/toolchain/installer.py](../src/lyraforge/toolchain/installer.py)：新增 `clear_device_cache()` 并在 `set_device()` / `install_dettato_gpu()` / `install_demucs_gpu()` / `install()` 后自动清空进程内 `_DEVICE_CACHE`，安装 CUDA 版 PyTorch 后无需重启即可立即生效。
+2. **前端 Studio / Piano Roll / 曲库 / 设置修复**：
+   - [apps/desktop/web/src/components/PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue)：移除 `Math.min(4800, ...)` 硬编码截断；实现 6 槽位 OKLCH 分轨配色（[tokens.css](../apps/desktop/web/src/styles/tokens.css)、[trackColors.ts](../apps/desktop/web/src/utils/trackColors.ts)）与可点击音轨聚焦图例；新增 Shift/Ctrl 多选、空白处框选（Marquee）、批量平移/移高/复制（`Ctrl+D`）/全选（`Ctrl+A`）/删除、Web Audio 琴键/音符试听及 `Space` 未保存草稿播放（[webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)）、`25%–250%` 缩放与「适应全曲」、`Ctrl+滚轮`/`Shift+滚轮`、随播跟踪、内联毫秒输入与「放弃修改」。
+   - [apps/desktop/web/src/composables/useLyraStore.ts](../apps/desktop/web/src/composables/useLyraStore.ts)、[StudioView.vue](../apps/desktop/web/src/views/StudioView.vue)、[LibraryView.vue](../apps/desktop/web/src/views/LibraryView.vue)、[SettingsView.vue](../apps/desktop/web/src/views/SettingsView.vue)：修复 `handleArrange`/`handleArrangeAB`/`handleSaveEdited` 重置音轨与主旋律勾选的问题；展示每轨 `原始 → 编曲` 音符数量差值与淘汰原因明细；支持 Studio 与曲库二次确认删除编曲版本；Preset 一键切换自动重新编曲；设置页并排显示 `dettato` 与 `Demucs` 独立环境状态标签。
+3. **本地全量验证（代码与测试定稿后）**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile && make check` 全部通过（覆盖提交分支前最终校验）；
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **249 passed, 2 warnings in 46.46s**，总覆盖率 **83.76%**；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 16 passed (16)**；
+   - `pnpm --dir apps/desktop/web build` → `49 modules transformed`（`vue-tsc --noEmit && vite build` `982ms`）；
+   - `make smoke` → 退出码 `0`（DryRun `actions_sent = 48`、`keys_still_pressed = []`）；
+   - CSS 规范扫描：确认 `apps/desktop/web/src` 除 `tokens.css` 外零硬编码色彩字面量（`NO_LITERAL_COLORS`）。
+

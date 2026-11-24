@@ -51,6 +51,33 @@ class PlaybackQueueManager:
             self._items = []
             self._index = 0
 
+    def remove_arrangement(self, arrangement_id: str) -> bool:
+        """Remove any queued entries matching ``arrangement_id`` while preserving cursor order."""
+        with self._lock:
+            if not self._items:
+                return False
+            current_item = self._items[self._index] if 0 <= self._index < len(self._items) else None
+            kept: list[QueueItem] = []
+            removed = False
+            removed_before = 0
+            for idx, item in enumerate(self._items):
+                if item.arrangement_id == arrangement_id:
+                    removed = True
+                    if idx < self._index:
+                        removed_before += 1
+                    continue
+                kept.append(item)
+            if not removed:
+                return False
+            self._items = kept
+            if not kept:
+                self._index = 0
+            elif current_item is not None and current_item.arrangement_id != arrangement_id:
+                self._index = max(0, min(self._index - removed_before, len(kept) - 1))
+            else:
+                self._index = max(0, min(self._index - removed_before, len(kept) - 1))
+            return True
+
     def current(self) -> QueueItem | None:
         with self._lock:
             if not self._items:

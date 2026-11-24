@@ -31,6 +31,11 @@ _DEVICE_PROBE = "import torch;print('cuda' if torch.cuda.is_available() else 'cp
 _DEVICE_CACHE: dict[str, str] = {}
 
 
+def clear_device_cache() -> None:
+    """Invalidate cached torch device probe results (e.g. after installing CUDA wheels)."""
+    _DEVICE_CACHE.clear()
+
+
 def _resolve_runner() -> list[str] | None:
     return resolve_runner(
         python_env=DETTATO_PYTHON_ENV,

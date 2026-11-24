@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { PerformanceEventItem, ProfileKeyDef } from "../api";
+import type { PerformanceEventItem, ProfileKeyDef, SongTrackInfo } from "../api";
+import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
+import {
+  auditionMidiNote,
+  startDraftSequencer,
+  type DraftSequencer,
+} from "../utils/webAudioPreview";
 import StudioIcon from "./StudioIcon.vue";
 
 const props = defineProps<{
@@ -9,6 +15,9 @@ const props = defineProps<{
   saving?: boolean;
   playheadMs?: number;
   isPlaying?: boolean;
+  arrangementId?: string | null;
+  tracks?: SongTrackInfo[];
+  melodyTrack?: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -19,6 +28,8 @@ const emit = defineEmits<{
 const ROW_HEIGHT_PX = 26;
 const BASE_PX_PER_MS = 0.08;
 const KEY_COLUMN_PX = 112;
+const MIN_ZOOM_PCT = 25;
+const MAX_ZOOM_PCT = 250;
 
 function cloneEvents(items: PerformanceEventItem[]): PerformanceEventItem[] {
   return items
@@ -26,18 +37,32 @@ function cloneEvents(items: PerformanceEventItem[]): PerformanceEventItem[] {
       ...e,
       adjustments: e.adjustments ? [...e.adjustments] : [],
     }))
-    .sort((a, b) => a.at_ms - b.at_ms || a.mapped_pitch - b.mapped_pitch || a.key_id.localeCompare(b.key_id));
+    .sort(
+      (a, b) =>
+        a.at_ms - b.at_ms ||
+        a.mapped_pitch - b.mapped_pitch ||
+        a.key_id.localeCompare(b.key_id),
+    );
 }
 
-const orderedKeys = computed(() =>
-  [...props.keys].sort((a, b) => b.pitch - a.pitch),
-);
+const orderedKeys = computed(() => [...props.keys].sort((a, b) => b.pitch - a.pitch));
+const rowIndexByKeyId = computed(() => {
+  const map = new Map<string, number>();
+  orderedKeys.value.forEach((k, idx) => map.set(k.key_id, idx));
+  return map;
+});
 
 const scrollEl = ref<HTMLElement | null>(null);
+const rowsWrapEl = ref<HTMLElement | null>(null);
+
 const workingEvents = ref<PerformanceEventItem[]>(cloneEvents(props.events));
 const history = ref<PerformanceEventItem[][]>([cloneEvents(props.events)]);
 const historyIndex = ref(0);
-const selectedIndex = ref<number | null>(workingEvents.value.length > 0 ? 0 : null);
+const selectedIndices = ref<Set<number>>(
+  new Set(workingEvents.value.length > 0 ? [0] : []),
+);
+const focusedTrackIndex = ref<number | null>(null);
+
 const newKeyId = ref("mid_1");
 const newAtMs = ref(0);
 const versionLabel = ref("Piano Roll 编辑版");
@@ -46,29 +71,83 @@ const versionLabel = ref("Piano Roll 编辑版");
 const zoomPct = ref(100);
 const snapMs = ref(50);
 const editorMode = ref<"select" | "add">("select");
+const followPlayhead = ref(true);
+
+// Web Audio draft sequencer state
+const draftPlaying = ref(false);
+const draftPlayheadMs = ref(0);
+let activeSequencer: DraftSequencer | null = null;
 
 // Context menu state
 const contextMenu = ref<{ idx: number; x: number; y: number } | null>(null);
 
-// Live drag preview state
+// Live multi-note drag preview state
 const dragState = ref<{
-  idx: number;
+  anchorIdx: number;
+  indices: number[];
+  origByIdx: Record<number, { atMs: number; rowIdx: number }>;
   startX: number;
   startY: number;
-  origAtMs: number;
-  origRowIdx: number;
-  previewAtMs: number;
-  previewRowIdx: number;
+  deltaAtMs: number;
+  deltaRow: number;
+  moved: boolean;
+  lastAuditionRow: number;
+} | null>(null);
+
+// Marquee box selection state
+const marqueeState = ref<{
+  startX: number;
+  startY: number;
+  currX: number;
+  currY: number;
+  additive: boolean;
+  baseSelected: Set<number>;
   moved: boolean;
 } | null>(null);
+
+let suppressNextLaneClick = false;
+let lastArrangementId: string | null | undefined = props.arrangementId;
+
+function stopDraftPlayback(): void {
+  if (activeSequencer) {
+    activeSequencer.stop();
+    activeSequencer = null;
+  }
+  draftPlaying.value = false;
+}
+
+function toggleDraftPlayback(): void {
+  if (draftPlaying.value) {
+    stopDraftPlayback();
+    return;
+  }
+  if (workingEvents.value.length === 0) return;
+  const maxDur = totalDurationMs.value;
+  let startMs = 0;
+  if (draftPlayheadMs.value > 0 && draftPlayheadMs.value < maxDur - 200) {
+    startMs = draftPlayheadMs.value;
+  } else if ((props.playheadMs ?? 0) > 0 && (props.playheadMs ?? 0) < maxDur - 200) {
+    startMs = props.playheadMs ?? 0;
+  }
+  draftPlaying.value = true;
+  draftPlayheadMs.value = startMs;
+  activeSequencer = startDraftSequencer(workingEvents.value, startMs, {
+    onTick: (posMs) => {
+      draftPlayheadMs.value = posMs;
+    },
+    onEnded: () => {
+      activeSequencer = null;
+      draftPlaying.value = false;
+      draftPlayheadMs.value = 0;
+    },
+  });
+}
 
 function scrollToMedianPitch(): void {
   const el = scrollEl.value;
   if (!el || orderedKeys.value.length === 0 || workingEvents.value.length === 0) return;
-  const rowMap = new Map<string, number>();
-  orderedKeys.value.forEach((k, i) => rowMap.set(k.key_id, i));
   const rowIndices = workingEvents.value
-    .map((e) => rowMap.get(e.key_id))
+    .map((e) => rowIndexByKeyId.value.get(e.key_id))
     .filter((idx): idx is number => idx !== undefined)
     .sort((a, b) => a - b);
   if (rowIndices.length === 0) return;
@@ -78,15 +157,49 @@ function scrollToMedianPitch(): void {
 }
 
 watch(
-  () => props.events,
-  (next) => {
+  () => [props.events, props.arrangementId] as const,
+  ([next, arrId]) => {
+    stopDraftPlayback();
+    const prevScrollLeft = scrollEl.value?.scrollLeft ?? 0;
+    const prevScrollTop = scrollEl.value?.scrollTop ?? 0;
+    const switchedArrangement = arrId !== undefined && arrId !== lastArrangementId;
+    lastArrangementId = arrId;
+
     const initial = cloneEvents(next);
     workingEvents.value = initial;
     history.value = [cloneEvents(initial)];
     historyIndex.value = 0;
-    selectedIndex.value = initial.length > 0 ? 0 : null;
+    selectedIndices.value = new Set(initial.length > 0 ? [0] : []);
     contextMenu.value = null;
-    void nextTick(scrollToMedianPitch);
+
+    if (
+      focusedTrackIndex.value !== null &&
+      !initial.some((e) => (e.source_track ?? 0) === focusedTrackIndex.value) &&
+      !(props.tracks ?? []).some((t) => t.index === focusedTrackIndex.value)
+    ) {
+      focusedTrackIndex.value = null;
+    }
+
+    void nextTick(() => {
+      const el = scrollEl.value;
+      if (!el) return;
+      if (!switchedArrangement || (prevScrollLeft === 0 && prevScrollTop === 0)) {
+        scrollToMedianPitch();
+      } else {
+        const maxLeft = Math.max(0, timelineWidthPx.value + KEY_COLUMN_PX - el.clientWidth);
+        el.scrollLeft = Math.min(prevScrollLeft, maxLeft);
+        el.scrollTop = prevScrollTop;
+      }
+    });
+  },
+);
+
+watch(
+  () => props.isPlaying,
+  (playing) => {
+    if (playing && draftPlaying.value) {
+      stopDraftPlayback();
+    }
   },
 );
 
@@ -104,6 +217,7 @@ const canUndo = computed(() => historyIndex.value > 0);
 const canRedo = computed(() => historyIndex.value < history.value.length - 1);
 const isDirty = computed(() => historyIndex.value > 0);
 const pxPerMs = computed(() => BASE_PX_PER_MS * (zoomPct.value / 100));
+const minNoteWidthPx = computed(() => (zoomPct.value <= 50 ? 8 : zoomPct.value <= 75 ? 14 : 22));
 
 const totalDurationMs = computed(() => {
   if (workingEvents.value.length === 0) return 2400;
@@ -114,27 +228,61 @@ const totalDurationMs = computed(() => {
 });
 
 const timelineWidthPx = computed(() =>
-  Math.max(540, Math.min(4800, Math.ceil(totalDurationMs.value * pxPerMs.value) + 80)),
+  Math.max(540, Math.ceil(totalDurationMs.value * pxPerMs.value) + 120),
 );
 
-const playheadLeftPx = computed(() => {
-  const ms = Math.max(0, props.playheadMs ?? 0);
-  return Math.round(ms * pxPerMs.value);
+const activePlayheadMs = computed(() =>
+  draftPlaying.value ? draftPlayheadMs.value : Math.max(0, props.playheadMs ?? 0),
+);
+
+const playheadLeftPx = computed(() => Math.round(activePlayheadMs.value * pxPerMs.value));
+
+const showPlayhead = computed(
+  () => draftPlaying.value || Boolean(props.isPlaying) || (props.playheadMs ?? 0) > 0,
+);
+
+watch(activePlayheadMs, (ms) => {
+  if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value) return;
+  const el = scrollEl.value;
+  if (!el || el.clientWidth <= 0) return;
+  const playheadCanvasPx = KEY_COLUMN_PX + ms * pxPerMs.value;
+  const visibleLeft = el.scrollLeft + KEY_COLUMN_PX + 24;
+  const visibleRight = el.scrollLeft + el.clientWidth - 72;
+  if (playheadCanvasPx > visibleRight || playheadCanvasPx < visibleLeft) {
+    el.scrollLeft = Math.max(0, playheadCanvasPx - el.clientWidth * 0.3);
+  }
 });
 
-const showPlayhead = computed(() => Boolean(props.isPlaying) || (props.playheadMs ?? 0) > 0);
+function formatRulerTime(ms: number): string {
+  const sec = ms / 1000;
+  if (sec >= 60) {
+    const mins = Math.floor(sec / 60);
+    const remSec = Number((sec - mins * 60).toFixed(2));
+    const whole = Math.floor(remSec);
+    const frac = Math.round((remSec - whole) * 100);
+    const secStr = String(whole).padStart(2, "0");
+    return frac > 0 ? `${mins}:${secStr}.${String(frac).replace(/0$/, "")}` : `${mins}:${secStr}`;
+  }
+  return `${Number(sec.toFixed(2))}s`;
+}
 
 const rulerTicks = computed(() => {
-  const stepMs = zoomPct.value >= 160 ? 250 : 500;
+  const stepMs =
+    zoomPct.value >= 160
+      ? 250
+      : zoomPct.value >= 75
+        ? 500
+        : zoomPct.value >= 40
+          ? 1000
+          : 2000;
+  const majorEveryMs = stepMs >= 2000 ? 10000 : stepMs >= 1000 ? 5000 : 1000;
   const maxMs = Math.ceil(totalDurationMs.value / stepMs) * stepMs;
   const ticks: Array<{ ms: number; label: string; leftPx: number; major: boolean }> = [];
   for (let ms = 0; ms <= maxMs; ms += stepMs) {
-    const major = ms % 1000 === 0;
+    const major = ms % majorEveryMs === 0;
     let label = "";
-    if (major) {
-      label = `${ms / 1000}s`;
-    } else if (zoomPct.value >= 125) {
-      label = `${Number((ms / 1000).toFixed(2))}s`;
+    if (major || (zoomPct.value >= 125 && ms % 500 === 0)) {
+      label = formatRulerTime(ms);
     }
     ticks.push({
       ms,
@@ -151,6 +299,70 @@ const snapBackgroundSize = computed(() => {
   return `${step}px 100%`;
 });
 
+// Multi-track coloring & legend
+const eventCountsByTrack = computed(() => {
+  const counts = new Map<number, number>();
+  for (const ev of workingEvents.value) {
+    const t = ev.source_track ?? 0;
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return counts;
+});
+
+const eventTrackIds = computed(() => Array.from(eventCountsByTrack.value.keys()));
+
+const trackColorMap = computed(() =>
+  buildTrackColorMap(props.tracks ?? [], props.melodyTrack ?? null, eventTrackIds.value),
+);
+
+function trackSlotFor(ev: PerformanceEventItem): number {
+  return trackColorMap.value.get(ev.source_track ?? 0) ?? 0;
+}
+
+const legendTracks = computed(() => {
+  const tracksByIdx = new Map<number, SongTrackInfo>();
+  for (const t of props.tracks ?? []) {
+    if (!t.is_percussion) tracksByIdx.set(t.index, t);
+  }
+  const allIds = Array.from(
+    new Set([...tracksByIdx.keys(), ...eventCountsByTrack.value.keys()]),
+  ).sort((a, b) => a - b);
+
+  return allIds.map((idx) => {
+    const info = tracksByIdx.get(idx);
+    const slot = trackColorMap.value.get(idx) ?? 0;
+    return {
+      index: idx,
+      name: info?.name || `轨 ${idx}`,
+      count: eventCountsByTrack.value.get(idx) ?? 0,
+      isMelody: props.melodyTrack !== null && props.melodyTrack !== undefined && props.melodyTrack === idx,
+      colorClass: trackColorClass(slot),
+    };
+  });
+});
+
+const showLegend = computed(
+  () => legendTracks.value.length > 1 || (props.tracks?.length ?? 0) > 1,
+);
+
+const marqueeRect = computed(() => {
+  const m = marqueeState.value;
+  if (!m || !m.moved) return null;
+  return {
+    left: Math.min(m.startX, m.currX),
+    top: Math.min(m.startY, m.currY),
+    width: Math.max(2, Math.abs(m.currX - m.startX)),
+    height: Math.max(2, Math.abs(m.currY - m.startY)),
+  };
+});
+
+function noteWidthPx(ev: PerformanceEventItem): number {
+  return Math.max(
+    minNoteWidthPx.value,
+    Math.round(Math.max(80, ev.hold_ms) * pxPerMs.value),
+  );
+}
+
 function snapTime(ms: number): number {
   const clamped = Math.max(0, ms);
   if (snapMs.value <= 0) return Math.round(clamped);
@@ -165,15 +377,20 @@ function isOctaveBreak(idx: number): boolean {
 
 const eventsByKey = computed(() => {
   const map: Record<string, Array<{ idx: number; ev: PerformanceEventItem }>> = {};
+  const d = dragState.value;
   workingEvents.value.forEach((ev, idx) => {
-    const d = dragState.value;
-    if (d && d.idx === idx) {
-      const targetKey = orderedKeys.value[d.previewRowIdx] ?? orderedKeys.value[0];
+    const orig = d ? d.origByIdx[idx] : undefined;
+    if (d && orig) {
+      const targetKey = orderedKeys.value[orig.rowIdx + d.deltaRow] ?? orderedKeys.value[0];
       const kid = targetKey ? targetKey.key_id : ev.key_id;
       if (!map[kid]) map[kid] = [];
       map[kid].push({
         idx,
-        ev: { ...ev, key_id: kid, at_ms: d.previewAtMs },
+        ev: {
+          ...ev,
+          key_id: kid,
+          at_ms: Math.max(0, orig.atMs + d.deltaAtMs),
+        },
       });
       return;
     }
@@ -184,110 +401,224 @@ const eventsByKey = computed(() => {
 });
 
 const selectedEvent = computed(() => {
+  if (selectedIndices.value.size !== 1) return null;
+  const onlyIdx = [...selectedIndices.value][0];
   const d = dragState.value;
-  if (d) {
-    const k = orderedKeys.value[d.previewRowIdx];
-    const base = workingEvents.value[d.idx];
-    if (base && k) {
-      return { ...base, key_id: k.key_id, at_ms: d.previewAtMs };
+  const orig = d ? d.origByIdx[onlyIdx] : undefined;
+  const base = workingEvents.value[onlyIdx];
+  if (!base) return null;
+  if (d && orig) {
+    const k = orderedKeys.value[orig.rowIdx + d.deltaRow];
+    if (k) {
+      return {
+        ...base,
+        key_id: k.key_id,
+        at_ms: Math.max(0, orig.atMs + d.deltaAtMs),
+      };
     }
   }
-  if (selectedIndex.value === null) return null;
-  return workingEvents.value[selectedIndex.value] ?? null;
+  return base;
 });
 
-function commitChange(nextRaw: PerformanceEventItem[], selectItem?: PerformanceEventItem | null) {
-  const sorted = cloneEvents(nextRaw);
+function setSingleSelection(idx: number | null): void {
+  selectedIndices.value = idx === null ? new Set() : new Set([idx]);
+}
+
+function auditionEvent(ev: PerformanceEventItem): void {
+  auditionMidiNote(ev.mapped_pitch, ev.velocity ?? 92, ev.hold_ms);
+}
+
+function auditionKey(key: ProfileKeyDef): void {
+  auditionMidiNote(key.pitch, 96, 260);
+}
+
+function commitChange(
+  nextRaw: PerformanceEventItem[],
+  selectTargets: PerformanceEventItem[],
+  fallbackIdx = 0,
+): void {
+  const targetSet = new Set(selectTargets);
+  const tagged = nextRaw.map((item) => ({
+    ev: {
+      ...item,
+      adjustments: item.adjustments ? [...item.adjustments] : [],
+    },
+    keepSelected: targetSet.has(item),
+  }));
+  tagged.sort(
+    (a, b) =>
+      a.ev.at_ms - b.ev.at_ms ||
+      a.ev.mapped_pitch - b.ev.mapped_pitch ||
+      a.ev.key_id.localeCompare(b.ev.key_id),
+  );
+  const sorted = tagged.map((t) => t.ev);
   const sliced = history.value.slice(0, historyIndex.value + 1);
   sliced.push(cloneEvents(sorted));
   history.value = sliced;
   historyIndex.value = sliced.length - 1;
   workingEvents.value = sorted;
-  if (selectItem) {
-    const found = sorted.findIndex(
-      (e) => e.at_ms === selectItem.at_ms && e.key_id === selectItem.key_id,
-    );
-    selectedIndex.value = found >= 0 ? found : sorted.length > 0 ? 0 : null;
-  } else {
-    selectedIndex.value = sorted.length > 0 ? Math.min(selectedIndex.value ?? 0, sorted.length - 1) : null;
+
+  const nextSelected = new Set<number>();
+  tagged.forEach((t, i) => {
+    if (t.keepSelected) nextSelected.add(i);
+  });
+  if (nextSelected.size === 0 && sorted.length > 0) {
+    nextSelected.add(Math.max(0, Math.min(fallbackIdx, sorted.length - 1)));
   }
+  selectedIndices.value = nextSelected;
 }
 
-function undo() {
+function undo(): void {
   if (!canUndo.value) return;
   historyIndex.value -= 1;
   workingEvents.value = cloneEvents(history.value[historyIndex.value]);
-  selectedIndex.value = workingEvents.value.length > 0 ? 0 : null;
+  setSingleSelection(workingEvents.value.length > 0 ? 0 : null);
   contextMenu.value = null;
 }
 
-function redo() {
+function redo(): void {
   if (!canRedo.value) return;
   historyIndex.value += 1;
   workingEvents.value = cloneEvents(history.value[historyIndex.value]);
-  selectedIndex.value = workingEvents.value.length > 0 ? 0 : null;
+  setSingleSelection(workingEvents.value.length > 0 ? 0 : null);
   contextMenu.value = null;
 }
 
-function shiftNotePitch(idx: number, step: -1 | 1) {
-  const ev = workingEvents.value[idx];
-  if (!ev) return;
+function discardChanges(): void {
+  if (!isDirty.value) return;
+  stopDraftPlayback();
+  const base = cloneEvents(props.events);
+  workingEvents.value = base;
+  history.value = [cloneEvents(base)];
+  historyIndex.value = 0;
+  setSingleSelection(base.length > 0 ? 0 : null);
+  contextMenu.value = null;
+}
+
+function shiftIndicesPitch(indices: number[], step: -1 | 1): void {
+  if (indices.length === 0) return;
   const asc = [...props.keys].sort((a, b) => a.pitch - b.pitch);
-  const pos = asc.findIndex((k) => k.key_id === ev.key_id);
-  const nextPos = pos + step;
-  if (pos < 0 || nextPos < 0 || nextPos >= asc.length) return;
-  const targetKey = asc[nextPos];
-  const updated: PerformanceEventItem = {
-    ...ev,
-    key_id: targetKey.key_id,
-    mapped_pitch: targetKey.pitch,
-  };
-  const next = workingEvents.value.map((item, i) => (i === idx ? updated : item));
-  commitChange(next, updated);
+  if (asc.length === 0) return;
+  const idxSet = new Set(indices);
+  const updatedTargets: PerformanceEventItem[] = [];
+  let changed = false;
+
+  const next = workingEvents.value.map((item, i) => {
+    if (!idxSet.has(i)) return item;
+    const pos = asc.findIndex((k) => k.key_id === item.key_id);
+    const nextPos = pos + step;
+    if (pos < 0 || nextPos < 0 || nextPos >= asc.length) {
+      updatedTargets.push(item);
+      return item;
+    }
+    const targetKey = asc[nextPos];
+    changed = true;
+    const updated: PerformanceEventItem = {
+      ...item,
+      key_id: targetKey.key_id,
+      mapped_pitch: targetKey.pitch,
+    };
+    updatedTargets.push(updated);
+    return updated;
+  });
+
+  if (!changed) return;
+  if (updatedTargets.length > 0) {
+    auditionEvent(updatedTargets[0]);
+  }
+  commitChange(next, updatedTargets);
 }
 
-function shiftSelectedPitch(step: -1 | 1) {
-  if (selectedIndex.value === null) return;
-  shiftNotePitch(selectedIndex.value, step);
+function shiftSelectedPitch(step: -1 | 1): void {
+  shiftIndicesPitch([...selectedIndices.value], step);
 }
 
-function nudgeSelectedTime(deltaMs: number) {
-  if (selectedIndex.value === null) return;
-  const ev = workingEvents.value[selectedIndex.value];
-  if (!ev) return;
-  const updated: PerformanceEventItem = {
-    ...ev,
-    at_ms: Math.max(0, ev.at_ms + deltaMs),
-  };
-  const next = workingEvents.value.map((item, idx) =>
-    idx === selectedIndex.value ? updated : item,
-  );
-  commitChange(next, updated);
+function nudgeSelectedTime(deltaMs: number): void {
+  const indices = [...selectedIndices.value];
+  if (indices.length === 0) return;
+  const idxSet = new Set(indices);
+  const updatedTargets: PerformanceEventItem[] = [];
+
+  const next = workingEvents.value.map((item, idx) => {
+    if (!idxSet.has(idx)) return item;
+    const updated: PerformanceEventItem = {
+      ...item,
+      at_ms: Math.max(0, item.at_ms + deltaMs),
+    };
+    updatedTargets.push(updated);
+    return updated;
+  });
+  commitChange(next, updatedTargets);
 }
 
-function duplicateNote(idx: number, offsetMs = 250) {
-  const ev = workingEvents.value[idx];
-  if (!ev) return;
-  const copy: PerformanceEventItem = {
-    ...ev,
-    at_ms: Math.max(0, ev.at_ms + offsetMs),
-    adjustments: ev.adjustments ? [...ev.adjustments] : [],
-  };
-  commitChange([...workingEvents.value, copy], copy);
+function onInlineTimeChange(event: Event): void {
+  if (selectedIndices.value.size !== 1) return;
+  const onlyIdx = [...selectedIndices.value][0];
+  const cur = workingEvents.value[onlyIdx];
+  if (!cur) return;
+  const parsed = Number((event.target as HTMLInputElement).value);
+  if (!Number.isFinite(parsed)) return;
+  const nextMs = Math.max(0, Math.round(parsed));
+  if (nextMs === cur.at_ms) return;
+  const updated: PerformanceEventItem = { ...cur, at_ms: nextMs };
+  const next = workingEvents.value.map((item, idx) => (idx === onlyIdx ? updated : item));
+  commitChange(next, [updated]);
 }
 
-function deleteAtIndex(idx: number) {
-  if (workingEvents.value.length <= 1) return;
-  const next = workingEvents.value.filter((_, i) => i !== idx);
-  commitChange(next, null);
+function duplicateIndices(indices: number[], offsetMs = 250): void {
+  if (indices.length === 0) return;
+  const copies: PerformanceEventItem[] = [];
+  for (const idx of indices) {
+    const ev = workingEvents.value[idx];
+    if (!ev) continue;
+    copies.push({
+      ...ev,
+      at_ms: Math.max(0, ev.at_ms + offsetMs),
+      adjustments: ev.adjustments ? [...ev.adjustments] : [],
+    });
+  }
+  if (copies.length === 0) return;
+  auditionEvent(copies[0]);
+  commitChange([...workingEvents.value, ...copies], copies);
 }
 
-function deleteSelected() {
-  if (selectedIndex.value === null || workingEvents.value.length <= 1) return;
-  deleteAtIndex(selectedIndex.value);
+function duplicateSelected(offsetMs?: number): void {
+  const step = offsetMs ?? (snapMs.value > 0 ? snapMs.value : 250);
+  duplicateIndices([...selectedIndices.value], step);
 }
 
-function createNoteFor(key: ProfileKeyDef, atMs: number) {
+function deleteIndices(indices: number[]): void {
+  if (indices.length === 0) return;
+  const sortedIdx = [...new Set(indices)].sort((a, b) => a - b);
+  const removeSet = new Set(sortedIdx);
+  // Keep at least one note in the arrangement editor
+  if (workingEvents.value.length - removeSet.size < 1) return;
+  const next = workingEvents.value.filter((_, i) => !removeSet.has(i));
+  commitChange(next, [], sortedIdx[0] ?? 0);
+}
+
+function deleteSelected(): void {
+  deleteIndices([...selectedIndices.value]);
+}
+
+const canDeleteSelection = computed(
+  () =>
+    selectedIndices.value.size > 0 &&
+    workingEvents.value.length - selectedIndices.value.size >= 1,
+);
+
+function selectAllVisible(): void {
+  const next = new Set<number>();
+  workingEvents.value.forEach((ev, idx) => {
+    if (focusedTrackIndex.value === null || (ev.source_track ?? 0) === focusedTrackIndex.value) {
+      next.add(idx);
+    }
+  });
+  selectedIndices.value = next;
+}
+
+function createNoteFor(key: ProfileKeyDef, atMs: number): void {
+  const targetTrack = focusedTrackIndex.value ?? 0;
   const created: PerformanceEventItem = {
     at_ms: Math.max(0, Math.round(atMs)),
     key_id: key.key_id,
@@ -295,22 +626,27 @@ function createNoteFor(key: ProfileKeyDef, atMs: number) {
     hold_ms: 40,
     source_pitch: key.pitch,
     mapped_pitch: key.pitch,
-    source_track: 0,
+    source_track: targetTrack,
     source_channel: 0,
     velocity: 96,
     adjustments: [],
   };
-  commitChange([...workingEvents.value, created], created);
+  auditionEvent(created);
+  commitChange([...workingEvents.value, created], [created]);
 }
 
-function addNote() {
+function addNote(): void {
   const key = props.keys.find((k) => k.key_id === newKeyId.value);
   if (!key) return;
   createNoteFor(key, Number(newAtMs.value) || 0);
 }
 
-function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false) {
+function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false): void {
   contextMenu.value = null;
+  if (suppressNextLaneClick) {
+    suppressNextLaneClick = false;
+    return;
+  }
   if (!forceAdd && editorMode.value !== "add") return;
   const target = event.target as HTMLElement;
   if (target.closest(".pr-note")) return;
@@ -321,17 +657,53 @@ function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false) {
   createNoteFor(key, snapTime(rawMs));
 }
 
-function onRulerClick(event: MouseEvent) {
+function onRulerClick(event: MouseEvent): void {
   const track = event.currentTarget as HTMLElement;
   const rect = track.getBoundingClientRect();
   const relX = Math.max(0, event.clientX - rect.left);
   const ms = Math.max(0, Math.round(relX / pxPerMs.value));
+  draftPlayheadMs.value = ms;
   emit("seek", ms);
 }
 
-function onNoteContextMenu(idx: number, event: MouseEvent) {
+function fitAllTimeline(): void {
+  const el = scrollEl.value;
+  const availablePx = Math.max(320, (el?.clientWidth ?? 900) - KEY_COLUMN_PX - 120);
+  const rawPct = Math.round((availablePx / (Math.max(2400, totalDurationMs.value) * BASE_PX_PER_MS)) * 100);
+  zoomPct.value = Math.max(MIN_ZOOM_PCT, Math.min(MAX_ZOOM_PCT, rawPct));
+  if (el) el.scrollLeft = 0;
+}
+
+function onScrollWheel(event: WheelEvent): void {
+  const el = scrollEl.value;
+  if (!el) return;
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    const rect = el.getBoundingClientRect();
+    const pointerLaneX = Math.max(0, event.clientX - rect.left + el.scrollLeft - KEY_COLUMN_PX);
+    const cursorMs = pointerLaneX / pxPerMs.value;
+    const step = event.deltaY < 0 ? 25 : -25;
+    const nextZoom = Math.max(MIN_ZOOM_PCT, Math.min(MAX_ZOOM_PCT, zoomPct.value + step));
+    if (nextZoom === zoomPct.value) return;
+    zoomPct.value = nextZoom;
+    void nextTick(() => {
+      const nextPxPerMs = BASE_PX_PER_MS * (nextZoom / 100);
+      const viewportOffset = Math.max(0, event.clientX - rect.left - KEY_COLUMN_PX);
+      el.scrollLeft = Math.max(0, Math.round(cursorMs * nextPxPerMs - viewportOffset));
+    });
+    return;
+  }
+  if (event.shiftKey) {
+    event.preventDefault();
+    el.scrollLeft += event.deltaY || event.deltaX;
+  }
+}
+
+function onNoteContextMenu(idx: number, event: MouseEvent): void {
   event.preventDefault();
-  selectedIndex.value = idx;
+  if (!selectedIndices.value.has(idx)) {
+    setSingleSelection(idx);
+  }
   const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
   const vh = typeof window !== "undefined" ? window.innerHeight : 720;
   contextMenu.value = {
@@ -341,17 +713,19 @@ function onNoteContextMenu(idx: number, event: MouseEvent) {
   };
 }
 
-function runContextAction(action: "up" | "down" | "dup" | "del") {
+function runContextAction(action: "up" | "down" | "dup" | "del"): void {
   const menu = contextMenu.value;
   contextMenu.value = null;
   if (!menu) return;
-  if (action === "up") shiftNotePitch(menu.idx, 1);
-  else if (action === "down") shiftNotePitch(menu.idx, -1);
-  else if (action === "dup") duplicateNote(menu.idx, 250);
-  else if (action === "del") deleteAtIndex(menu.idx);
+  const targets = selectedIndices.value.has(menu.idx) ? [...selectedIndices.value] : [menu.idx];
+  if (action === "up") shiftIndicesPitch(targets, 1);
+  else if (action === "down") shiftIndicesPitch(targets, -1);
+  else if (action === "dup") duplicateIndices(targets, 250);
+  else if (action === "del") deleteIndices(targets);
 }
 
-function onWindowPointerMove(ev: PointerEvent) {
+// Multi-note drag handlers
+function onWindowDragMove(ev: PointerEvent): void {
   const d = dragState.value;
   if (!d) return;
   const dx = ev.clientX - d.startX;
@@ -359,74 +733,266 @@ function onWindowPointerMove(ev: PointerEvent) {
   if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
     d.moved = true;
   }
-  const nextAtMs = snapTime(d.origAtMs + dx / pxPerMs.value);
-  const rowDelta = Math.round(dy / ROW_HEIGHT_PX);
-  const nextRow = Math.max(0, Math.min(orderedKeys.value.length - 1, d.origRowIdx + rowDelta));
-  d.previewAtMs = nextAtMs;
-  d.previewRowIdx = nextRow;
-}
+  const anchorOrig = d.origByIdx[d.anchorIdx];
+  if (!anchorOrig) return;
+  const snappedAnchorAt = snapTime(anchorOrig.atMs + dx / pxPerMs.value);
+  let minAtMs = Infinity;
+  let minRow = Infinity;
+  let maxRow = -Infinity;
+  for (const idx of d.indices) {
+    const o = d.origByIdx[idx];
+    if (!o) continue;
+    minAtMs = Math.min(minAtMs, o.atMs);
+    minRow = Math.min(minRow, o.rowIdx);
+    maxRow = Math.max(maxRow, o.rowIdx);
+  }
+  const minDeltaAtMs = -minAtMs;
+  const nextDeltaAtMs = Math.max(minDeltaAtMs, snappedAnchorAt - anchorOrig.atMs);
+  const rawDeltaRow = Math.round(dy / ROW_HEIGHT_PX);
+  const maxIdx = Math.max(0, orderedKeys.value.length - 1);
+  const clampedDeltaRow = Math.max(-minRow, Math.min(maxIdx - maxRow, rawDeltaRow));
 
-function stopDragListeners() {
-  if (typeof window !== "undefined") {
-    window.removeEventListener("pointermove", onWindowPointerMove);
-    window.removeEventListener("pointerup", onWindowPointerUp);
+  d.deltaAtMs = nextDeltaAtMs;
+  d.deltaRow = clampedDeltaRow;
+
+  const anchorRow = anchorOrig.rowIdx + clampedDeltaRow;
+  if (anchorRow !== d.lastAuditionRow) {
+    d.lastAuditionRow = anchorRow;
+    const k = orderedKeys.value[anchorRow];
+    if (k) auditionKey(k);
   }
 }
 
-function onWindowPointerUp() {
+function stopDragListeners(): void {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("pointermove", onWindowDragMove);
+    window.removeEventListener("pointerup", onWindowDragUp);
+  }
+}
+
+function onWindowDragUp(): void {
   stopDragListeners();
   const d = dragState.value;
   dragState.value = null;
-  if (!d || !d.moved) return;
-  const ev = workingEvents.value[d.idx];
-  const targetKey = orderedKeys.value[d.previewRowIdx];
-  if (!ev || !targetKey) return;
-  if (ev.at_ms === d.previewAtMs && ev.key_id === targetKey.key_id) return;
-  const updated: PerformanceEventItem = {
-    ...ev,
-    at_ms: d.previewAtMs,
-    key_id: targetKey.key_id,
-    mapped_pitch: targetKey.pitch,
-  };
-  const next = workingEvents.value.map((item, i) => (i === d.idx ? updated : item));
-  commitChange(next, updated);
-}
+  if (!d || !d.moved || (d.deltaAtMs === 0 && d.deltaRow === 0)) return;
+  const idxSet = new Set(d.indices);
+  const targets: PerformanceEventItem[] = [];
+  let changed = false;
 
-function onNotePointerDown(idx: number, keyId: string, evItem: PerformanceEventItem, event: PointerEvent) {
-  contextMenu.value = null;
-  selectedIndex.value = idx;
-  if (event.button !== 0) return;
-  const rowIdx = Math.max(
-    0,
-    orderedKeys.value.findIndex((k) => k.key_id === keyId),
-  );
-  dragState.value = {
-    idx,
-    startX: event.clientX,
-    startY: event.clientY,
-    origAtMs: evItem.at_ms,
-    origRowIdx: rowIdx,
-    previewAtMs: evItem.at_ms,
-    previewRowIdx: rowIdx,
-    moved: false,
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("pointermove", onWindowPointerMove);
-    window.addEventListener("pointerup", onWindowPointerUp);
+  const next = workingEvents.value.map((item, i) => {
+    if (!idxSet.has(i)) return item;
+    const orig = d.origByIdx[i];
+    if (!orig) return item;
+    const targetKey = orderedKeys.value[orig.rowIdx + d.deltaRow];
+    if (!targetKey) {
+      targets.push(item);
+      return item;
+    }
+    const nextAtMs = Math.max(0, orig.atMs + d.deltaAtMs);
+    if (item.at_ms !== nextAtMs || item.key_id !== targetKey.key_id) {
+      changed = true;
+    }
+    const updated: PerformanceEventItem = {
+      ...item,
+      at_ms: nextAtMs,
+      key_id: targetKey.key_id,
+      mapped_pitch: targetKey.pitch,
+    };
+    targets.push(updated);
+    return updated;
+  });
+
+  if (changed) {
+    commitChange(next, targets);
   }
 }
 
-function onEditorKeydown(event: KeyboardEvent) {
+function isNoteDragging(idx: number): boolean {
+  const d = dragState.value;
+  return Boolean(d && d.moved && d.origByIdx[idx]);
+}
+
+function onNotePointerDown(
+  idx: number,
+  _keyId: string,
+  evItem: PerformanceEventItem,
+  event: PointerEvent,
+): void {
+  event.stopPropagation();
+  contextMenu.value = null;
+  const isToggle = event.shiftKey || event.ctrlKey || event.metaKey;
+
+  if (isToggle) {
+    const nextSet = new Set(selectedIndices.value);
+    if (nextSet.has(idx)) {
+      nextSet.delete(idx);
+    } else {
+      nextSet.add(idx);
+      auditionEvent(evItem);
+    }
+    selectedIndices.value = nextSet;
+    if (!nextSet.has(idx)) return;
+  } else {
+    if (!selectedIndices.value.has(idx)) {
+      setSingleSelection(idx);
+    }
+    auditionEvent(evItem);
+  }
+
+  if (event.button !== 0) return;
+
+  const dragIndices = [...selectedIndices.value];
+  const origByIdx: Record<number, { atMs: number; rowIdx: number }> = {};
+  for (const selIdx of dragIndices) {
+    const item = workingEvents.value[selIdx];
+    if (!item) continue;
+    const rIdx = Math.max(0, rowIndexByKeyId.value.get(item.key_id) ?? 0);
+    origByIdx[selIdx] = { atMs: item.at_ms, rowIdx: rIdx };
+  }
+  const anchorOrig = origByIdx[idx];
+  if (!anchorOrig) return;
+
+  dragState.value = {
+    anchorIdx: idx,
+    indices: Object.keys(origByIdx).map(Number),
+    origByIdx,
+    startX: event.clientX,
+    startY: event.clientY,
+    deltaAtMs: 0,
+    deltaRow: 0,
+    moved: false,
+    lastAuditionRow: anchorOrig.rowIdx,
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("pointermove", onWindowDragMove);
+    window.addEventListener("pointerup", onWindowDragUp);
+  }
+}
+
+// Marquee box selection handlers
+function updateMarqueeSelection(): void {
+  const m = marqueeState.value;
+  if (!m || !m.moved) return;
+  const left = Math.min(m.startX, m.currX);
+  const right = Math.max(m.startX, m.currX);
+  const top = Math.min(m.startY, m.currY);
+  const bottom = Math.max(m.startY, m.currY);
+
+  const nextSet = m.additive ? new Set(m.baseSelected) : new Set<number>();
+  workingEvents.value.forEach((ev, idx) => {
+    if (focusedTrackIndex.value !== null && (ev.source_track ?? 0) !== focusedTrackIndex.value) {
+      return;
+    }
+    const rowIdx = rowIndexByKeyId.value.get(ev.key_id);
+    if (rowIdx === undefined) return;
+    const x0 = Math.round(ev.at_ms * pxPerMs.value);
+    const x1 = x0 + noteWidthPx(ev);
+    const y0 = rowIdx * ROW_HEIGHT_PX;
+    const y1 = y0 + ROW_HEIGHT_PX;
+    if (x1 >= left && x0 <= right && y1 >= top && y0 <= bottom) {
+      nextSet.add(idx);
+    }
+  });
+  selectedIndices.value = nextSet;
+}
+
+function onWindowMarqueeMove(ev: PointerEvent): void {
+  const m = marqueeState.value;
+  const wrap = rowsWrapEl.value;
+  if (!m || !wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  m.currX = Math.max(0, ev.clientX - rect.left - KEY_COLUMN_PX);
+  m.currY = Math.max(0, ev.clientY - rect.top);
+  if (Math.abs(m.currX - m.startX) > 4 || Math.abs(m.currY - m.startY) > 4) {
+    m.moved = true;
+    updateMarqueeSelection();
+  }
+}
+
+function stopMarqueeListeners(): void {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("pointermove", onWindowMarqueeMove);
+    window.removeEventListener("pointerup", onWindowMarqueeUp);
+  }
+}
+
+function onWindowMarqueeUp(): void {
+  stopMarqueeListeners();
+  const m = marqueeState.value;
+  marqueeState.value = null;
+  if (!m) return;
+  if (m.moved) {
+    suppressNextLaneClick = true;
+    window.setTimeout(() => {
+      suppressNextLaneClick = false;
+    }, 0);
+  } else if (!m.additive) {
+    selectedIndices.value = new Set();
+  }
+}
+
+function onRowsPointerDown(event: PointerEvent): void {
+  if (editorMode.value !== "select" || event.button !== 0) return;
+  const target = event.target as HTMLElement | null;
+  if (!target || target.closest(".pr-note") || target.closest(".pr-key-label")) return;
+  const wrap = rowsWrapEl.value;
+  if (!wrap) return;
+  contextMenu.value = null;
+  const rect = wrap.getBoundingClientRect();
+  const laneX = Math.max(0, event.clientX - rect.left - KEY_COLUMN_PX);
+  const laneY = Math.max(0, event.clientY - rect.top);
+  marqueeState.value = {
+    startX: laneX,
+    startY: laneY,
+    currX: laneX,
+    currY: laneY,
+    additive: event.shiftKey || event.ctrlKey || event.metaKey,
+    baseSelected: new Set(selectedIndices.value),
+    moved: false,
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("pointermove", onWindowMarqueeMove);
+    window.addEventListener("pointerup", onWindowMarqueeUp);
+  }
+}
+
+function onEditorKeydown(event: KeyboardEvent): void {
   const tag = (event.target as HTMLElement | null)?.tagName;
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-  if (event.key === "Escape" && contextMenu.value) {
-    contextMenu.value = null;
-    return;
+  if (event.key === "Escape") {
+    if (contextMenu.value) {
+      contextMenu.value = null;
+      return;
+    }
+    if (draftPlaying.value) {
+      stopDraftPlayback();
+      return;
+    }
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) redo();
     else undo();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+    event.preventDefault();
+    redo();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    selectAllVisible();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    duplicateSelected();
+    return;
+  }
+  if (event.code === "Space") {
+    event.preventDefault();
+    toggleDraftPlayback();
     return;
   }
   if (event.key === "ArrowUp") {
@@ -437,24 +1003,24 @@ function onEditorKeydown(event: KeyboardEvent) {
     shiftSelectedPitch(-1);
   } else if (event.key === "ArrowLeft") {
     event.preventDefault();
-    nudgeSelectedTime(-(snapMs.value || 50));
+    nudgeSelectedTime(-(event.shiftKey ? 10 : snapMs.value || 50));
   } else if (event.key === "ArrowRight") {
     event.preventDefault();
-    nudgeSelectedTime(snapMs.value || 50);
+    nudgeSelectedTime(event.shiftKey ? 10 : snapMs.value || 50);
   } else if (event.key === "Delete" || event.key === "Backspace") {
     event.preventDefault();
     deleteSelected();
   }
 }
 
-function onGlobalClick(event: MouseEvent) {
+function onGlobalClick(event: MouseEvent): void {
   const target = event.target as HTMLElement | null;
   if (contextMenu.value && !target?.closest(".pr-context-menu")) {
     contextMenu.value = null;
   }
 }
 
-function emitSave() {
+function emitSave(): void {
   if (workingEvents.value.length === 0) return;
   emit("save", {
     events: cloneEvents(workingEvents.value),
@@ -470,7 +1036,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  stopDraftPlayback();
   stopDragListeners();
+  stopMarqueeListeners();
   if (typeof window !== "undefined") {
     window.removeEventListener("mousedown", onGlobalClick);
   }
@@ -489,6 +1057,26 @@ onBeforeUnmount(() => {
         <button type="button" class="secondary btn-sm" :disabled="!canRedo" @click="redo">
           <StudioIcon name="redo" :size="13" />
           重做
+        </button>
+        <button
+          type="button"
+          class="ghost btn-sm"
+          :disabled="!isDirty"
+          @click="discardChanges"
+        >
+          <StudioIcon name="x" :size="13" />
+          放弃修改
+        </button>
+        <button
+          type="button"
+          class="secondary btn-sm"
+          :class="{ 'active-pill': draftPlaying }"
+          :disabled="workingEvents.length === 0"
+          title="快捷键 Space：直接用 Web Audio 试听当前草稿"
+          @click="toggleDraftPlayback"
+        >
+          <StudioIcon :name="draftPlaying ? 'stop' : 'play'" :size="13" />
+          {{ draftPlaying ? "停止草稿" : "试听草稿" }}
         </button>
         <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
           {{ isDirty ? "有未保存修改" : "已同步" }}
@@ -519,7 +1107,7 @@ onBeforeUnmount(() => {
             type="button"
             class="ghost btn-sm"
             aria-label="缩小时间轴"
-            @click="zoomPct = Math.max(50, zoomPct - 25)"
+            @click="zoomPct = Math.max(MIN_ZOOM_PCT, zoomPct - 25)"
           >
             <StudioIcon name="minus" :size="13" />
           </button>
@@ -528,9 +1116,17 @@ onBeforeUnmount(() => {
             type="button"
             class="ghost btn-sm"
             aria-label="放大时间轴"
-            @click="zoomPct = Math.min(250, zoomPct + 25)"
+            @click="zoomPct = Math.min(MAX_ZOOM_PCT, zoomPct + 25)"
           >
             <StudioIcon name="plus" :size="13" />
+          </button>
+          <button
+            type="button"
+            class="ghost btn-sm"
+            title="缩放到全曲适配视口宽度"
+            @click="fitAllTimeline"
+          >
+            适应全曲
           </button>
           <label for="pr-snap-select" class="muted" style="font-size: 12px">吸附</label>
           <select id="pr-snap-select" v-model.number="snapMs" class="pr-inline-select">
@@ -540,6 +1136,10 @@ onBeforeUnmount(() => {
             <option :value="100">100ms</option>
             <option :value="250">250ms</option>
           </select>
+          <label class="pr-follow-toggle" title="试听时自动滚动跟随播放头">
+            <input v-model="followPlayhead" type="checkbox" />
+            跟随
+          </label>
         </div>
       </div>
 
@@ -564,12 +1164,49 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div v-if="showLegend" class="pr-legend" role="group" aria-label="按音轨区分颜色与聚焦">
+      <span class="pr-legend-label">音轨配色：</span>
+      <button
+        type="button"
+        class="pr-legend-btn"
+        :class="{ 'is-active': focusedTrackIndex === null }"
+        @click="focusedTrackIndex = null"
+      >
+        全部音轨 ({{ workingEvents.length }})
+      </button>
+      <button
+        v-for="tr in legendTracks"
+        :key="tr.index"
+        type="button"
+        class="pr-legend-btn"
+        :class="{ 'is-active': focusedTrackIndex === tr.index }"
+        @click="focusedTrackIndex = focusedTrackIndex === tr.index ? null : tr.index"
+      >
+        <span class="track-dot" :class="tr.colorClass" />
+        <span>
+          {{ tr.name }}<template v-if="tr.isMelody"> (主旋律)</template> ({{ tr.count }})
+        </span>
+      </button>
+    </div>
+
     <div class="pr-add-bar">
       <div class="pr-toolbar-group">
-        <template v-if="selectedEvent">
-          <span class="hint-text">
+        <template v-if="selectedIndices.size > 0">
+          <span v-if="selectedEvent" class="hint-text">
             选中: {{ selectedEvent.key_id }} @ {{ selectedEvent.at_ms }} ms
           </span>
+          <span v-else class="hint-text">已选 {{ selectedIndices.size }} 个音符</span>
+          <label v-if="selectedEvent" class="pr-inline-time" for="pr-edit-time">
+            <span>时间</span>
+            <input
+              id="pr-edit-time"
+              type="number"
+              min="0"
+              step="10"
+              :value="selectedEvent.at_ms"
+              @change="onInlineTimeChange"
+            />
+          </label>
           <button type="button" class="secondary btn-sm" @click="shiftSelectedPitch(1)">
             高1音
           </button>
@@ -582,10 +1219,14 @@ onBeforeUnmount(() => {
           <button type="button" class="secondary btn-sm" @click="nudgeSelectedTime(50)">
             +50ms
           </button>
+          <button type="button" class="secondary btn-sm" @click="duplicateSelected()">
+            <StudioIcon name="copy" :size="13" />
+            复制
+          </button>
           <button
             type="button"
             class="danger btn-sm"
-            :disabled="workingEvents.length <= 1"
+            :disabled="!canDeleteSelection"
             @click="deleteSelected"
           >
             <StudioIcon name="trash" :size="13" />
@@ -593,7 +1234,7 @@ onBeforeUnmount(() => {
           </button>
         </template>
         <span v-else class="muted" style="font-size: 12px">
-          点击音符选中并拖拽，右键打开快捷菜单，双击音轨或切换「点击添加」插入音符
+          空白处拖拽框选，Shift/Ctrl 加选，Ctrl+A 全选，Ctrl+D 复制，Space 试听草稿，Ctrl+滚轮缩放
         </span>
       </div>
 
@@ -629,6 +1270,7 @@ onBeforeUnmount(() => {
       class="pr-scroll"
       role="region"
       aria-label="MIDI Piano Roll 可视化编辑器"
+      @wheel="onScrollWheel"
     >
       <div class="pr-canvas" :style="{ width: `${timelineWidthPx + KEY_COLUMN_PX}px` }">
         <div class="pr-ruler" title="点击时间标尺定位试听播放头">
@@ -651,50 +1293,70 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div
-          v-for="(k, rowIdx) in orderedKeys"
-          :key="k.key_id"
-          class="pr-row"
-          :class="{ 'octave-break': isOctaveBreak(rowIdx) }"
-        >
+        <div ref="rowsWrapEl" class="pr-rows-wrap" @pointerdown="onRowsPointerDown">
           <div
-            class="pr-key-label"
-            :class="`zone-${k.row}`"
-          >
-            <span class="pr-key-bind">{{ k.binding }}</span>
-            <span class="pr-key-id">{{ k.key_id }}</span>
-          </div>
+            v-if="marqueeRect"
+            class="pr-marquee"
+            :style="{
+              left: `${marqueeRect.left + KEY_COLUMN_PX}px`,
+              top: `${marqueeRect.top}px`,
+              width: `${marqueeRect.width}px`,
+              height: `${marqueeRect.height}px`,
+            }"
+          />
           <div
-            class="pr-lane"
-            :style="{ backgroundSize: snapBackgroundSize }"
-            @click="onLaneClick(k, $event, false)"
-            @dblclick="onLaneClick(k, $event, true)"
+            v-for="(k, rowIdx) in orderedKeys"
+            :key="k.key_id"
+            class="pr-row"
+            :class="{ 'octave-break': isOctaveBreak(rowIdx) }"
           >
             <div
-              v-if="showPlayhead"
-              class="pr-playhead"
-              :style="{ left: `${playheadLeftPx}px` }"
-            />
-            <button
-              v-for="item in eventsByKey[k.key_id] ?? []"
-              :key="`${item.idx}-${item.ev.key_id}-${item.ev.at_ms}`"
-              type="button"
-              class="pr-note"
-              :class="{
-                selected: selectedIndex === item.idx,
-                dragging: dragState?.idx === item.idx && dragState?.moved,
-                'is-adjusted': (item.ev.adjustments?.length ?? 0) > 0,
-              }"
-              :style="{
-                left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
-                width: `${Math.max(24, Math.round(Math.max(80, item.ev.hold_ms) * pxPerMs))}px`,
-              }"
-              :title="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms} ms`"
-              @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
-              @contextmenu="onNoteContextMenu(item.idx, $event)"
+              class="pr-key-label"
+              :class="`zone-${k.row}`"
+              :title="`点击试听 ${k.binding} (${k.key_id})`"
+              @click="auditionKey(k)"
             >
-              {{ k.binding }}
-            </button>
+              <span class="pr-key-bind">{{ k.binding }}</span>
+              <span class="pr-key-id">{{ k.key_id }}</span>
+            </div>
+            <div
+              class="pr-lane"
+              :style="{ backgroundSize: snapBackgroundSize }"
+              @click="onLaneClick(k, $event, false)"
+              @dblclick="onLaneClick(k, $event, true)"
+            >
+              <div
+                v-if="showPlayhead"
+                class="pr-playhead"
+                :style="{ left: `${playheadLeftPx}px` }"
+              />
+              <button
+                v-for="item in eventsByKey[k.key_id] ?? []"
+                :key="`${item.idx}-${item.ev.key_id}-${item.ev.at_ms}`"
+                type="button"
+                class="pr-note"
+                :class="[
+                  trackColorClass(trackSlotFor(item.ev)),
+                  {
+                    selected: selectedIndices.has(item.idx),
+                    dragging: isNoteDragging(item.idx),
+                    'is-adjusted': (item.ev.adjustments?.length ?? 0) > 0,
+                    'is-dimmed':
+                      focusedTrackIndex !== null &&
+                      (item.ev.source_track ?? 0) !== focusedTrackIndex,
+                  },
+                ]"
+                :style="{
+                  left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
+                  width: `${noteWidthPx(item.ev)}px`,
+                }"
+                :title="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms} ms · 轨 ${item.ev.source_track ?? 0}`"
+                @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
+                @contextmenu="onNoteContextMenu(item.idx, $event)"
+              >
+                {{ k.binding }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -719,7 +1381,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         role="menuitem"
-        :disabled="workingEvents.length <= 1"
+        :disabled="!canDeleteSelection"
         @click="runContextAction('del')"
       >
         删除该音符
