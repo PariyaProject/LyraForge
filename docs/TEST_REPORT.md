@@ -545,12 +545,15 @@
    - Vocal F0 选型对比（8 类干声与 Demucs 分离真声）：`swift-f0 0.3.0` 录得最高均值 `F1 = 0.8416`、`0.0000` 八度误差、平均 `RTF = 0.0063`，在真实 VocalSet (`CC-BY-4.0`) + 乐队混音中将 `vocal_split_lead` 人声 F1 从 `0.061`/`0.703` 提升至 `0.476`/`0.941`，端到端 `vocal_split_full` 编曲主旋律精确召回在 `cat9`/`cat10`/`cat7` 分别达 `0.5714`、`0.9412`、`1.0000`（`Cliffs = 0`）；
    - `cat8_vocal_artifacts` 修复清理执行顺序与 touching 同音保护后，4 次同音重击从错并至 `1` 次恢复为 `4/4` 完整保留（`basic-pitch` 清理 F1 `0.6207 → 0.7879`，`swift-f0 + light` `0.8571`）；
    - 纯真值 MIDI 编曲矩阵中 `cat4_jpop_anime` (`vocal_lead`) 移调优化为 `-7`、主旋律精确召回 `0.8824 → 0.9412`、八度断崖 `1 → 0`，`classic` 保持 100% 字节向后兼容。
-3. **本地全量验证结果（最终提交前全套门禁）**：
+3. **本地全量验证结果（最终提交前全套门禁，`43ee8a3`）**：
    - `uv run ruff check .` → `All checks passed!`
-   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **248 passed, 2 warnings**，总覆盖率 **83.83%**（覆盖新增 `test_transcribers.py`、`test_pipelines_and_separators.py`、`test_vocal_arranger.py`、`test_gpu_tools.py`、`test_toolchain.py`、`test_mcp_server.py` 与 `tests/integration/test_api.py`）。
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **248 passed, 2 warnings in 47.13s**，总覆盖率 **83.81%**（覆盖新增 `test_transcribers.py`、`test_pipelines_and_separators.py`、`test_vocal_arranger.py`、`test_gpu_tools.py`、`test_toolchain.py`、`test_mcp_server.py` 与 `tests/integration/test_api.py`）。
    - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 13 passed (13)**；`pnpm --dir apps/desktop/web build` → `47 modules transformed`（`vue-tsc --noEmit && vite build` `1.07s`）。
    - `make smoke` → 退出码 `0`（DryRun `actions_sent = 48`、`keys_still_pressed = []`）。
    - `uv run python scripts/eval_transcribers.py` → 退出码 `0`（`pipeline_roundtrip.ok = true`、`preview_wav_bytes = 155276`，全部 4 引擎真实 `supported_options` 与 `polyphonic` 报告正确）。
-4. **环境边界（如实标注）**：
-   - macOS Apple Silicon 上真实端到端运行并对比 `ffmpeg 9.0`、`demucs 4.0.1`、`basic-pitch 0.4.0`、`dettato 2.0.0`、`swift-f0 0.3.0` 与 `builtin-mono`；物理 Windows 10/11 NVIDIA CUDA 上实测多轨分离/转录速度与真机《原神》游戏内实际敲键演奏未在本会话物理机复测，待用户在发行产物上实机验证。
+4. **GitHub PR 与合并后 CI**：
+   - [PR #27](https://github.com/PariyaProject/LyraForge/pull/27)（`43ee8a3`）→ PR CI [Run #45370192084](https://github.com/PariyaProject/LyraForge/actions/runs/45370192084) 全部 4 项活动作业 `success`（`Test (windows-latest)`、`Test (macos-latest)`、`Build Windows Bundle (PyInstaller)`、`Build macOS Bundle (PyInstaller)`）；
+   - Squash 合入 `main`（`89857c6`）→ 合并后 CI [Run #45370816844](https://github.com/PariyaProject/LyraForge/actions/runs/45370816844) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`LyraForge-dev-20261124-89857c6-windows-x64.zip`、`LyraForge-dev-20261124-89857c6-macos-arm64.zip`）。
+5. **环境边界（如实标注）**：
+   - macOS Apple Silicon 上真实端到端运行并对比 `ffmpeg 9.0`、`demucs 4.0.1`、`basic-pitch 0.4.0`、`dettato 2.0.0`、`swift-f0 0.3.0` 与 `builtin-mono`；物理 Windows 10/11 NVIDIA CUDA 上实测多轨分离/转录速度与真机《原神》游戏内实际敲键演奏未在本会话物理机复测，待用户在 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 上实机验证。
 
