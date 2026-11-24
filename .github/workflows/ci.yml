@@ -161,9 +161,78 @@ jobs:
           path: release-dist/
           retention-days: 14
 
-  release-windows:
-    name: Publish Windows Release (GitHub Releases)
-    needs: [test, package-windows]
+  package-macos:
+    name: Build macOS Bundle (PyInstaller)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.11
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/desktop/web/package.json
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/web/pnpm-lock.yaml
+
+      - name: Build Vue 3 frontend
+        run: |
+          pnpm --dir apps/desktop/web install --frozen-lockfile
+          pnpm --dir apps/desktop/web build
+
+      - name: Sync runtime & package LyraForge.app bundle
+        run: |
+          uv sync --frozen --extra desktop
+          uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/lyraforge.spec
+          test -x "dist/LyraForge.app/Contents/MacOS/LyraForge"
+          test -f "dist/LyraForge.app/Contents/Resources/lyraforge.icns"
+          "dist/LyraForge.app/Contents/MacOS/LyraForge" --self-check --check-gui
+
+      - name: Package, validate & smoke-test macOS ZIP
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_helper.py package \
+            --platform macos \
+            --arch macos-arm64 \
+            --bundle-dir dist/LyraForge.app \
+            --output-dir release-dist-macos \
+            --license LICENSE \
+            --license-audit docs/LICENSE_AUDIT.md \
+            --event-name "${{ github.event_name }}" \
+            --ref "${{ github.ref }}" \
+            --sha "${{ github.sha }}"
+          zip_file="$(find release-dist-macos -maxdepth 1 -name 'LyraForge-*.zip' | head -n 1)"
+          test -n "$zip_file"
+          smoke_dir="${RUNNER_TEMP}/lyraforge-macos-smoke"
+          rm -rf "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          unzip -q "$zip_file" -d "$smoke_dir"
+          test -x "${smoke_dir}/LyraForge.app/Contents/MacOS/LyraForge"
+          test -f "${smoke_dir}/LyraForge.app/Contents/Resources/lyraforge.icns"
+          "${smoke_dir}/LyraForge.app/Contents/MacOS/LyraForge" --self-check --check-gui
+
+      - name: Upload macOS bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyraForge-macos-arm64
+          path: release-dist-macos/
+          retention-days: 14
+
+  release-desktop:
+    name: Publish Desktop Releases (Windows & macOS)
+    needs: [test, package-windows, package-macos]
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -184,14 +253,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: LyraForge-windows-x64
-          path: release-dist
+          path: release-dist-windows
+
+      - name: Download verified macOS bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LyraForge-macos-arm64
+          path: release-dist-macos
 
       - name: Verify SHA256SUMS & publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 scripts/release_helper.py publish \
-            --dist-dir release-dist \
+            --dist-dir release-dist-windows \
+            --extra-dist-dir release-dist-macos \
             --repo "${GITHUB_REPOSITORY}" \
             --event-name "${GITHUB_EVENT_NAME}" \
             --ref "${GITHUB_REF}" \

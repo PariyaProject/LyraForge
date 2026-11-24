@@ -543,17 +543,22 @@ def test_ci_workflow_extends_existing_build_with_minimal_permissions_and_gates()
     assert "--self-check --check-gui" in ci_text
     assert "path: release-dist/" in ci_text
 
-    # Downstream release job gates strictly on test + package-windows, write permission isolated,
-    # and strictly blocks pull_request & non-main branches
-    rel_idx = ci_text.index("release-windows:")
+    # Downstream release job gates strictly on test + package-windows + package-macos,
+    # write permission isolated, and strictly blocks pull_request & non-main branches
+    assert "package-macos:" in ci_text
+    assert "LyraForge-macos-arm64" in ci_text
+    assert "--platform macos" in ci_text
+    assert "Contents/Resources/lyraforge.icns" in ci_text
+    rel_idx = ci_text.index("release-desktop:")
     rel_block = ci_text[rel_idx:]
-    assert "needs: [test, package-windows]" in rel_block
+    assert "needs: [test, package-windows, package-macos]" in rel_block
     assert "github.event_name == 'push' || github.event_name == 'workflow_dispatch'" in rel_block
     assert "github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')" in rel_block
     assert "pull_request" not in rel_block
     assert "contents: write" in rel_block
     assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in rel_block
     assert "scripts/release_helper.py publish" in rel_block
+    assert "--extra-dist-dir release-dist-macos" in rel_block
 
 
 def test_cli_package_and_publish_entrypoints(
@@ -675,4 +680,120 @@ def test_stale_ci_job_cannot_rollback_dev_latest(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="fetch remote main HEAD SHA"):
         rh.publish_release(plan=plan1, zip_path=zip1, checksums_path=sums1, run_cmd=run_cmd)
     assert tag_refs["dev-latest"] == sha2
+
+
+def _make_fake_macos_app(root: Path, *, include_icns: bool = True) -> Path:
+    app = root / "LyraForge.app"
+    contents = app / "Contents"
+    macos_dir = contents / "MacOS"
+    res = contents / "Resources"
+    fw = contents / "Frameworks"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    res.mkdir(parents=True, exist_ok=True)
+    fw.mkdir(parents=True, exist_ok=True)
+
+    exe = macos_dir / "LyraForge"
+    exe.write_bytes(b"#!/bin/sh\necho ok\n")
+    exe.chmod(0o755)
+    (contents / "Info.plist").write_text("<plist></plist>", encoding="utf-8")
+    if include_icns:
+        (res / "lyraforge.icns").write_bytes(b"icns\x00\x00\x00\x20" + b"\x00" * 24)
+
+    dist_dir = fw / "apps" / "desktop" / "web" / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    assets = dist_dir / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    (assets / "index-abc.js").write_text("console.log('ok');", encoding="utf-8")
+    (assets / "index-abc.css").write_text("body{}", encoding="utf-8")
+
+    inst = fw / "lyraforge" / "instruments" / "data"
+    inst.mkdir(parents=True, exist_ok=True)
+    (inst / "windsong.json").write_text("{}", encoding="utf-8")
+    sch = fw / "lyraforge" / "music_core" / "schemas"
+    sch.mkdir(parents=True, exist_ok=True)
+    (sch / "performance.schema.json").write_text("{}", encoding="utf-8")
+
+    # Symlink matching PyInstaller BUNDLE layout
+    (res / "apps").symlink_to("../Frameworks/apps")
+    return app
+
+
+def test_package_macos_bundle_preserves_symlinks_and_dual_publish(tmp_path: Path) -> None:
+    lic = ROOT / "LICENSE"
+    lic_audit = ROOT / "docs" / "LICENSE_AUDIT.md"
+    win_bundle = _make_fake_bundle(tmp_path / "win")
+    mac_app = _make_fake_macos_app(tmp_path / "mac")
+
+    sha = "a1b2c3d" + "0" * 33
+    win_plan = rh.resolve_release_plan(
+        event_name="push",
+        ref="refs/heads/main",
+        sha=sha,
+        commit_date_yyyymmdd="20261124",
+        build_timestamp_utc="2026-11-24T01:00:00Z",
+        arch="windows-x64",
+    )
+    mac_plan = rh.resolve_release_plan(
+        event_name="push",
+        ref="refs/heads/main",
+        sha=sha,
+        commit_date_yyyymmdd="20261124",
+        build_timestamp_utc="2026-11-24T01:00:00Z",
+        arch="macos-arm64",
+    )
+
+    win_zip, win_sums, _ = rh.package_windows_bundle(
+        win_bundle,
+        tmp_path / "dist-win",
+        zip_name=win_plan.zip_name,
+        license_path=lic,
+        license_audit_path=lic_audit,
+    )
+    mac_zip, mac_sums, _ = rh.package_macos_bundle(
+        mac_app,
+        tmp_path / "dist-mac",
+        zip_name=mac_plan.zip_name,
+        license_path=lic,
+        license_audit_path=lic_audit,
+    )
+    assert mac_sums.is_file()
+    info = rh.validate_macos_release_zip(mac_zip)
+    assert info["zip_name"] == mac_plan.zip_name
+
+    # Reject symlink escaping bundle
+    bad_zip = tmp_path / "escape.zip"
+    with zipfile.ZipFile(mac_zip, "r") as src, zipfile.ZipFile(bad_zip, "w") as dst:
+        for item in src.infolist():
+            dst.writestr(item, src.read(item.filename))
+        esc = zipfile.ZipInfo("LyraForge.app/Contents/Resources/escape")
+        esc.create_system = 3
+        esc.external_attr = (0o120777) << 16
+        dst.writestr(esc, "../../../../etc/passwd")
+    with pytest.raises(ValueError, match="symlink escapes LyraForge.app"):
+        rh.validate_macos_release_zip(bad_zip)
+
+    run_cmd, releases, _refs, _calls, _state = _fake_runner_factory(initial_main_head=sha)
+    rh.publish_release(
+        plan=win_plan,
+        zip_path=win_zip,
+        checksums_path=win_sums,
+        extra_artifacts=[(mac_plan, mac_zip)],
+        run_cmd=run_cmd,
+    )
+    # Run idempotent update to exercise dev-latest upload + stale asset pruning too
+    res = rh.publish_release(
+        plan=win_plan,
+        zip_path=win_zip,
+        checksums_path=win_sums,
+        extra_artifacts=[(mac_plan, mac_zip)],
+        run_cmd=run_cmd,
+    )
+    assert res["published"] is True
+    assert set(releases["dev-latest"]["assets"]) == {
+        win_plan.zip_name,
+        mac_plan.zip_name,
+        "SHA256SUMS.txt",
+    }
+    assert "xattr -dr com.apple.quarantine" in releases["dev-latest"]["notes"]
 

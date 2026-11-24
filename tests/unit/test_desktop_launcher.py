@@ -77,3 +77,18 @@ def test_launch_desktop_happy_path_with_mocked_webview(
     assert created["title"] == "LyraForge"
     assert created["url"].startswith("http://127.0.0.1:")
     assert started_called
+
+
+def test_default_icon_path_resolves_repo_and_frozen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert launcher.default_icon_path("ico") is not None
+    assert launcher.default_icon_path("icns") is not None
+    assert launcher.default_icon_path("png") is not None
+
+    fake_bundle = tmp_path / "meipass"
+    (fake_bundle / "packaging" / "icons").mkdir(parents=True)
+    frozen_ico = fake_bundle / "packaging" / "icons" / "lyraforge.ico"
+    frozen_ico.write_bytes(b"fake-ico")
+    monkeypatch.setattr(sys, "_MEIPASS", str(fake_bundle), raising=False)
+    assert launcher.default_icon_path("ico") == frozen_ico

@@ -1,6 +1,9 @@
-# Preserve exact bytes for binary music fixtures and archives on Windows checkout
+# Preserve exact bytes for binary music fixtures, icons, and archives on Windows checkout
 *.mid binary
 *.midi binary
 *.wav binary
 *.lyrapack binary
+*.ico binary
+*.icns binary
+*.png binary
 tests/fixtures/** binary

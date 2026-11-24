@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import struct
 import sys
 import types
 from pathlib import Path
@@ -229,3 +230,49 @@ def test_windows_backend_failure_is_fatal_only_when_required(
     status = cli._gui_host_status(required=False)
     assert status["backend_ok"] is False
     assert "pythonnet runtime missing" in status["reason"]
+
+
+def test_macos_backend_failure_is_fatal_only_when_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "webview", types.SimpleNamespace(__version__="6.2.1"))
+    real_import = importlib.import_module
+
+    def broken_cocoa(name: str, package: str | None = None) -> Any:
+        if name == "webview.platforms.cocoa":
+            raise ImportError("pyobjc Cocoa framework missing")
+        return real_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", broken_cocoa)
+
+    with pytest.raises(LyraError) as exc:
+        cli._gui_host_status(required=True)
+    assert exc.value.code == ErrorCode.SOURCE_UNAVAILABLE
+    assert "Cocoa" in exc.value.message
+
+    status = cli._gui_host_status(required=False)
+    assert status["backend"] == "cocoa"
+    assert status["backend_ok"] is False
+
+
+def test_icon_assets_are_present_and_well_formed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    icons_dir = root / "packaging" / "icons"
+    assert (icons_dir / "lyraforge.svg").is_file()
+    assert (icons_dir / "lyraforge-win.svg").is_file()
+    assert (root / "docs" / "assets" / "lyraforge-icon.svg").is_file()
+
+    png_data = (icons_dir / "lyraforge.png").read_bytes()
+    assert png_data.startswith(b"\x89PNG\r\n\x1a\n")
+
+    ico_data = (icons_dir / "lyraforge.ico").read_bytes()
+    reserved, ico_type, count = struct.unpack("<HHH", ico_data[:6])
+    assert (reserved, ico_type) == (0, 1)
+    assert count >= 7
+    sizes = {(ico_data[6 + i * 16] or 256) for i in range(count)}
+    assert {16, 32, 48, 256}.issubset(sizes)
+
+    icns_data = (icons_dir / "lyraforge.icns").read_bytes()
+    assert icns_data.startswith(b"icns")
+    assert len(icns_data) > 1024

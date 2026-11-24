@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +21,7 @@ from typing import Any
 
 ROLLING_DEV_TAG = "dev-latest"
 DEFAULT_ARCH = "windows-x64"
+DEFAULT_MACOS_ARCH = "macos-arm64"
 DEFAULT_REPO = "PariyaProject/LyraForge"
 CHECKSUMS_FILENAME = "SHA256SUMS.txt"
 METADATA_FILENAME = "release-meta.json"
@@ -32,7 +35,7 @@ LyraForge - Portable Windows build
    (for example %LOCALAPPDATA%\\Programs\\LyraForge).
 2. Keep LyraForge.exe next to the _internal folder, and do not start the EXE from
    inside the ZIP preview window.
-3. Start LyraForge.exe. The Studio Dark workbench window opens after a few seconds.
+3. Start LyraForge.exe. The desktop workbench window opens after a few seconds.
 4. The Microsoft Edge WebView2 Runtime is required (preinstalled on Windows 11; on
    Windows 10 install the Evergreen Runtime from Microsoft).
 
@@ -41,6 +44,22 @@ live Genshin Impact playback verification is still pending.
 
 If no window appears, open the startup log and attach it to a GitHub issue:
   %LOCALAPPDATA%\\LyraForge\\logs\\startup.log
+
+License: GNU General Public License v3.0 (see LICENSE).
+"""
+
+PORTABLE_MACOS_README_TEXT = """\
+LyraForge - Portable macOS (Apple Silicon) build
+================================================
+
+1. Extract this ZIP (`unzip` or double-click in Finder) and drag `LyraForge.app`
+   into `/Applications` or any writable folder.
+2. This experimental build is ad-hoc signed without Apple notarization. On first launch:
+   Right-click (or Control-click) `LyraForge.app` -> Open, OR run in Terminal:
+     xattr -dr com.apple.quarantine LyraForge.app
+3. macOS supports full MIDI/audio import, transcription, Piano Roll arrangement,
+   offline preview WAV synthesis, local library backups, and MCP integration.
+   In-game OS keyboard automation runs in virtual DryRun simulation mode on macOS.
 
 License: GNU General Public License v3.0 (see LICENSE).
 """
@@ -310,6 +329,210 @@ def validate_release_zip(zip_path: Path) -> dict[str, Any]:
     }
 
 
+def _zip_info_for_posix(
+    arcname: str, st: os.stat_result, *, symlink_target: str | None = None
+) -> zipfile.ZipInfo:
+    dt = datetime.fromtimestamp(st.st_mtime, tz=UTC)
+    info = zipfile.ZipInfo(
+        filename=arcname,
+        date_time=(max(1980, dt.year), dt.month, dt.day, dt.hour, dt.minute, dt.second),
+    )
+    info.create_system = 3
+    if symlink_target is not None:
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        info.compress_type = zipfile.ZIP_STORED
+    else:
+        mode = stat.S_IMODE(st.st_mode) or 0o644
+        if arcname.startswith("LyraForge.app/Contents/MacOS/"):
+            mode |= 0o755
+        info.external_attr = (stat.S_IFREG | mode) << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+def _has_macos_bundle_path(files: dict[str, int], rel_suffix: str) -> bool:
+    return (
+        f"LyraForge.app/Contents/Resources/{rel_suffix}" in files
+        or f"LyraForge.app/Contents/Frameworks/{rel_suffix}" in files
+        or f"LyraForge.app/Contents/MacOS/{rel_suffix}" in files
+    )
+
+
+def _any_macos_bundle_prefix(files: dict[str, int], rel_prefix: str, suffix: str) -> bool:
+    prefixes = (
+        f"LyraForge.app/Contents/Resources/{rel_prefix}",
+        f"LyraForge.app/Contents/Frameworks/{rel_prefix}",
+    )
+    return any(
+        any(name.startswith(pref) for pref in prefixes) and name.endswith(suffix) and size > 0
+        for name, size in files.items()
+    )
+
+
+def validate_macos_release_zip(zip_path: Path) -> dict[str, Any]:
+    """Validate that a packaged macOS LyraForge.app ZIP contains required runtime/assets."""
+    if not zip_path.is_file() or zip_path.stat().st_size == 0:
+        raise ValueError(f"release archive missing or empty: {zip_path}")
+
+    root_files = {"LICENSE", "LICENSE_AUDIT.md", PORTABLE_README_FILENAME}
+    with zipfile.ZipFile(zip_path, mode="r") as zf:
+        infos = [info for info in zf.infolist() if not info.is_dir()]
+        if not infos:
+            raise ValueError("release ZIP contains no files")
+
+        files: dict[str, int] = {}
+        exec_info: zipfile.ZipInfo | None = None
+        for info in infos:
+            raw = info.filename
+            norm = raw.replace("\\", "/")
+            if norm.startswith("/") or ".." in Path(norm).parts or "\x00" in norm:
+                raise ValueError(f"unsafe path inside release ZIP: {raw!r}")
+            if not (norm.startswith("LyraForge.app/") or norm in root_files):
+                raise ValueError(
+                    f"macOS archive entries must reside under LyraForge.app/ or root docs: {raw!r}"
+                )
+            basename = norm.rsplit("/", 1)[-1].lower()
+            if basename in _FORBIDDEN_ZIP_FILENAMES or basename.endswith(".secrets.json"):
+                raise ValueError(f"forbidden sensitive file in release ZIP: {raw!r}")
+            if norm in files:
+                raise ValueError(f"duplicate path inside release ZIP: {raw!r}")
+
+            mode_bits = (info.external_attr >> 16) & 0xFFFF
+            if stat.S_ISLNK(mode_bits):
+                target = zf.read(info).decode("utf-8", errors="strict")
+                if not target or target.startswith("/") or "\x00" in target:
+                    raise ValueError(f"unsafe symlink target in release ZIP ({raw!r}): {target!r}")
+                parent_rel = posixpath.dirname(norm)
+                resolved = posixpath.normpath(posixpath.join(parent_rel, target))
+                if (
+                    resolved == ".."
+                    or resolved.startswith("../")
+                    or not resolved.startswith("LyraForge.app/")
+                ):
+                    raise ValueError(
+                        f"symlink escapes LyraForge.app ({raw!r} -> {target!r}): {resolved!r}"
+                    )
+            if norm == "LyraForge.app/Contents/MacOS/LyraForge":
+                exec_info = info
+            files[norm] = int(info.file_size)
+
+        if files.get("LyraForge.app/Contents/MacOS/LyraForge", 0) <= 0:
+            raise ValueError("release ZIP missing non-empty LyraForge.app/Contents/MacOS/LyraForge")
+        if exec_info is not None:
+            exec_mode = (exec_info.external_attr >> 16) & 0o777
+            if exec_info.create_system == 3 and (exec_mode & 0o100) == 0:
+                raise ValueError("LyraForge.app/Contents/MacOS/LyraForge missing executable bit")
+
+        if files.get("LyraForge.app/Contents/Info.plist", 0) <= 0:
+            raise ValueError("release ZIP missing non-empty LyraForge.app/Contents/Info.plist")
+
+        icns_name = "LyraForge.app/Contents/Resources/lyraforge.icns"
+        if files.get(icns_name, 0) <= 0:
+            raise ValueError(f"release ZIP missing non-empty {icns_name}")
+        icns_bytes = zf.read(icns_name)
+        if not icns_bytes.startswith(b"icns"):
+            raise ValueError(f"release ZIP {icns_name} is not a valid Apple .icns file")
+
+        lic_candidate = (
+            "LICENSE"
+            if files.get("LICENSE", 0) > 0
+            else (
+                "LyraForge.app/Contents/Resources/LICENSE"
+                if files.get("LyraForge.app/Contents/Resources/LICENSE", 0) > 0
+                else ""
+            )
+        )
+        if not lic_candidate:
+            raise ValueError("release ZIP missing non-empty LICENSE")
+        lic_text = zf.read(lic_candidate).decode("utf-8", errors="replace")
+        if "GNU GENERAL PUBLIC LICENSE" not in lic_text.upper():
+            raise ValueError("release ZIP LICENSE is not GNU GPL-3.0 text")
+
+        if files.get(PORTABLE_README_FILENAME, 0) <= 0:
+            raise ValueError("release ZIP missing non-empty README.txt")
+
+        if not _has_macos_bundle_path(files, "apps/desktop/web/dist/index.html"):
+            raise ValueError("release ZIP missing built frontend index.html")
+        if not _any_macos_bundle_prefix(files, "apps/desktop/web/dist/assets/", ".js"):
+            raise ValueError("release ZIP missing built frontend JS assets")
+        if not _any_macos_bundle_prefix(files, "apps/desktop/web/dist/assets/", ".css"):
+            raise ValueError("release ZIP missing built frontend CSS assets")
+
+        if not _any_macos_bundle_prefix(files, "lyraforge/instruments/data/", ".json"):
+            raise ValueError("release ZIP missing instrument profile JSON data")
+        if not _any_macos_bundle_prefix(files, "lyraforge/music_core/schemas/", ".json"):
+            raise ValueError("release ZIP missing performance schema JSON data")
+
+    return {
+        "zip_name": zip_path.name,
+        "file_count": len(files),
+        "size_bytes": zip_path.stat().st_size,
+    }
+
+
+def package_macos_bundle(
+    app_dir: Path,
+    output_dir: Path,
+    *,
+    zip_name: str,
+    license_path: Path,
+    license_audit_path: Path | None = None,
+) -> tuple[Path, Path, str]:
+    """Package PyInstaller ``dist/LyraForge.app`` preserving POSIX permissions & symlinks."""
+    if not app_dir.is_dir():
+        raise FileNotFoundError(f"PyInstaller macOS .app directory not found: {app_dir}")
+    if not (app_dir / "Contents" / "MacOS" / "LyraForge").is_file():
+        raise FileNotFoundError(f"LyraForge executable not found inside {app_dir}/Contents/MacOS")
+    if not (app_dir / "Contents" / "Info.plist").is_file():
+        raise FileNotFoundError(f"Info.plist not found inside {app_dir}/Contents")
+    if not (app_dir / "Contents" / "Resources" / "lyraforge.icns").is_file():
+        raise FileNotFoundError(f"lyraforge.icns not found inside {app_dir}/Contents/Resources")
+    if not license_path.is_file():
+        raise FileNotFoundError(f"LICENSE file not found at {license_path}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = output_dir / zip_name
+    checksums_path = output_dir / CHECKSUMS_FILENAME
+
+    bundle_root = app_dir.resolve()
+    entries: list[tuple[str, Path, os.stat_result, str | None]] = []
+    for root, dirnames, filenames in os.walk(bundle_root, followlinks=False):
+        root_path = Path(root)
+        kept_dirs: list[str] = []
+        for dname in sorted(dirnames):
+            dpath = root_path / dname
+            if dpath.is_symlink():
+                rel = dpath.relative_to(bundle_root).as_posix()
+                entries.append((f"LyraForge.app/{rel}", dpath, dpath.lstat(), os.readlink(dpath)))
+            else:
+                kept_dirs.append(dname)
+        dirnames[:] = kept_dirs
+        for fname in sorted(filenames):
+            fpath = root_path / fname
+            rel = fpath.relative_to(bundle_root).as_posix()
+            st = fpath.lstat()
+            sym = os.readlink(fpath) if stat.S_ISLNK(st.st_mode) else None
+            entries.append((f"LyraForge.app/{rel}", fpath, st, sym))
+
+    entries.sort(key=lambda item: item[0])
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for arcname, path_obj, st, sym in entries:
+            info = _zip_info_for_posix(arcname, st, symlink_target=sym)
+            if sym is not None:
+                zf.writestr(info, sym.encode("utf-8"))
+            else:
+                zf.writestr(info, path_obj.read_bytes())
+
+        zf.write(license_path, arcname="LICENSE")
+        if license_audit_path is not None and license_audit_path.is_file():
+            zf.write(license_audit_path, arcname="LICENSE_AUDIT.md")
+        zf.writestr(PORTABLE_README_FILENAME, PORTABLE_MACOS_README_TEXT)
+
+    validate_macos_release_zip(zip_path)
+    digest = write_sha256sums(zip_path, checksums_path)
+    return zip_path, checksums_path, digest
+
+
 def package_windows_bundle(
     bundle_dir: Path,
     output_dir: Path,
@@ -366,10 +589,16 @@ def render_release_notes(
     sha256_digest: str,
     zip_size_bytes: int,
     rolling_entry: bool = False,
+    extra_entries: Sequence[tuple[ReleasePlan, str, int]] = (),
 ) -> str:
     """Render user-facing Markdown release notes with honest experimental notices."""
     commit_url = f"https://github.com/{repo}/commit/{plan.sha}"
     size_mb = zip_size_bytes / (1024 * 1024)
+    all_plans = [plan, *(item[0] for item in extra_entries)]
+    arch_summary = " + ".join(p.arch for p in all_plans)
+    has_windows = any("windows" in p.arch.lower() for p in all_plans)
+    has_macos = any("macos" in p.arch.lower() for p in all_plans)
+
     if plan.prerelease:
         warning_line = (
             "> [!WARNING]\n"
@@ -378,7 +607,7 @@ def render_release_notes(
             "have NOT yet completed verification on physical game hardware "
             "(`calibration.status = unverified`). "
             "Only unit tests, frontend checks, PyInstaller bundling, and headless "
-            "`LyraForge.exe --self-check` passed in CI."
+            "`--self-check --check-gui` passed in CI."
         )
     else:
         warning_line = (
@@ -406,7 +635,34 @@ def render_release_notes(
             f"https://github.com/{repo}/releases/tag/{plan.snapshot_tag}\n"
         )
 
-    return f"""# LyraForge {plan.build_version} ({plan.arch})
+    target_desc = (
+        f"Windows 10 / 11 x64 + macOS Apple Silicon (`{arch_summary}`)"
+        if (has_windows and has_macos)
+        else (
+            f"macOS Apple Silicon (`{arch_summary}` `.app` bundle ZIP)"
+            if has_macos
+            else f"Windows 10 / 11 x64 (`{plan.arch}` portable ZIP)"
+        )
+    )
+
+    artifact_lines = [
+        f"- **`{plan.zip_name}`** (`{plan.arch}`, {size_mb:.2f} MiB, `{zip_size_bytes}` bytes)\n"
+        f"  - SHA256: `{sha256_digest}`"
+    ]
+    for ext_plan, ext_digest, ext_size in extra_entries:
+        ext_mb = ext_size / (1024 * 1024)
+        artifact_lines.append(
+            f"- **`{ext_plan.zip_name}`** (`{ext_plan.arch}`, {ext_mb:.2f} MiB, "
+            f"`{ext_size}` bytes)\n  - SHA256: `{ext_digest}`"
+        )
+    artifact_lines.append(f"- **`{plan.checksums_name}`**")
+    artifacts_block = "\n".join(artifact_lines)
+
+    win_zip = next((p.zip_name for p in all_plans if "windows" in p.arch.lower()), plan.zip_name)
+    mac_zip = next((p.zip_name for p in all_plans if "macos" in p.arch.lower()), plan.zip_name)
+
+    sections = [
+        f"""# LyraForge {plan.build_version} ({arch_summary})
 
 {warning_line}
 
@@ -419,38 +675,39 @@ def render_release_notes(
 | **Commit SHA** | [`{plan.sha}`]({commit_url}) |
 | **Commit Date (UTC)** | `{plan.commit_date_yyyymmdd}` |
 | **Built At (UTC)** | `{plan.build_timestamp_utc}` |
-| **Target Architecture** | Windows 10 / 11 x64 (`{plan.arch}` portable ZIP) |
+| **Target Architecture** | {target_desc} |
 | **License** | GNU General Public License v3.0 (`LICENSE` included inside archive) |
 {snapshot_links}
 ## Artifacts & SHA256 Verification
 
-- **`{plan.zip_name}`** ({size_mb:.2f} MiB, `{zip_size_bytes}` bytes)
-  - SHA256: `{sha256_digest}`
-- **`{plan.checksums_name}`**
+{artifacts_block}
 
 Verify integrity after downloading (PowerShell):
 
 ```powershell
-Get-FileHash .\\{plan.zip_name} -Algorithm SHA256
+Get-FileHash .\\{win_zip} -Algorithm SHA256
 Get-Content .\\{plan.checksums_name}
 ```
 
-Or in Git Bash / Linux / macOS:
+Or in macOS / Git Bash / Linux:
 
 ```bash
 sha256sum -c {plan.checksums_name}
-```
+# macOS alternative: shasum -a 256 -c {plan.checksums_name}
+```"""
+    ]
 
-## Runtime Requirements & Quick Start (Windows 10/11 x64)
+    if has_windows:
+        sections.append(
+            f"""## Runtime Requirements & Quick Start (Windows 10/11 x64)
 
 1. **System Requirements**:
    - Windows 10 or Windows 11 (64-bit), no Python or Node.js required, no admin needed.
    - Microsoft Edge **WebView2 Runtime** (pre-installed on modern Windows 10/11) for UI.
    - Optional external tools (`ffmpeg`, `basic-pitch`, `dettato`) are **not bundled** due
-     to size/license boundaries and can be configured separately for non-WAV media or
-     polyphonic audio transcription.
+     to size/license boundaries and can be configured separately or via **Settings**.
 2. **Extract & Run**:
-   - Extract `{plan.zip_name}` to any writable folder (keep `LyraForge.exe` together with
+   - Extract `{win_zip}` to any writable folder (keep `LyraForge.exe` together with
      `_internal\\` inside the extracted `LyraForge\\` folder).
    - Run headless health check:
      ```powershell
@@ -464,8 +721,29 @@ sha256sum -c {plan.checksums_name}
    - Live in-game keyboard input requires explicit two-step confirmation in the UI,
      checks active foreground window focus, and releases pressed keys on focus loss or `Esc`.
    - Third-party keyboard automation cannot guarantee zero game-account risk; evaluate
-     and assume responsibility before use.
-"""
+     and assume responsibility before use."""
+        )
+
+    if has_macos:
+        sections.append(
+            f"""## Runtime Requirements & Quick Start (macOS Apple Silicon)
+
+1. **Extract & Install**:
+   - Extract `{mac_zip}` (`unzip {mac_zip}` or double-click in Finder) and drag `LyraForge.app`
+     to `/Applications` (or any writable folder).
+2. **First Launch (Unsigned Build)**:
+   - Open-source builds are ad-hoc signed without Apple Developer notarization. If macOS
+     Gatekeeper prompts, Right-click `LyraForge.app` → **Open**, or run:
+     ```bash
+     xattr -dr com.apple.quarantine LyraForge.app
+     ```
+   - Optional headless check: `./LyraForge.app/Contents/MacOS/LyraForge --self-check --check-gui`
+3. **Platform Scope**:
+   - Full MIDI/audio import, transcription, Piano Roll editing, WAV preview synthesis, library
+     management, and MCP integration work natively; OS playback uses safe **DryRun** mode."""
+        )
+
+    return "\n\n".join(sections) + "\n"
 
 
 def _require_ok(
@@ -692,6 +970,13 @@ def prune_old_dev_snapshots(
     return deleted
 
 
+def _validate_archive_for_arch(arch: str, zip_path: Path) -> None:
+    if "macos" in arch.lower():
+        validate_macos_release_zip(zip_path)
+    else:
+        validate_release_zip(zip_path)
+
+
 def publish_release(
     *,
     plan: ReleasePlan,
@@ -700,6 +985,7 @@ def publish_release(
     repo: str = DEFAULT_REPO,
     retain_dev_snapshots: int = 10,
     run_cmd: CommandRunner | None = None,
+    extra_artifacts: Sequence[tuple[ReleasePlan, Path]] = (),
 ) -> dict[str, Any]:
     """Publish dev or SemVer GitHub Releases idempotently from validated artifacts."""
     runner = run_cmd or default_run_cmd
@@ -712,14 +998,32 @@ def publish_release(
             "pruned_snapshots": [],
         }
 
-    validate_release_zip(zip_path)
+    _validate_archive_for_arch(plan.arch, zip_path)
     digest = verify_sha256sums(checksums_path, zip_path)
     size_bytes = zip_path.stat().st_size
-    assets = [zip_path, checksums_path]
+
+    extra_entries: list[tuple[ReleasePlan, str, int]] = []
+    extra_zips: list[Path] = []
+    for ext_plan, ext_zip in extra_artifacts:
+        _validate_archive_for_arch(ext_plan.arch, ext_zip)
+        ext_digest = compute_sha256(ext_zip)
+        extra_entries.append((ext_plan, ext_digest, ext_zip.stat().st_size))
+        extra_zips.append(ext_zip)
+
+    arch_label = " + ".join([plan.arch, *(ext.arch for ext, _ in extra_artifacts)])
 
     with tempfile.TemporaryDirectory(prefix="lyraforge-rel-notes-") as tmp:
         tmp_dir = Path(tmp)
         published_urls: list[dict[str, str]] = []
+        if extra_entries:
+            combined_sums = tmp_dir / CHECKSUMS_FILENAME
+            lines = [f"{digest}  {zip_path.name}\n"]
+            for ext_plan, ext_digest, _ext_sz in extra_entries:
+                lines.append(f"{ext_digest}  {ext_plan.zip_name}\n")
+            combined_sums.write_text("".join(lines), encoding="utf-8")
+            assets = [zip_path, *extra_zips, combined_sums]
+        else:
+            assets = [zip_path, checksums_path]
 
         if plan.channel == "dev":
             snap_notes = tmp_dir / "snapshot-notes.md"
@@ -730,6 +1034,7 @@ def publish_release(
                     sha256_digest=digest,
                     zip_size_bytes=size_bytes,
                     rolling_entry=False,
+                    extra_entries=extra_entries,
                 ),
                 encoding="utf-8",
             )
@@ -737,7 +1042,7 @@ def publish_release(
                 repo=repo,
                 tag=plan.snapshot_tag,
                 sha=plan.sha,
-                title=f"LyraForge {plan.build_version} ({plan.arch}, Experimental Pre-release)",
+                title=f"LyraForge {plan.build_version} ({arch_label}, Experimental Pre-release)",
                 notes_path=snap_notes,
                 assets=assets,
                 prerelease=True,
@@ -773,6 +1078,7 @@ def publish_release(
                         sha256_digest=digest,
                         zip_size_bytes=size_bytes,
                         rolling_entry=True,
+                        extra_entries=extra_entries,
                     ),
                     encoding="utf-8",
                 )
@@ -782,7 +1088,7 @@ def publish_release(
                     sha=plan.sha,
                     title=(
                         f"LyraForge Latest Dev ({plan.build_version}, "
-                        f"{plan.arch}, Experimental Pre-release)"
+                        f"{arch_label}, Experimental Pre-release)"
                     ),
                     notes_path=rolling_notes,
                     assets=assets,
@@ -820,13 +1126,14 @@ def publish_release(
                 sha256_digest=digest,
                 zip_size_bytes=size_bytes,
                 rolling_entry=False,
+                extra_entries=extra_entries,
             ),
             encoding="utf-8",
         )
         sem_title = (
-            f"LyraForge {plan.build_version} ({plan.arch}, Pre-release)"
+            f"LyraForge {plan.build_version} ({arch_label}, Pre-release)"
             if plan.prerelease
-            else f"LyraForge {plan.build_version} ({plan.arch})"
+            else f"LyraForge {plan.build_version} ({arch_label})"
         )
         sem_url = _ensure_release(
             repo=repo,
@@ -861,6 +1168,8 @@ def _resolve_commit_date_utc(sha: str) -> str:
 
 
 def _cmd_package(args: argparse.Namespace) -> int:
+    platform_name = getattr(args, "platform", "windows") or "windows"
+    arch = args.arch or (DEFAULT_MACOS_ARCH if platform_name == "macos" else DEFAULT_ARCH)
     commit_date = args.commit_date or _resolve_commit_date_utc(args.sha)
     build_ts = args.build_time or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     plan = resolve_release_plan(
@@ -869,10 +1178,11 @@ def _cmd_package(args: argparse.Namespace) -> int:
         sha=args.sha,
         commit_date_yyyymmdd=commit_date,
         build_timestamp_utc=build_ts,
-        arch=args.arch,
+        arch=arch,
     )
     out_dir = Path(args.output_dir)
-    zip_path, checksums_path, digest = package_windows_bundle(
+    packager = package_macos_bundle if platform_name == "macos" else package_windows_bundle
+    zip_path, checksums_path, digest = packager(
         Path(args.bundle_dir),
         out_dir,
         zip_name=plan.zip_name,
@@ -880,6 +1190,7 @@ def _cmd_package(args: argparse.Namespace) -> int:
         license_audit_path=Path(args.license_audit) if args.license_audit else None,
     )
     meta = {
+        "platform": platform_name,
         "plan": plan.to_json(),
         "zip_name": zip_path.name,
         "checksums_name": checksums_path.name,
@@ -894,40 +1205,67 @@ def _cmd_package(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_publish(args: argparse.Namespace) -> int:
-    dist_dir = Path(args.dist_dir)
+def _load_dist_dir(
+    dist_dir: Path,
+    *,
+    event_name: str,
+    ref: str,
+    sha: str,
+) -> tuple[ReleasePlan, Path, Path]:
     meta_path = dist_dir / METADATA_FILENAME
     if not meta_path.is_file():
         raise FileNotFoundError(f"missing {METADATA_FILENAME} in {dist_dir}")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     raw_plan = meta["plan"]
-    # Re-resolve against runtime CI context while preserving packaged commit_date/build_ts
     plan = resolve_release_plan(
-        event_name=args.event_name or raw_plan["event_name"],
-        ref=args.ref or raw_plan["ref"],
-        sha=args.sha or raw_plan["sha"],
+        event_name=event_name or raw_plan["event_name"],
+        ref=ref or raw_plan["ref"],
+        sha=sha or raw_plan["sha"],
         commit_date_yyyymmdd=raw_plan["commit_date_yyyymmdd"],
         build_timestamp_utc=raw_plan["build_timestamp_utc"],
         arch=raw_plan.get("arch") or DEFAULT_ARCH,
     )
     zip_path = dist_dir / str(meta["zip_name"])
     checksums_path = dist_dir / str(meta["checksums_name"])
+    return plan, zip_path, checksums_path
+
+
+def _cmd_publish(args: argparse.Namespace) -> int:
+    plan, zip_path, checksums_path = _load_dist_dir(
+        Path(args.dist_dir),
+        event_name=args.event_name,
+        ref=args.ref,
+        sha=args.sha,
+    )
+    extra_artifacts: list[tuple[ReleasePlan, Path]] = []
+    for extra_dir_str in getattr(args, "extra_dist_dir", None) or ():
+        ext_plan, ext_zip, ext_sums = _load_dist_dir(
+            Path(extra_dir_str),
+            event_name=args.event_name,
+            ref=args.ref,
+            sha=args.sha,
+        )
+        verify_sha256sums(ext_sums, ext_zip)
+        extra_artifacts.append((ext_plan, ext_zip))
+
     result = publish_release(
         plan=plan,
         zip_path=zip_path,
         checksums_path=checksums_path,
         repo=args.repo,
         retain_dev_snapshots=int(args.retain_dev_snapshots),
+        extra_artifacts=extra_artifacts,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="LyraForge CI Windows Release helper")
+    parser = argparse.ArgumentParser(description="LyraForge CI Release helper (Windows & macOS)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    pkg = sub.add_parser("package", help="Package and validate Windows portable ZIP + SHA256")
+    pkg = sub.add_parser("package", help="Package and validate portable ZIP + SHA256")
+    pkg.add_argument("--platform", choices=["windows", "macos"], default="windows")
     pkg.add_argument("--bundle-dir", required=True)
     pkg.add_argument("--output-dir", required=True)
     pkg.add_argument("--license", default="LICENSE")
@@ -937,11 +1275,12 @@ def main(argv: list[str] | None = None) -> int:
     pkg.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
     pkg.add_argument("--commit-date", default="")
     pkg.add_argument("--build-time", default="")
-    pkg.add_argument("--arch", default=DEFAULT_ARCH)
+    pkg.add_argument("--arch", default=None)
     pkg.set_defaults(func=_cmd_package)
 
     pub = sub.add_parser("publish", help="Idempotently publish verified release to GitHub")
     pub.add_argument("--dist-dir", required=True)
+    pub.add_argument("--extra-dist-dir", action="append", default=[])
     pub.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPO))
     pub.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     pub.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""))

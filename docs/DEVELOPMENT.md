@@ -161,18 +161,26 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
 
 ---
 
-## 5. Windows 10/11 便携打包与 GitHub Releases 自动发布
+## 5. 双平台便携打包（Windows + macOS）与 GitHub Releases 自动发布
 
 ```powershell
 # 在 Windows 10/11（无需管理员权限）生成便携目录 dist/LyraForge/LyraForge.exe
 ./scripts/build_windows.ps1
 ```
 
-CI 复用 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `package-windows` 作业：在双平台测试及 `LyraForge.exe --self-check` 全数通过后，由 [scripts/release_helper.py](../scripts/release_helper.py) 将完整便携目录打包为包含架构/构建版本、完整 `_internal/` 依赖、前端 `dist/` 与 `LICENSE` 的 ZIP，生成 `SHA256SUMS.txt` 并对其**解压后的 `LyraForge.exe --self-check`** 进行二次验证：
+```bash
+# 在 macOS Apple Silicon 生成独立应用包 dist/LyraForge.app 并验证 Cocoa GUI 宿主
+bash ./scripts/build_macos.sh
 
-- **开发预发行渠道（Pre-release）**：`main` 分支每次受信任的 `push` 或手动 `workflow_dispatch` 会发布不可变快照 `dev-<YYYYMMDD>-<sha7>`（保留最近 10 个快照），并同步更新固定最新入口 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)；所有开发版均显式标注为实验性未真机校准版本。
+# 如需修改矢量母版（packaging/icons/lyraforge*.svg）后重新生成 .ico / .icns / .png
+uv run python scripts/generate_icons.py
+```
+
+CI 复用 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `package-windows` 与 `package-macos` 作业：在双平台测试及原生 `--self-check --check-gui` 全数通过后，由 [scripts/release_helper.py](../scripts/release_helper.py) 将完整 Windows 便携目录与 macOS `.app` 包分别打包为包含架构/构建版本、完整运行时依赖、前端 `dist/` 与 `LICENSE` 的 ZIP，生成统一的 `SHA256SUMS.txt` 并对两端**解压后的可执行文件 `--self-check --check-gui`** 进行二次验证：
+
+- **开发预发行渠道（Pre-release）**：`main` 分支每次受信任的 `push` 或手动 `workflow_dispatch` 会发布不可变快照 `dev-<YYYYMMDD>-<sha7>`（保留最近 10 个快照），并同步更新固定最新入口 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（同时包含 `windows-x64` 与 `macos-arm64` 构建）；所有开发版均显式标注为实验性未真机校准版本。
 - **独立 SemVer 正式发行渠道**：仅当推送独立 `vX.Y.Z`（或 `vX.Y.Z-alpha.N`）Tag 时发布对应版本，绝不会被普通 `main` 推送覆盖或移动 Tag，且所有 Pull Request 均禁止执行发布作业（顶层默认 `contents: read`，仅发布作业授予 `contents: write`）。
-- 相关构建与发布辅助：[lyraforge.spec](../packaging/lyraforge.spec)、[release_helper.py](../scripts/release_helper.py)。
+- 相关构建与发布辅助：[lyraforge.spec](../packaging/lyraforge.spec)、[release_helper.py](../scripts/release_helper.py)、[generate_icons.py](../scripts/generate_icons.py)。
 
 ---
 
@@ -182,8 +190,10 @@ CI 复用 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `packag
 lyraforge_starter/
 ├─ AGENTS.md                  # 持久化自主维护规则与安全约束
 ├─ pyproject.toml / uv.lock   # 跨平台锁定依赖 (GPL-3.0)
-├─ .github/workflows/ci.yml   # GitHub Actions: macOS/Windows 测试与 Windows PyInstaller 打包
-├─ packaging/lyraforge.spec   # PyInstaller Windows 便携打包配置
+├─ .github/workflows/ci.yml   # GitHub Actions: macOS/Windows 测试与双平台 PyInstaller 打包发布
+├─ packaging/
+│  ├─ lyraforge.spec          # PyInstaller Windows (.exe) & macOS (.app) 统一打包配置
+│  └─ icons/                  # SVG 矢量母版及生成的多分辨率 .ico / .icns / .png 图标
 ├─ integrations/              # Claude Code / Codex / Antigravity MCP 配置与 Skill 模板
 ├─ docs/                      # 需求规格、架构、开发者/维护手册、CI 与 Review 报告
 ├─ src/lyraforge/
@@ -200,6 +210,6 @@ lyraforge_starter/
 │  ├─ api/ / desktop/         # 127.0.0.1 FastAPI 服务 + PyWebView 桌面壳
 │  └─ playback/               # 跨平台调度器、DryRun 与隔离 Windows SendInput 驱动
 ├─ apps/desktop/              # PyWebView 入口与 Vue 3 + TypeScript + Vite 工作台
-├─ scripts/                   # check_ci.py、eval_transcribers.py、make_fixtures.py、build_windows.ps1
+├─ scripts/                   # check_ci.py、eval_transcribers.py、generate_icons.py、build_windows.ps1、build_macos.sh
 └─ tests/                     # 自制版权安全 MIDI 样例、单元测试、分层门禁与集成测试
 ```

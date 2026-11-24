@@ -1,8 +1,31 @@
-# LyraForge
+<div align="center">
 
-**将 MIDI 和音频转换为游戏内自由演奏乐器可用的曲谱。**
+<img src="docs/assets/lyraforge-icon.svg" alt="LyraForge — Swiss Mono L 型竖琴应用图标" width="96" height="96" />
+
+<h1>LyraForge</h1>
+
+<p><strong>将 MIDI 和音频转换为游戏内自由演奏乐器可用的曲谱</strong></p>
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License: GPL-3.0" /></a>
+  <a href="https://github.com/PariyaProject/LyraForge/actions/workflows/ci.yml"><img src="https://github.com/PariyaProject/LyraForge/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status" /></a>
+  <a href="https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest"><img src="https://img.shields.io/github/v/release/PariyaProject/LyraForge?include_prereleases&label=dev-latest" alt="Latest Dev Pre-release" /></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS%20arm64-informational" alt="Windows x64 | macOS arm64" />
+</p>
+
+<p>
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#核心功能">核心功能</a> ·
+  <a href="#平台兼容与使用限制">平台兼容</a> ·
+  <a href="DESIGN.md">设计规范</a> ·
+  <a href="docs/DEVELOPMENT.md">开发文档</a>
+</p>
+
+</div>
 
 LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐转谱与游戏乐器编曲工作台，面向《原神》PC 版大世界中的**自由乐器演奏界面**（非下落式音游脚本）。你可以导入 MIDI 或音频、适配游戏乐器 21 键范围、在交互式 Piano Roll 中试听与微调，并保存到本地曲库或导出分享。
+
+应用采用统一的极简 **L 型竖琴（Swiss Mono L-Harp）** 标识（[矢量母版](docs/assets/lyraforge-icon.svg)），融合 `LyraForge` 首字母、竖琴共鸣框与 DAW 音律柱元素，同步内置于 Windows `.ico`、macOS `.icns` 及 Web 工作台界面。
 
 ![LyraForge 工作台实时渲染截图](docs/assets/lyraforge-workbench.png)
 
@@ -31,9 +54,12 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 
 ## Quick Start
 
-### Windows 10/11 便携预发行版（免安装 Python / Node）
+### 预发行便携构建（Windows 10/11 & macOS Apple Silicon，免安装 Python / Node）
 
 - **最新开发构建（Pre-release，实验性）**：[Latest Dev Pre-release (`dev-latest`)](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（查看全部历史预发行与正式版本请前往 [Releases](https://github.com/PariyaProject/LyraForge/releases)）。
+
+#### Windows 10/11 x64（`LyraForge-dev-*-windows-x64.zip`）
+
 - 下载页面内的 `LyraForge-dev-*-windows-x64.zip` 与 `SHA256SUMS.txt`，校验哈希后解压运行（请保持 `LyraForge.exe` 与 `_internal\` 位于同一解压目录）：
 
 ```powershell
@@ -46,6 +72,20 @@ Get-Content .\SHA256SUMS.txt
 - 需要 Microsoft Edge WebView2 Runtime（Windows 11 已内置；Windows 10 请安装 Evergreen Runtime）。
 - 需要 `ffmpeg` / 多音转谱引擎时，无需手工配置：桌面 **设置 →「外部工具与转谱引擎」** 点「安装」即可（应用内下载并校验，安装到用户目录，不改系统环境变量）；命令行等价入口为 `lyraforge tools install`。
 - 若双击后没有出现窗口，启动失败详情会写入 `%LOCALAPPDATA%\LyraForge\logs\startup.log`，同时弹出原生错误对话框；提交 Issue 时请附上该日志。
+
+#### macOS Apple Silicon（`LyraForge-dev-*-macos-arm64.zip`）
+
+- 下载 `LyraForge-dev-*-macos-arm64.zip` 与 `SHA256SUMS.txt`，解压后将 `LyraForge.app` 拖入 `/Applications`（或任意可写目录）：
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+unzip LyraForge-dev-*-macos-arm64.zip
+# 开源预发行版未做 Apple 开发者公证，首次打开若受系统隔离提示拦截请执行：
+xattr -dr com.apple.quarantine LyraForge.app
+open LyraForge.app
+```
+
+- macOS 原生支持曲库、音频转谱、Piano Roll 编曲、离线 WAV 试听与 MCP 集成；游戏按键演奏保留为安全的 **DryRun 模拟模式**。
 
 ### 从源码运行（macOS Apple Silicon / Windows）
 
