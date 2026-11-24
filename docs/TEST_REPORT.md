@@ -455,12 +455,28 @@
 4. **跨平台运行时边界（如实标注）**：
    - Windows `.exe` 图标资源与 WinForms `Form.Icon` 注入逻辑将随本轮 GitHub Actions `windows-latest` CI 构建验证打包，真实 Windows 11 资源管理器与任务栏视觉渲染待实体 Windows 机器打开 `.exe` 后直观确认。
 
+---
 
+## 25. Round 23 统一选曲与分曲目多任务转谱状态（2026-11-24）
 
-
-
-
-
-
-
+1. **修复范围与核心改动**：
+   - `apps/desktop/web/src/composables/useLyraStore.ts` + `src/api.ts`：
+     - 消除 `selectedSongId` 与 `transcribeSongId` 双套选曲状态分叉，并增加单调序号并发竞态保护与队列切歌反同步（`selectArrangement` 同步所属歌曲）；
+     - 新增 `allSongs` 维护未筛选全量曲目表，曲库搜索/标签筛选时不影响全局切换；
+     - 用多任务列表 `transcriptionJobs` + `GET /v1/jobs` 初始化恢复替代单一全局 `activeJob`，`ensureJobPolling` 并发轮询多个活动任务并在后台完成时通过提示与快捷入口通知，不劫持当前选中曲目。
+   - `apps/desktop/web/src/App.vue` + `styles/global.css` + `views/TranscribeView.vue` + `views/StudioView.vue`：
+     - 顶部上下文栏新增全视图一致的曲目选择器（`#topbar-song-select`）与后台转谱任务跳转胶囊；
+     - `TranscribeView` 流程步骤条与状态区严格绑定当前选中曲目，并增加「其他曲目的转谱任务」区块（支持 `去编曲` 直达、`切换查看` 与按任务 `job.id` 取消）；
+     - `StudioView` 空状态区分未选曲 / 未完成转谱（直接跳转「前往音频转谱」）/ 已转谱待编排。
+2. **本地全量验证（`make check`）**：
+   - `uv run ruff check .` → `All checks passed!`
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **222 passed, 2 warnings in 43.58s**，总覆盖率 **84.09%**。
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 11 passed (11)**（含新增 `App.spec.ts` 多曲目并发转谱切换、未转谱进工作室引导、后台完成不劫持当前曲目及「去编曲」跳转、曲库筛选下顶部切歌全链路回归用例）。
+   - `pnpm --dir apps/desktop/web build`（`vue-tsc --noEmit && vite build`） → `dist/index.html 1.34 kB`、`CSS 51.62 kB`、`JS 211.49 kB`（`896ms`）。
+   - `make smoke` → 退出码 `0`（DryRun 48 动作，`keys_still_pressed = []`）。
+3. **GitHub PR 与合并后 CI**：
+   - [PR #24](https://github.com/PariyaProject/LyraForge/pull/24)（`8f6619b`）→ PR CI [Run #45313980464](https://github.com/PariyaProject/LyraForge/actions/runs/45313980464) 全绿；
+   - Squash 合入 `main`（`f671c8c`）→ 合并后 CI [Run #45314387622](https://github.com/PariyaProject/LyraForge/actions/runs/45314387622) 全部 5 作业 `success`。
+4. **环境边界（如实标注）**：
+   - 本机 `PATH` 未安装 `sloplint` CLI，前端按 [DESIGN.md](../DESIGN.md) token、无嵌套卡片与无冲突 CTA 规则人工核对通过；真实桌面交互视觉未在本轮额外做无头 Chrome 截屏或 Windows GUI 实机点击复核，已由 `vitest` jsdom 全流程单测与双端 PyInstaller `--self-check --check-gui` 门禁验证。
 
