@@ -165,6 +165,8 @@ class TranscribeJobRequest(BaseModel):
     pipeline_id: str = DEFAULT_PIPELINE_ID
     vocal_engine_id: str | None = None
     accomp_engine_id: str | None = None
+    vocal_cleanup: str = "standard"
+    vocal_range: str = "auto"
     min_pitch: int = 36
     max_pitch: int = 96
     min_note_ms: int = 60
@@ -736,6 +738,8 @@ def create_app(
                     pipeline_id=req.pipeline_id,
                     vocal_engine_id=req.vocal_engine_id,
                     accomp_engine_id=req.accomp_engine_id,
+                    vocal_cleanup=req.vocal_cleanup,
+                    vocal_range=req.vocal_range,
                     options=opts,
                     data_dir=app.state.data_dir,
                 )
@@ -747,6 +751,8 @@ def create_app(
                 pipeline_id=req.pipeline_id,
                 vocal_engine_id=req.vocal_engine_id,
                 accomp_engine_id=req.accomp_engine_id,
+                vocal_cleanup=req.vocal_cleanup,
+                vocal_range=req.vocal_range,
                 options=opts,
             )
         return {"transcription": rec.to_json()}

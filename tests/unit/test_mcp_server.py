@@ -260,16 +260,50 @@ def test_mcp_stdio_subprocess_end_to_end(tmp_path: Path) -> None:
         # Transcribe flow using the rendered WAV preview
         imp_wav = call_tool(12, "import_media", {"path": str(wav_out), "title": "MCP WAV"})
         wav_song_id = imp_wav["structuredContent"]["song"]["id"]
-        tr = call_tool(13, "transcribe", {"song_id": wav_song_id, "engine_id": "builtin-mono"})
+        tr = call_tool(
+            13,
+            "transcribe",
+            {
+                "song_id": wav_song_id,
+                "pipeline_id": "direct",
+                "engine_id": "builtin-mono",
+                "vocal_cleanup": "light",
+                "vocal_range": "auto",
+            },
+        )
         assert tr["isError"] is False
         task_id = tr["structuredContent"]["task_id"]
+        tr_id = tr["structuredContent"]["transcription"]["id"]
 
-        tasks_res = call_tool(14, "get_task_status", {"task_id": task_id})
+        arr_tr = call_tool(
+            14,
+            "arrange",
+            {
+                "song_id": wav_song_id,
+                "transcription_id": tr_id,
+                "arranger_strategy": "vocal_lead",
+                "label": "MCP Vocal Lead",
+            },
+        )
+        assert arr_tr["isError"] is False
+        arr_tr_rec = arr_tr["structuredContent"]["arrangement"]
+        assert arr_tr_rec["transcription_id"] == tr_id
+        assert arr_tr_rec["arranger_strategy"] == "vocal_lead"
+
+        ev_tr = call_tool(
+            15,
+            "evaluate",
+            {"arrangement_id": arr_tr_rec["id"], "reference_midi_path": str(midi_src)},
+        )
+        assert ev_tr["isError"] is False
+        assert "transcription_fidelity" in ev_tr["structuredContent"]
+
+        tasks_res = call_tool(16, "get_task_status", {"task_id": task_id})
         assert tasks_res["isError"] is False
         assert tasks_res["structuredContent"]["task"]["status"] == "completed"
 
         # Sensitive action play_in_game must remain gated and never send keystrokes
-        play = call_tool(15, "play_in_game", {"arrangement_id": arr_id})
+        play = call_tool(17, "play_in_game", {"arrangement_id": arr_id})
         assert play["isError"] is False
         assert play["structuredContent"]["executed"] is False
         assert play["structuredContent"]["status"] == "blocked_requires_interactive_confirmation"

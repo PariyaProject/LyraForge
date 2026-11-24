@@ -16,7 +16,13 @@ from lyraforge.music_core.arranger import (
     list_arranger_strategies,
     register_arranger_strategy,
 )
-from lyraforge.music_core.cleanup import CleanupOptions, clean_score, merge_stem_scores
+from lyraforge.music_core.cleanup import (
+    VOCAL_CLEANUP_PRESETS,
+    CleanupOptions,
+    clean_score,
+    merge_stem_scores,
+    vocal_cleanup_options,
+)
 from lyraforge.music_core.midi_export import (
     arrangement_to_midi_bytes,
     performance_to_midi_bytes,
@@ -54,6 +60,7 @@ __all__ = [
     "TimeSignature",
     "TrackInfo",
     "TranscriptionAccuracy",
+    "VOCAL_CLEANUP_PRESETS",
     "arrange",
     "arrangement_to_midi_bytes",
     "build_performance",
@@ -74,4 +81,5 @@ __all__ = [
     "score_arrangement",
     "score_to_midi_bytes",
     "validate_performance",
+    "vocal_cleanup_options",
 ]

@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 
 from lyraforge.playback.guards import StopToken
-from lyraforge.transcribers._subprocess import resolve_runner, run_isolated_transcriber
+from lyraforge.transcribers._subprocess import (
+    probe_installed_version,
+    resolve_runner,
+    run_isolated_transcriber,
+)
 from lyraforge.transcribers.base import (
     ModelInfo,
     ProgressCallback,
@@ -48,6 +52,14 @@ class BasicPitchSubprocessTranscriber:
                 "runner": runner,
                 "python_env": BASIC_PITCH_PYTHON_ENV,
                 "cli_env": BASIC_PITCH_CLI_ENV,
+                "polyphonic": True,
+                "supported_options": [
+                    "onset_threshold",
+                    "frame_threshold",
+                    "min_frequency_hz",
+                    "max_frequency_hz",
+                    "min_note_ms",
+                ],
                 "platform": sys.platform,
             },
         )
@@ -61,11 +73,18 @@ class BasicPitchSubprocessTranscriber:
     ) -> TranscriptionResult:
         opts = options or TranscribeOptions()
         opts.validate()
+        runner = _resolve_runner()
         flags: list[str] = []
         if opts.onset_threshold is not None:
             flags.extend(("--onset-threshold", f"{opts.onset_threshold:.3f}"))
         if opts.frame_threshold is not None:
             flags.extend(("--frame-threshold", f"{opts.frame_threshold:.3f}"))
+        if (
+            opts.min_note_ms != 60
+            or opts.onset_threshold is not None
+            or opts.frame_threshold is not None
+        ):
+            flags.extend(("--minimum-note-length", f"{float(opts.min_note_ms):.1f}"))
         if opts.min_frequency_hz is not None:
             flags.extend(("--minimum-frequency", f"{opts.min_frequency_hz:.2f}"))
         if opts.max_frequency_hz is not None:
@@ -74,7 +93,7 @@ class BasicPitchSubprocessTranscriber:
         return run_isolated_transcriber(
             engine_id=self.id,
             display_name="Basic Pitch",
-            runner=_resolve_runner(),
+            runner=runner,
             missing_hint=(
                 f"Basic Pitch is not installed; configure {BASIC_PITCH_PYTHON_ENV} "
                 "or install 'basic-pitch' in an isolated environment"
@@ -86,4 +105,5 @@ class BasicPitchSubprocessTranscriber:
             stop_token=stop_token,
             timeout_per_audio_second=3.0,
             timeout_slack_s=60.0,
+            engine_version=probe_installed_version(runner, "basic-pitch"),
         )

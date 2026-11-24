@@ -40,7 +40,10 @@ def managed_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
             env.setdefault(spec.env_var, str(python))
 
     device = str(get_tool_setting("dettato_device", "auto") or "auto").lower()
-    if device in {"cpu", "cuda", "mps"}:
+    if device == "mps":
+        env.setdefault("LYRAFORGE_DEMUCS_DEVICE", "mps")
+        env.setdefault("LYRAFORGE_DETTATO_DEVICE", "cpu")
+    elif device in {"cpu", "cuda"}:
         env.setdefault("LYRAFORGE_DETTATO_DEVICE", device)
         env.setdefault("LYRAFORGE_DEMUCS_DEVICE", device)
     return env

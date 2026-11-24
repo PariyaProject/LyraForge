@@ -280,3 +280,144 @@ def test_clean_score_vibrato_merge_velocity_and_merge_stem_scores() -> None:
     assert merged.tracks[1].name == "Accompaniment: Piano"
     assert merged.tracks[2].channels == (9,)
     assert len(merged.notes) == 3
+
+
+def test_vocal_cleanup_presets_artifacts_repeats_and_order() -> None:
+    from lyraforge.music_core import VOCAL_CLEANUP_PRESETS, vocal_cleanup_options
+
+    assert set(VOCAL_CLEANUP_PRESETS) == {"off", "light", "standard", "strong"}
+    notes = [
+        # 1. Held note vibrato fragmented BEFORE min_note_ms: 40+35+40ms -> 130ms C5
+        _note(0, 40, 72, vel=92),
+        _note(45, 35, 71, vel=88),
+        _note(85, 45, 72, vel=94),
+        # 2. Simultaneous +12 harmonic ghost on C6 (84) quieter than C5 (72) -> pruned
+        _note(10, 90, 84, vel=52),
+        # 3. Four repeated G4 (67) syllables separated by 35ms gaps -> MUST preserve all 4!
+        _note(400, 150, 67, vel=96),
+        _note(585, 150, 67, vel=96),
+        _note(770, 150, 67, vel=96),
+        _note(955, 150, 67, vel=96),
+        # 4. Fast 65ms grace ornament stepping into sustained target + chromatic passing F#4
+        _note(1300, 65, 74, vel=90),
+        _note(1375, 280, 72, vel=96),
+        _note(1700, 180, 67, vel=95),
+        _note(1900, 75, 66, vel=90),  # genuine passing F#4 -> preserved
+        _note(1990, 220, 64, vel=95),
+        # 5. Isolated octave glitch E5 (76) inside C4->C4/D4 phrase + quiet breath noise
+        _note(2400, 220, 60, vel=95),
+        _note(2630, 50, 72, vel=75),  # +12 octave glitch between C4 notes -> collapsed
+        _note(2690, 220, 60, vel=95),
+        _note(3100, 120, 62, vel=9),  # breath noise -> filtered
+    ]
+    raw = _score_from_notes(
+        notes,
+        (TrackInfo(index=0, name="Vocal Lead", note_count=len(notes), channels=(0,)),),
+    )
+    cleaned_std, stats_std = clean_score(raw, vocal_cleanup_options("standard"))
+    pitches = [n.pitch for n in cleaned_std.notes]
+    # Vibrato merged into 1 C5 even though pieces < 45ms; +12 ghost pruned; breath removed
+    assert pitches[0] == 72
+    assert 84 not in pitches
+    assert stats_std["removed_harmonic_ghosts"] == 1
+    assert stats_std["repaired_octave_glitches"] >= 1
+    assert stats_std["removed_low_velocity"] == 1
+    # Repeated syllables preserved 4/4 (never collapsed!)
+    rep_hits = sum(
+        1 for n in cleaned_std.notes if 380_000 <= n.start_us <= 1_150_000 and n.pitch == 67
+    )
+    assert rep_hits == 4
+    # Fast 65ms grace + passing tone F#4 preserved
+    assert 74 in pitches
+    assert 66 in pitches
+
+    # Light vs strong differ cleanly
+    cleaned_light, _ = clean_score(raw, vocal_cleanup_options("light"))
+    cleaned_strong, _ = clean_score(raw, vocal_cleanup_options("strong"))
+    assert len(cleaned_strong.notes) <= len(cleaned_std.notes) <= len(cleaned_light.notes)
+
+    # Touching 0ms-gap articulated repeated syllables (~210ms each, typical of Basic Pitch)
+    # stay distinct under standard cleanup, while short micro-dropouts (<130ms) still coalesce.
+    touching_notes = [
+        _note(0, 220, 67, vel=103),
+        _note(220, 209, 67, vel=102),
+        _note(429, 209, 67, vel=104),
+        _note(638, 255, 67, vel=98),
+        # Micro-dropout pair (75ms + 9ms gap + 110ms) -> SHOULD merge
+        _note(1200, 75, 64, vel=95),
+        _note(1284, 110, 64, vel=95),
+        # Heavily overlapping duplicate (overlap > 15ms) -> SHOULD merge
+        _note(1600, 160, 62, vel=92),
+        _note(1720, 160, 62, vel=92),
+    ]
+    touching_sc = _score_from_notes(
+        touching_notes,
+        (TrackInfo(index=0, name="Vocal Lead", note_count=len(touching_notes), channels=(0,)),),
+    )
+    cleaned_touch, _ = clean_score(touching_sc, vocal_cleanup_options("standard"))
+    assert sum(1 for n in cleaned_touch.notes if n.pitch == 67) == 4
+    assert sum(1 for n in cleaned_touch.notes if n.pitch == 64) == 1
+    assert sum(1 for n in cleaned_touch.notes if n.pitch == 62) == 1
+
+
+def test_vocal_lead_protects_vocal_track_keeps_sus2_and_handles_low_vocal() -> None:
+    lyre = load_builtin_profile("genshin.windsong_lyre.v1")
+
+    # 1. Track named "Accompaniment: Flute" MUST NOT outrank "Vocal Lead"
+    score_role = _score_from_notes(
+        [
+            _note(0, 350, 64, track=0, channel=0),
+            _note(400, 350, 67, track=0, channel=0),
+            _note(0, 350, 76, track=1, channel=1),
+            _note(400, 350, 79, track=1, channel=1),
+        ],
+        (
+            TrackInfo(index=0, name="Vocal Lead", note_count=2, channels=(0,)),
+            TrackInfo(index=1, name="Accompaniment: Flute", note_count=2, channels=(1,)),
+        ),
+    )
+    assert detect_melody_track(score_role) == 0
+
+    # 2. Native diatonic sus2 (E4=64 vocal + D4=62 accomp, 2 semitones apart) kept,
+    # while harsh m2 clash (F4=65 vocal + E4=64, 1 semitone apart) is dropped.
+    score_sus2 = _score_from_notes(
+        [
+            _note(0, 400, 64, track=0),     # Vocal E4
+            _note(0, 400, 62, track=1, channel=1),  # Accomp D4 (diatonic M2 sus2 -> KEEP)
+            _note(0, 400, 48, track=1, channel=1),  # Bass C3 -> KEEP
+            _note(600, 400, 65, track=0),   # Vocal F4
+            _note(600, 400, 64, track=1, channel=1),  # Accomp E4 (1 semitone m2 clash -> DROP)
+            _note(600, 400, 53, track=1, channel=1),  # Bass F3 -> KEEP
+        ],
+        (
+            TrackInfo(index=0, name="Vocal Lead", note_count=2, channels=(0,)),
+            TrackInfo(index=1, name="Accompaniment", note_count=4, channels=(1,)),
+        ),
+    )
+    arr_sus = arrange(
+        score_sus2,
+        lyre,
+        ArrangeOptions(style=Style.BALANCED, transpose=0, arranger_strategy="vocal_lead"),
+    )
+    at0 = {e.mapped_pitch for e in arr_sus.events if e.at_ms == 0}
+    at600 = {e.mapped_pitch for e in arr_sus.events if e.at_ms == 600}
+    assert {64, 62}.issubset(at0)  # D4 sus2 kept!
+    assert at600 == {53, 65}  # E4 (m2 against F4) suppressed!
+
+    # 3. Extreme low vocal (C3=48 == profile.min_pitch) retains consonant G3=55 fifth in balanced
+    score_low = _score_from_notes(
+        [
+            _note(0, 400, 48, track=0),  # Bottom C3
+            _note(0, 400, 55, track=1, channel=1),  # Accomp G3 fifth above bottom C3
+        ],
+        (
+            TrackInfo(index=0, name="Vocal Lead", note_count=1, channels=(0,)),
+            TrackInfo(index=1, name="Accompaniment", note_count=1, channels=(1,)),
+        ),
+    )
+    arr_low = arrange(
+        score_low,
+        lyre,
+        ArrangeOptions(style=Style.BALANCED, transpose=0, arranger_strategy="vocal_lead"),
+    )
+    assert {e.mapped_pitch for e in arr_low.events} == {48, 55}

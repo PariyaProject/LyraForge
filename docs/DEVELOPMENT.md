@@ -96,9 +96,10 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 桌面版 **设置 →「转谱引擎与 GPU」→「外部工具与转谱引擎」** 中，每个工具都有「安装」按钮；也可用 CLI：
 
 ```bash
-uv run lyraforge tools status          # 查看 ffmpeg / basic-pitch / dettato 是否就绪
-uv run lyraforge tools install         # 安装全部（首次约 1.2 GB 下载）
+uv run lyraforge tools status          # 查看 ffmpeg / basic-pitch / dettato / demucs / swift-f0 是否就绪
+uv run lyraforge tools install         # 安装全部可选工具（或单独指定 swift-f0 / ffmpeg 等）
 uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
+uv run lyraforge tools install swift-f0  # 只装 SwiftF0 人声 F0（下载约 35 MB / 环境约 104 MB，MIT）
 ```
 
 安装位置为 `%LOCALAPPDATA%\LyraForge\tools`（macOS：`~/Library/Application Support/LyraForge/tools`）：
@@ -148,8 +149,22 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
    ```
 
    - 可用于 `vocal_split_full`（人声 + bass+other 去鼓伴奏双轨）、`vocal_split_lead`（纯人声）与 `vocal_split_accomp`（纯去鼓伴奏）流水线；预训练 `htdemucs` 权重首次执行分离时按需下载。
-   - CLI 可直接对比不同流水线与编曲策略：`lyraforge transcribe <song_id> --pipeline vocal_split_full --vocal-engine basic-pitch --accomp-engine dettato`，随后 `lyraforge arrange <song_id> --transcription-id <tr_id> --arranger-strategy vocal_lead --melody-track 1`。
-3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
+   - **去鼓诚实标记与 MPS/CPU 回退**：脚本在混音 `bass + other` 后执行安全峰值限幅，避免逐轨硬削波失真；若仅回退到 `no_vocals.wav`（含鼓组），结果元数据会显式标记 `drums_removed: false` 并附带警告；若 macOS Apple Silicon 上 Demucs MPS 执行失败会自动回退至 CPU；`dettato` 在自动设备选择下仅选 `cuda` 或 `cpu`（避免 2.0.0 MPS float64 崩溃）。
+
+   **swift-f0（MIT，可选单音人声基频 F0 + DP 音符切分）**
+
+   ```bash
+   uv venv ~/.lyraforge-tools/swift-f0 --python 3.11
+   uv pip install --python ~/.lyraforge-tools/swift-f0/bin/python swift-f0==0.3.0 mido
+   export LYRAFORGE_SWIFT_F0_PYTHON=~/.lyraforge-tools/swift-f0/bin/python
+   # Windows：...\swift-f0\Scripts\python.exe
+   ```
+
+   - 模型内置（`model.onnx` 约 0.13 MB，含 `onnxruntime`/`numpy`/`mido` 的隔离环境实占约 104 MB，CPU 极速推理，全平台免额外大模型下载），**专用于 Demucs 分离后的干人声或纯独唱，不支持多音和弦伴奏**；在 `vocal_split_full`/`vocal_split_lead` 人声声部上默认优于 `basic-pitch`。
+   - **不静默降级保护**：当选 `vocal_split_full` / `vocal_split_accomp` 且既无 `dettato` 又无 `basic-pitch` 时，系统拒绝把复杂伴奏静默退化成 `builtin-mono`（`available: false`）；用户仍可通过显式传递 `--accomp-engine builtin-mono` 主动使用低资源单音模式（并在产物中记录 `degraded_mode: true`）。
+   - CLI 可直接对比不同流水线、人声清理/音域预设与编曲策略：
+     `lyraforge transcribe <song.wav> --pipeline vocal_split_full --vocal-engine swift-f0 --accomp-engine dettato --vocal-cleanup standard --vocal-range auto`，随后 `lyraforge arrange <midi> --arranger-strategy vocal_lead --melody-track 1`。
+3. 校验：`uv run lyraforge engines list` 中已安装引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
 
 > Windows 如需让桌面应用长期看到上述变量，可用
 > `[Environment]::SetEnvironmentVariable('LYRAFORGE_BASIC_PITCH_PYTHON', '<path>', 'User')` 写入用户环境变量后重新登录。

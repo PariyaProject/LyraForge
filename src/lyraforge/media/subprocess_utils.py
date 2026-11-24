@@ -406,10 +406,17 @@ def format_log_tail(
     stderr_bytes: int = 0,
 ) -> str:
     """Format diagnostic stderr/stdout tail cleanly without unbounded text."""
-    text = stderr_tail.decode("utf-8", errors="replace").strip()
-    if not text and stdout_tail:
-        text = stdout_tail.decode("utf-8", errors="replace").strip()
-    if not text:
+    err_text = stderr_tail.decode("utf-8", errors="replace").strip()
+    out_text = stdout_tail.decode("utf-8", errors="replace").strip()
+    if err_text and out_text and out_text != err_text:
+        err_slice = err_text[-1200:]
+        out_slice = out_text[-1200:]
+        text = f"{err_slice}\n[stdout] {out_slice}"
+    elif err_text:
+        text = err_text
+    elif out_text:
+        text = out_text
+    else:
         text = "non-zero exit"
     if stderr_truncated:
         text = f"[stderr truncated to trailing bytes; total={stderr_bytes} bytes] {text}"

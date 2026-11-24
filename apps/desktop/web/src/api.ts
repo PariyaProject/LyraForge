@@ -60,6 +60,13 @@ export interface TranscriptionRecord {
   engine_version: string;
   pipeline_id?: string;
   tracks?: SongTrackInfo[];
+  metadata?: {
+    degraded_mode?: boolean;
+    drums_removed?: boolean;
+    warnings?: string[];
+    vocal_cleanup?: string | null;
+    vocal_range?: string | null;
+  };
   status: string;
   note_count: number;
   created_at: string;
@@ -79,6 +86,10 @@ export interface PipelineInfo {
   default_accomp_engine_id: string | null;
   default_arranger_strategy: string;
   supports_engine_override: boolean;
+  resolved_vocal_engine_id?: string | null;
+  resolved_accomp_engine_id?: string | null;
+  low_resource_available?: boolean;
+  warnings?: string[];
 }
 
 export interface ArrangerStrategyInfo {
@@ -187,6 +198,7 @@ export interface TranscriptionJob {
   status: "queued" | "running" | "completed" | "cancelled" | "failed";
   stage: string;
   progress: number;
+  warnings?: string[];
   transcription: TranscriptionRecord | null;
   error: { code: string; message: string } | null;
   started_at?: number | null;
@@ -559,6 +571,8 @@ export class LyraForgeApi {
       pipelineId?: string;
       vocalEngineId?: string | null;
       accompEngineId?: string | null;
+      vocalCleanup?: string;
+      vocalRange?: string;
     },
   ): Promise<{ job: TranscriptionJob }> {
     const payload: Record<string, unknown> = {
@@ -573,6 +587,8 @@ export class LyraForgeApi {
     if (opts?.accompEngineId && opts.accompEngineId !== "auto") {
       payload.accomp_engine_id = opts.accompEngineId;
     }
+    if (opts?.vocalCleanup) payload.vocal_cleanup = opts.vocalCleanup;
+    if (opts?.vocalRange) payload.vocal_range = opts.vocalRange;
     return this.request("/v1/jobs/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

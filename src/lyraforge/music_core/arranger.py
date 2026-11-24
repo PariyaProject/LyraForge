@@ -307,14 +307,21 @@ def _search_transpose_vocal_lead(
     pitch_set = frozenset(profile.pitches)
     lo, hi = profile.min_pitch, profile.max_pitch
     weighted: list[tuple[Note, int, bool]] = []
+    mel_seq: list[Note] = []
+    acc_count = 0
     if multi_track and melody_track is not None:
-        mel_count = sum(1 for n in notes if n.track == melody_track)
+        mel_seq = sorted(
+            (n for n in notes if n.track == melody_track),
+            key=lambda n: (n.start_us, n.pitch),
+        )
+        mel_count = len(mel_seq)
         acc_count = len(notes) - mel_count
         mel_weight = max(4, round(3 * acc_count / max(1, mel_count))) if acc_count > 0 else 4
         for n in notes:
             is_mel = n.track == melody_track
             weighted.append((n, mel_weight if is_mel else 1, is_mel))
     else:
+        mel_weight = 3
         bucket_peak: dict[int, int] = {}
         for n in notes:
             bucket = _scale_ms(n.start_us, speed) // 120
@@ -329,13 +336,34 @@ def _search_transpose_vocal_lead(
     scored_list: list[tuple[int, int]] = []
     for k in range(-search, search + 1):
         _check_cancel(is_cancelled)
-        scored_list.append((k, _weighted_transpose_cost(weighted, k, pitch_set, lo, hi)))
+        cost = _weighted_transpose_cost(weighted, k, pitch_set, lo, hi)
+        if len(mel_seq) >= 2:
+            prev_f, _ = _fold_pitch_to_range(mel_seq[0].pitch + k, lo, hi)
+            if acc_count > 0 and mel_seq[0].pitch + k < lo + 7:
+                cost += 1
+            for idx_m in range(1, len(mel_seq)):
+                prev_raw = mel_seq[idx_m - 1]
+                cur_raw = mel_seq[idx_m]
+                cur_f, _ = _fold_pitch_to_range(cur_raw.pitch + k, lo, hi)
+                if acc_count > 0 and cur_raw.pitch + k < lo + 7:
+                    cost += 1
+                if (
+                    cur_raw.start_us - prev_raw.end_us <= 1_500_000
+                    and abs(cur_raw.pitch - prev_raw.pitch) <= 7
+                    and abs(cur_f - prev_f) >= 10
+                ):
+                    cost += mel_weight * 2
+                prev_f = cur_f
+        scored_list.append((k, cost))
     scored = sorted(scored_list, key=lambda kc: (kc[1], abs(kc[0]), kc[0]))
     return scored[0][0], tuple(scored[:5])
 
 
-_MELODY_NAME_HINTS = ("melody", "lead", "vocal", "voice", "solo", "flute", "violin", "main")
-_ACCOMP_NAME_HINTS = ("bass", "chord", "accomp", "drum", "perc", "pad", "rhythm")
+_EXPLICIT_VOCAL_HINTS = ("vocal", "voice", "singer", "lyric")
+_EXPLICIT_MELODY_HINTS = ("melody", "lead", "solo", "main")
+_MELODY_INSTRUMENT_HINTS = ("flute", "violin", "sax", "oboe", "trumpet")
+_STRICT_ACCOMP_HINTS = ("accomp", "backing")
+_OTHER_ACCOMP_HINTS = ("bass", "chord", "drum", "perc", "pad", "rhythm")
 
 
 def _detect_melody_track_from_notes(
@@ -365,9 +393,24 @@ def _detect_melody_track_from_notes(
         presence = min(1.0, len(t_notes) / max(1, max_notes))
         mono_weight = min(1.0, len(t_notes) / 4.0)
         name = track_names.get(track_id, "")
-        name_bonus = 0.45 if any(h in name for h in _MELODY_NAME_HINTS) else 0.0
-        if any(h in name for h in _ACCOMP_NAME_HINTS):
-            name_bonus -= 0.10
+        is_strict_accomp = any(h in name for h in _STRICT_ACCOMP_HINTS)
+        is_other_accomp = any(h in name for h in _OTHER_ACCOMP_HINTS)
+        if any(h in name for h in _EXPLICIT_VOCAL_HINTS):
+            name_bonus = 0.75
+        elif any(h in name for h in _EXPLICIT_MELODY_HINTS) and not is_strict_accomp:
+            name_bonus = 0.50
+        elif (
+            any(h in name for h in _MELODY_INSTRUMENT_HINTS)
+            and not is_strict_accomp
+            and not is_other_accomp
+        ):
+            name_bonus = 0.35
+        else:
+            name_bonus = 0.0
+        if is_strict_accomp:
+            name_bonus -= 0.35
+        elif is_other_accomp:
+            name_bonus -= 0.15
         score_val = (
             (mean_pitch / 127.0) * 0.40
             + (1.0 / avg_poly) * 0.30 * mono_weight
@@ -427,7 +470,7 @@ def _map_notes_classic(
 
 def _build_melody_windows(
     mel_cands: Sequence[_Cand],
-) -> tuple[list[tuple[int, int, int]], list[int]]:
+) -> tuple[list[tuple[int, int, int]], list[int], list[int]]:
     windows = sorted(
         (
             (c.at_ms - 40, max(c.at_ms + c.dur_ms, c.at_ms + 220), c.mapped)
@@ -435,8 +478,15 @@ def _build_melody_windows(
         ),
         key=lambda w: (w[0], w[1]),
     )
-    onsets = sorted(c.at_ms for c in mel_cands)
-    return windows, onsets
+    pairs = sorted((c.at_ms, max(c.at_ms + c.dur_ms, c.at_ms + 120)) for c in mel_cands)
+    onsets: list[int] = []
+    end_prefix_max: list[int] = []
+    running_end = 0
+    for onset, end_ms in pairs:
+        onsets.append(onset)
+        running_end = max(running_end, end_ms)
+        end_prefix_max.append(running_end)
+    return windows, onsets, end_prefix_max
 
 
 def _active_melody_pitches_at(
@@ -465,9 +515,14 @@ def _map_notes_vocal_lead(
     use_melody_priority: bool,
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
-) -> tuple[list[_Cand], list[tuple[int, int, int]], list[int]]:
+) -> tuple[list[_Cand], list[tuple[int, int, int]], list[int], list[int]]:
     if not (use_melody_priority and melody_track is not None):
-        return _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled), [], []
+        return (
+            _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled),
+            [],
+            [],
+            [],
+        )
 
     lo, hi = profile.min_pitch, profile.max_pitch
     available = profile.pitches
@@ -511,7 +566,7 @@ def _map_notes_vocal_lead(
             _Cand(n, p, key.key_id, at_ms, _scale_ms(n.duration_us, speed), tuple(adj))
         )
 
-    windows, mel_onsets = _build_melody_windows(mel_cands)
+    windows, mel_onsets, mel_end_prefix_max = _build_melody_windows(mel_cands)
     cursor = 0
     acc_cands: list[_Cand] = []
 
@@ -551,7 +606,7 @@ def _map_notes_vocal_lead(
                 below = [c for c in sub_cands if c < active_max]
                 if below:
                     sub_cands = below
-                elif options.anti_clash_semitones:
+                elif options.anti_clash_semitones and active_max > lo + 5:
                     sub_cands = []
             if not sub_cands:
                 dropped.append(DroppedNote(at_ms, n.pitch, p, n.track, DropReason.SEMITONE_DROPPED))
@@ -576,7 +631,7 @@ def _map_notes_vocal_lead(
             )
         )
 
-    return [*mel_cands, *acc_cands], windows, mel_onsets
+    return [*mel_cands, *acc_cands], windows, mel_onsets, mel_end_prefix_max
 
 
 def _pick_balanced_voices(
@@ -620,6 +675,7 @@ def _select_vocal_lead_clusters(
     use_melody_priority: bool,
     mel_windows: Sequence[tuple[int, int, int]],
     mel_onsets: Sequence[int],
+    mel_end_prefix_max: Sequence[int],
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
 ) -> list[_Cand]:
@@ -648,12 +704,17 @@ def _select_vocal_lead_clusters(
             active_refs = [c.mapped for c in mel_in] or active_win_pitches
 
             pos = bisect_left(mel_onsets, start)
-            since_prev = start - mel_onsets[pos - 1] if pos > 0 else math.inf
+            if pos > 0 and pos - 1 < len(mel_end_prefix_max):
+                since_prev = start - mel_end_prefix_max[pos - 1]
+            elif pos > 0:
+                since_prev = start - mel_onsets[pos - 1]
+            else:
+                since_prev = math.inf
             until_next = mel_onsets[pos] - start if pos < len(mel_onsets) else math.inf
             is_interlude = (
                 not mel_in
                 and not active_win_pitches
-                and (not mel_onsets or (since_prev >= 600 and until_next >= 300))
+                and (not mel_onsets or (since_prev >= 350 and until_next >= 250))
             )
 
             if is_interlude:
@@ -671,16 +732,25 @@ def _select_vocal_lead_clusters(
             else:
                 kept_mel = mel_in[:max_chord]
                 clean_acc: list[_Cand] = []
+                ceiling_blocked: list[_Cand] = []
                 ref_max = max(active_refs) if active_refs else None
                 for c in acc_in:
-                    if options.anti_clash_semitones and any(
-                        abs(c.mapped - mp) in (1, 2) for mp in active_refs
-                    ):
-                        clash_ids.add(id(c))
-                        continue
+                    if options.anti_clash_semitones:
+                        has_m2 = any(abs(c.mapped - mp) == 1 for mp in active_refs)
+                        has_sub_m2_or_m2plus = (
+                            Adjustment.SEMITONE_SUBSTITUTED in c.adj
+                            and any(abs(c.mapped - mp) == 2 for mp in active_refs)
+                        )
+                        has_cluster_m2 = any(
+                            abs(c.mapped - mp) == 2 for mp in active_refs
+                        ) and any(abs(c.mapped - other.mapped) == 1 for other in clean_acc)
+                        if has_m2 or has_sub_m2_or_m2plus or has_cluster_m2:
+                            clash_ids.add(id(c))
+                            continue
                     if options.melody_ceiling and (
                         c.above_melody or (ref_max is not None and c.mapped >= ref_max)
                     ):
+                        ceiling_blocked.append(c)
                         continue
                     clean_acc.append(c)
 
@@ -694,6 +764,23 @@ def _select_vocal_lead_clusters(
                         acc_budget = rem
                 else:
                     acc_budget = rem
+
+                # When vocal drops into bottom fifth (<= lo + 5), keep up to 1 consonant
+                # fifth/octave note above vocal if all accompaniment below was filtered.
+                if (
+                    acc_budget > 0
+                    and not clean_acc
+                    and ceiling_blocked
+                    and ref_max is not None
+                    and ref_max <= lo + 5
+                ):
+                    gentle = [
+                        c for c in ceiling_blocked
+                        if (c.mapped - ref_max) in (7, 12, 19)
+                        and Adjustment.SEMITONE_SUBSTITUTED not in c.adj
+                    ]
+                    if gentle:
+                        clean_acc.append(min(gentle, key=lambda c: c.mapped))
 
                 primary_ref = active_refs[0] if active_refs else None
                 kept_acc = _pick_balanced_voices(
@@ -727,7 +814,13 @@ def _select_vocal_lead_clusters(
                     for c in cluster:
                         if c is lead:
                             continue
-                        if options.anti_clash_semitones and abs(c.mapped - lead.mapped) in (1, 2):
+                        if options.anti_clash_semitones and (
+                            abs(c.mapped - lead.mapped) == 1
+                            or (
+                                Adjustment.SEMITONE_SUBSTITUTED in c.adj
+                                and abs(c.mapped - lead.mapped) == 2
+                            )
+                        ):
                             clash_ids.add(id(c))
                             continue
                         if options.melody_ceiling and c.mapped > lead.mapped:
@@ -827,7 +920,7 @@ def arrange(
 
     # 3-4. range folding + semitone handling
     if vocal_lead_mode:
-        cands, mel_windows, mel_onsets = _map_notes_vocal_lead(
+        cands, mel_windows, mel_onsets, mel_end_prefix_max = _map_notes_vocal_lead(
             notes,
             k,
             speed,
@@ -840,7 +933,7 @@ def arrange(
         )
     else:
         cands = _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled)
-        mel_windows, mel_onsets = [], []
+        mel_windows, mel_onsets, mel_end_prefix_max = [], [], []
 
     cands.sort(key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch))
 
@@ -881,6 +974,7 @@ def arrange(
             use_melody_priority=use_melody_priority,
             mel_windows=mel_windows,
             mel_onsets=mel_onsets,
+            mel_end_prefix_max=mel_end_prefix_max,
             dropped=dropped,
             is_cancelled=is_cancelled,
         )

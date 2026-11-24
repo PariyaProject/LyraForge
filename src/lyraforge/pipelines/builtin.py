@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from lyraforge.errors import ErrorCode, LyraError
-from lyraforge.music_core.cleanup import CleanupOptions, clean_score, merge_stem_scores
+from lyraforge.music_core.cleanup import (
+    CleanupOptions,
+    clean_score,
+    merge_stem_scores,
+    vocal_cleanup_options,
+)
 from lyraforge.music_core.midi_export import score_to_midi_bytes
 from lyraforge.music_core.midi_import import parse_midi_bytes
 from lyraforge.music_core.models import NormalizedScore
@@ -27,6 +33,13 @@ from lyraforge.transcribers import (
     get_transcriber,
     list_transcribers,
 )
+
+VOCAL_RANGE_PRESETS: dict[str, tuple[int, int, float, float]] = {
+    "auto": (38, 93, 73.0, 1760.0),    # D2..A6 wide vocal range (baritone G2..anime soprano)
+    "male": (36, 77, 65.0, 700.0),     # C2..F5
+    "female": (51, 93, 155.0, 1760.0), # Eb3..A6
+}
+_MONOPHONIC_ENGINE_IDS = frozenset({"builtin-mono", "swift-f0"})
 
 
 def _check_stop(stop_token: StopToken | None) -> None:
@@ -59,10 +72,14 @@ def _pick_vocal_engine(requested: str | None) -> str:
     if requested and requested != "auto":
         return requested
     avail = _available_engine_ids()
-    return "basic-pitch" if "basic-pitch" in avail else DEFAULT_TRANSCRIBER_ID
+    if "swift-f0" in avail:
+        return "swift-f0"
+    if "basic-pitch" in avail:
+        return "basic-pitch"
+    return DEFAULT_TRANSCRIBER_ID
 
 
-def _pick_accomp_engine(requested: str | None) -> str:
+def _pick_accomp_engine(requested: str | None) -> str | None:
     if requested and requested != "auto":
         return requested
     avail = _available_engine_ids()
@@ -70,20 +87,51 @@ def _pick_accomp_engine(requested: str | None) -> str:
         return "dettato"
     if "basic-pitch" in avail:
         return "basic-pitch"
-    return DEFAULT_TRANSCRIBER_ID
+    return None
 
 
-def _vocal_options(base: TranscribeOptions) -> TranscribeOptions:
+def _vocal_options(
+    base: TranscribeOptions,
+    *,
+    range_preset: str = "auto",
+    engine_id: str = "basic-pitch",
+) -> TranscribeOptions:
+    key = (range_preset or "auto").strip().lower()
+    if key not in VOCAL_RANGE_PRESETS:
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"unknown vocal range preset: {range_preset!r}",
+            {"available": list(VOCAL_RANGE_PRESETS)},
+        )
+    p_lo, p_hi, hz_lo, hz_hi = VOCAL_RANGE_PRESETS[key]
+    if key == "auto":
+        min_pitch = min(base.min_pitch, p_lo) if base.min_pitch != 36 else p_lo
+        max_pitch = max(base.max_pitch, p_hi) if base.max_pitch != 96 else p_hi
+    else:
+        min_pitch = p_lo
+        max_pitch = p_hi
+
+    if base.min_note_ms != 60:
+        min_note_ms = base.min_note_ms
+    elif engine_id == "swift-f0":
+        min_note_ms = 55
+    else:
+        min_note_ms = 45
+
     opts = TranscribeOptions(
-        min_pitch=max(base.min_pitch, 45),
-        max_pitch=min(base.max_pitch, 88) if base.max_pitch > 45 else base.max_pitch,
-        min_note_ms=max(base.min_note_ms, 55),
+        min_pitch=min_pitch,
+        max_pitch=max_pitch,
+        min_note_ms=min_note_ms,
         onset_rms_threshold=base.onset_rms_threshold,
         timeout_s=base.timeout_s,
         onset_threshold=base.onset_threshold if base.onset_threshold is not None else 0.58,
         frame_threshold=base.frame_threshold if base.frame_threshold is not None else 0.35,
-        min_frequency_hz=base.min_frequency_hz if base.min_frequency_hz is not None else 110.0,
-        max_frequency_hz=base.max_frequency_hz if base.max_frequency_hz is not None else 1400.0,
+        min_frequency_hz=(
+            base.min_frequency_hz if base.min_frequency_hz is not None else hz_lo
+        ),
+        max_frequency_hz=(
+            base.max_frequency_hz if base.max_frequency_hz is not None else hz_hi
+        ),
     )
     opts.validate()
     return opts
@@ -98,7 +146,7 @@ def _run_engine(
     on_progress: ProgressCallback | None,
     stop_token: StopToken | None,
     transcriber_resolver: Callable[[str], Transcriber] | None = None,
-) -> tuple[bytes, NormalizedScore, NormalizedScore, str]:
+) -> tuple[bytes, NormalizedScore, NormalizedScore, str, dict[str, int], tuple[str, ...]]:
     resolver = transcriber_resolver or get_transcriber
     transcriber = resolver(engine_id)
     res = transcriber.transcribe(
@@ -108,8 +156,15 @@ def _run_engine(
         stop_token=stop_token,
     )
     raw_score = parse_midi_bytes(res.midi_bytes)
-    cleaned_score, _ = clean_score(raw_score, cleanup_opts)
-    return res.midi_bytes, raw_score, cleaned_score, res.engine_version
+    cleaned_score, clean_stats = clean_score(raw_score, cleanup_opts)
+    return (
+        res.midi_bytes,
+        raw_score,
+        cleaned_score,
+        res.engine_version,
+        clean_stats,
+        res.warnings,
+    )
 
 
 class DirectPipeline:
@@ -130,6 +185,7 @@ class DirectPipeline:
             default_engine_id=DEFAULT_TRANSCRIBER_ID,
             default_arranger_strategy="classic",
             supports_engine_override=True,
+            low_resource_available=True,
         )
 
     def run(
@@ -144,7 +200,7 @@ class DirectPipeline:
         opts = request.options
         opts.validate()
         engine_id = request.engine_id or DEFAULT_TRANSCRIBER_ID
-        raw_bytes, _raw_score, cleaned_score, engine_ver = _run_engine(
+        raw_bytes, _raw_score, cleaned_score, engine_ver, clean_stats, eng_warnings = _run_engine(
             engine_id,
             wav_path,
             opts,
@@ -162,7 +218,13 @@ class DirectPipeline:
             raw_midi_bytes=raw_bytes,
             cleaned_score=cleaned_score,
             cleaned_midi_bytes=cleaned_bytes,
-            metadata={"mode": "direct"},
+            metadata={
+                "mode": "direct",
+                "engines": {"primary": {"id": engine_id, "version": engine_ver}},
+                "cleanup_stats": clean_stats,
+                "degraded_mode": False,
+                "warnings": list(eng_warnings),
+            },
         )
 
 
@@ -213,24 +275,52 @@ class VocalSplitPipeline:
 
     def probe(self) -> PipelineInfo:
         sep_info = get_separator("demucs").probe()
-        missing = () if sep_info.available else ("demucs",)
-        vocal_default = _pick_vocal_engine(None)
-        accomp_default = _pick_accomp_engine(None)
-        primary_default = accomp_default if self.mode == "accomp" else vocal_default
+        sep_ok = sep_info.available
+        missing: list[str] = [] if sep_ok else ["demucs"]
+        warnings: list[str] = []
+
+        vocal_default = _pick_vocal_engine(None) if self.mode != "accomp" else None
+        accomp_default = _pick_accomp_engine(None) if self.mode != "lead" else None
+
+        available = sep_ok
+        low_resource_available = sep_ok
+        if self.mode in {"full", "accomp"} and accomp_default is None:
+            available = False
+            missing.append("dettato/basic-pitch")
+            warnings.append(
+                "未安装多音伴奏引擎（dettato 或 Basic Pitch）；自动多音伴奏不可用。"
+                "请先安装其一，或手动选择内置单音低资源模式（仅单音，不支持和弦）。"
+            )
+        if self.mode in {"full", "lead"} and vocal_default == "builtin-mono":
+            warnings.append(
+                "当前人声主旋律将使用内置单音 YIN 基线；建议在设置中安装轻量 SwiftF0（35 MB）"
+                "或 Basic Pitch 以显著提升旋律准确率。"
+            )
+
+        primary_default = (
+            "+".join(e for e in (vocal_default, accomp_default) if e)
+            or vocal_default
+            or accomp_default
+            or DEFAULT_TRANSCRIBER_ID
+        )
         return PipelineInfo(
             id=self.id,
             display_name=str(self._meta["display_name"]),
             description=str(self._meta["description"]),
             recommended_for=str(self._meta["recommended_for"]),
             stages=tuple(self._meta["stages"]),  # type: ignore[arg-type]
-            required_tools=("demucs",),
-            available=sep_info.available,
-            missing_tools=missing,
+            required_tools=tuple(missing) if missing else ("demucs",),
+            available=available,
+            missing_tools=tuple(missing),
             default_engine_id=primary_default,
-            default_vocal_engine_id=vocal_default if self.mode != "accomp" else None,
-            default_accomp_engine_id=accomp_default if self.mode != "lead" else None,
+            default_vocal_engine_id=vocal_default,
+            default_accomp_engine_id=accomp_default,
             default_arranger_strategy=str(self._meta["default_arranger_strategy"]),
             supports_engine_override=False,
+            resolved_vocal_engine_id=vocal_default,
+            resolved_accomp_engine_id=accomp_default,
+            low_resource_available=low_resource_available,
+            warnings=tuple(warnings),
         )
 
     def run(
@@ -244,6 +334,31 @@ class VocalSplitPipeline:
         _check_stop(stop_token)
         opts = request.options
         opts.validate()
+
+        # Pre-validate engines and presets before spending time in Demucs separation.
+        vocal_engine: str | None = None
+        vocal_opts: TranscribeOptions | None = None
+        vocal_clean_opts: CleanupOptions | None = None
+        if self.mode in {"full", "lead"}:
+            vocal_engine = _pick_vocal_engine(request.vocal_engine_id)
+            vocal_opts = _vocal_options(
+                opts, range_preset=request.vocal_range, engine_id=vocal_engine
+            )
+            vocal_clean_opts = vocal_cleanup_options(
+                request.vocal_cleanup, min_note_ms=vocal_opts.min_note_ms
+            )
+
+        accomp_engine: str | None = None
+        if self.mode in {"full", "accomp"}:
+            accomp_engine = _pick_accomp_engine(request.accomp_engine_id)
+            if accomp_engine is None:
+                raise LyraError(
+                    ErrorCode.MODEL_MISSING,
+                    "vocal_split accompaniment requires a polyphonic engine "
+                    "(dettato or basic-pitch); install one in Settings -> Toolchain or explicitly "
+                    "choose accomp_engine_id='builtin-mono' for low-resource monophonic mode",
+                )
+
         separator = get_separator("demucs")
 
         with tempfile.TemporaryDirectory(prefix=f"lyraforge-{self.id}-") as tmpdir:
@@ -259,55 +374,77 @@ class VocalSplitPipeline:
             raw_parts: list[tuple[str, NormalizedScore, int]] = []
             clean_parts: list[tuple[str, NormalizedScore, int]] = []
             used_engines: list[str] = []
+            engine_meta: dict[str, dict[str, Any]] = {}
+            cleanup_stats: dict[str, dict[str, int]] = {}
+            warnings: list[str] = [str(w) for w in (stems.metadata.get("warnings") or ())]
+            degraded_mode = False
+            degraded_reasons: list[str] = []
             direct_raw_bytes: bytes | None = None
 
             if self.mode in {"full", "lead"}:
+                assert vocal_engine is not None and vocal_opts is not None
                 if stems.vocals is None or not stems.vocals.is_file():
                     raise LyraError(
                         ErrorCode.TRANSCRIPTION_FAILED,
                         "Demucs did not produce vocals.wav stem",
                     )
-                vocal_engine = _pick_vocal_engine(request.vocal_engine_id or request.engine_id)
-                vocal_clean_opts = CleanupOptions(
-                    min_note_ms=max(opts.min_note_ms, 55),
-                    merge_vibrato_gap_ms=70,
-                )
                 hi_vocal = 0.72 if self.mode == "full" else 0.92
                 if on_progress is not None:
                     on_progress(0.46, "transcribing_vocal")
-                v_raw_bytes, v_raw, v_clean, _ = _run_engine(
-                    vocal_engine,
-                    stems.vocals,
-                    _vocal_options(opts),
-                    vocal_clean_opts,
-                    on_progress=_sub_progress(
-                        on_progress, 0.46, hi_vocal, "transcribing_vocal"
-                    ),
-                    stop_token=stop_token,
-                    transcriber_resolver=request.transcriber_resolver,
-                )
-                used_engines.append(vocal_engine)
-                raw_parts.append(("Vocal Lead", v_raw, 0))
-                clean_parts.append(("Vocal Lead", v_clean, 0))
-                if self.mode == "lead":
-                    direct_raw_bytes = v_raw_bytes
+                try:
+                    v_raw_bytes, v_raw, v_clean, v_ver, v_stats, v_warn = _run_engine(
+                        vocal_engine,
+                        stems.vocals,
+                        vocal_opts,
+                        vocal_clean_opts,
+                        on_progress=_sub_progress(
+                            on_progress, 0.46, hi_vocal, "transcribing_vocal"
+                        ),
+                        stop_token=stop_token,
+                        transcriber_resolver=request.transcriber_resolver,
+                    )
+                    used_engines.append(vocal_engine)
+                    engine_meta["vocal"] = {
+                        "id": vocal_engine,
+                        "version": v_ver,
+                        "options": asdict(vocal_opts),
+                        "range_preset": request.vocal_range,
+                        "cleanup_preset": request.vocal_cleanup,
+                    }
+                    cleanup_stats["vocal"] = v_stats
+                    warnings.extend(v_warn)
+                    raw_parts.append(("Vocal Lead", v_raw, 0))
+                    clean_parts.append(("Vocal Lead", v_clean, 0))
+                    if self.mode == "lead":
+                        direct_raw_bytes = v_raw_bytes
+                except LyraError as exc:
+                    if exc.code == ErrorCode.NO_PLAYABLE_NOTES and self.mode == "full":
+                        warnings.append(
+                            "人声分离轨未检测到有效旋律音符，已自动跳过人声轨并保留伴奏轨。"
+                        )
+                    else:
+                        raise
                 _check_stop(stop_token)
 
             if self.mode in {"full", "accomp"}:
+                assert accomp_engine is not None
                 accomp_wav = stems.accompaniment or stems.other
                 if accomp_wav is None or not accomp_wav.is_file():
                     raise LyraError(
                         ErrorCode.TRANSCRIPTION_FAILED,
                         "Demucs did not produce accompaniment/no_drums stem",
                     )
-                accomp_engine = _pick_accomp_engine(
-                    request.accomp_engine_id
-                    or (request.engine_id if self.mode == "accomp" else None)
-                )
+                if accomp_engine in _MONOPHONIC_ENGINE_IDS:
+                    degraded_mode = True
+                    degraded_reasons.append(f"monophonic_accompaniment:{accomp_engine}")
+                    warnings.append(
+                        f"伴奏轨当前使用单音引擎 {accomp_engine}（低资源/显式降级模式），"
+                        "不包含多声部和弦信息，不可视作高精度多音编曲伴奏。"
+                    )
                 lo_acc = 0.73 if self.mode == "full" else 0.46
                 if on_progress is not None:
                     on_progress(lo_acc, "transcribing_accomp")
-                a_raw_bytes, a_raw, a_clean, _ = _run_engine(
+                a_raw_bytes, a_raw, a_clean, a_ver, a_stats, a_warn = _run_engine(
                     accomp_engine,
                     accomp_wav,
                     opts,
@@ -319,6 +456,16 @@ class VocalSplitPipeline:
                     transcriber_resolver=request.transcriber_resolver,
                 )
                 used_engines.append(accomp_engine)
+                engine_meta["accomp"] = {
+                    "id": accomp_engine,
+                    "version": a_ver,
+                    "options": asdict(opts),
+                    "monophonic_override": accomp_engine in _MONOPHONIC_ENGINE_IDS,
+                }
+                cleanup_stats["accomp"] = a_stats
+                for w in a_warn:
+                    if w not in warnings:
+                        warnings.append(w)
                 raw_parts.append(("Accompaniment", a_raw, 1))
                 clean_parts.append(("Accompaniment", a_clean, 1))
                 if self.mode == "accomp":
@@ -336,18 +483,33 @@ class VocalSplitPipeline:
                 raw_midi_bytes = direct_raw_bytes
 
             engine_label = "+".join(dict.fromkeys(used_engines))
+            sep_ver = str(stems.metadata.get("version") or "unknown")
+            ver_parts = [f"demucs {sep_ver}"]
+            for role, meta in engine_meta.items():
+                ver_parts.append(f"{role}:{meta['id']} {meta['version']}")
+            version_label = " | ".join(ver_parts)
+            drums_removed = bool(stems.metadata.get("drums_removed", True))
+
             if on_progress is not None:
                 on_progress(1.0, "completed")
             return PipelineResult(
                 pipeline_id=self.id,
                 engine_id=engine_label,
-                engine_version="demucs+sub",
+                engine_version=version_label,
                 raw_midi_bytes=raw_midi_bytes,
                 cleaned_score=cleaned_score,
                 cleaned_midi_bytes=cleaned_midi_bytes,
                 metadata={
                     "mode": self.mode,
                     "separator": stems.metadata,
-                    "engines": list(used_engines),
+                    "drums_removed": drums_removed,
+                    "accompaniment_source": stems.metadata.get("accompaniment_source"),
+                    "engines": engine_meta,
+                    "vocal_cleanup": request.vocal_cleanup if self.mode != "accomp" else None,
+                    "vocal_range": request.vocal_range if self.mode != "accomp" else None,
+                    "cleanup_stats": cleanup_stats,
+                    "degraded_mode": degraded_mode,
+                    "degraded_reasons": degraded_reasons,
+                    "warnings": list(dict.fromkeys(warnings)),
                 },
             )

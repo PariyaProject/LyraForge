@@ -307,3 +307,114 @@ def test_transcriber_timeout_scales_with_audio_length() -> None:
     # dettato: 10 minutes of audio at ~10x realtime + 180s slack, still above the base 300s.
     assert _effective_timeout_s(300.0, 600.0, per_audio_second=10.0, slack_s=180.0) == 6180.0
     assert _effective_timeout_s(300.0, 5.0, per_audio_second=10.0, slack_s=180.0) == 300.0
+
+
+def test_dettato_auto_probe_never_selects_mps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lyraforge.transcribers import dettato
+
+    py = tmp_path / "dettato_py"
+    py.write_text("", encoding="utf-8")
+    monkeypatch.delenv("LYRAFORGE_DETTATO_DEVICE", raising=False)
+    dettato._DEVICE_CACHE.clear()
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: Any) -> Any:
+        seen.append(cmd)
+        # Even if a broken/unexpected 'mps' slipped to stdout, resolve_device falls back to cpu
+        return type("R", (), {"returncode": 0, "stdout": "mps\n", "stderr": ""})()
+
+    monkeypatch.setattr(dettato.subprocess, "run", fake_run)
+    assert dettato.resolve_device([str(py), "-m", "dettato"]) == "cpu"
+    assert "mps" not in seen[0][2]
+
+    dettato._DEVICE_CACHE.clear()
+    monkeypatch.setattr(
+        dettato.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "cuda\n", "stderr": ""})(),
+    )
+    assert dettato.resolve_device([str(py), "-m", "dettato"]) == "cuda"
+    cmd_str = " ".join(
+        dettato._build_cmd([str(py), "-m", "dettato"], tmp_path / "a.wav", tmp_path)
+    )
+    assert "cuda" in cmd_str
+
+
+def test_swift_f0_subprocess_probe_missing_and_mocked_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lyraforge.transcribers import (
+        SWIFT_F0_CLI_ENV,
+        SWIFT_F0_PYTHON_ENV,
+        SwiftF0SubprocessTranscriber,
+    )
+
+    monkeypatch.delenv(SWIFT_F0_PYTHON_ENV, raising=False)
+    monkeypatch.delenv(SWIFT_F0_CLI_ENV, raising=False)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    sf_tr = SwiftF0SubprocessTranscriber()
+    assert sf_tr.probe().available is False
+    assert sf_tr.probe().details["polyphonic"] is False
+
+    wav = tmp_path / "vocal.wav"
+    pcm = array.array("h", [1000] * 11_025)
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    with wave.open(str(wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(22_050)
+        wf.writeframes(pcm.tobytes())
+
+    with pytest.raises(LyraError) as exc:
+        sf_tr.transcribe(wav)
+    assert exc.value.code == ErrorCode.MODEL_MISSING
+
+    fake_py = tmp_path / "swift_python"
+    fake_py.write_text("", encoding="utf-8")
+    monkeypatch.setenv(SWIFT_F0_PYTHON_ENV, str(fake_py))
+    assert sf_tr.probe().available is True
+
+    midi_sample = (FIXTURE_DIR / "c_major_scale.mid").read_bytes()
+    seen_cmd: list[str] = []
+    seen_sr: list[int] = []
+
+    class FakeSwiftProc:
+        def __init__(self, cmd: list[str]) -> None:
+            nonlocal seen_cmd
+            seen_cmd = cmd
+            self.returncode = 0
+            self.stderr = type("R", (), {"read": lambda _s: b""})()
+            in_wav = Path(cmd[3])
+            with wave.open(str(in_wav), "rb") as wf:
+                seen_sr.append(wf.getframerate())
+            out_mid = Path(cmd[4])
+            out_mid.write_bytes(midi_sample)
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        "lyraforge.transcribers.swift_f0.probe_installed_version",
+        lambda _runner, _dist: "0.3.0",
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **_kw: FakeSwiftProc(cmd))
+    res = sf_tr.transcribe(
+        wav,
+        TranscribeOptions(
+            min_pitch=38,
+            max_pitch=93,
+            min_note_ms=55,
+            min_frequency_hz=73.0,
+            max_frequency_hz=1760.0,
+        ),
+    )
+    assert res.engine_id == "swift-f0"
+    assert res.engine_version == "0.3.0"
+    assert res.note_count == 8
+    assert seen_sr == [16_000]
+    assert seen_cmd[5] == "73.00" and seen_cmd[6] == "1760.00" and seen_cmd[7] == "55.0"
+    assert "monophonic vocal/solo F0 only" in res.warnings[0]

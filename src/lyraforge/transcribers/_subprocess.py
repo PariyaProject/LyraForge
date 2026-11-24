@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import wave
 from collections.abc import Callable
 from pathlib import Path
 
 from lyraforge.errors import ErrorCode, LyraError
-from lyraforge.media.extract import extract_audio_to_wav
-from lyraforge.media.subprocess_utils import format_log_tail, run_bounded_subprocess
+from lyraforge.media.extract import DEFAULT_AUDIO_SAMPLE_RATE, extract_audio_to_wav
+from lyraforge.media.subprocess_utils import (
+    format_log_tail,
+    hidden_subprocess_kwargs,
+    run_bounded_subprocess,
+)
 from lyraforge.music_core.midi_import import parse_midi_bytes
 from lyraforge.playback.guards import StopToken
 from lyraforge.transcribers.base import (
@@ -19,6 +24,8 @@ from lyraforge.transcribers.base import (
     TranscribeOptions,
     TranscriptionResult,
 )
+
+_VERSION_CACHE: dict[tuple[str, str], str] = {}
 
 
 def resolve_runner(
@@ -38,6 +45,38 @@ def resolve_runner(
     if found:
         return [found]
     return None
+
+
+def probe_installed_version(runner: list[str] | None, dist_name: str) -> str:
+    """Return installed Python distribution version for ``runner``, or ``'subprocess'``."""
+    if not runner or not dist_name or len(runner) < 3 or runner[1] != "-m":
+        return "subprocess"
+    python = runner[0]
+    cache_key = (python, dist_name)
+    cached = _VERSION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    version = "subprocess"
+    try:
+        res = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                python,
+                "-c",
+                f"import importlib.metadata as m;print(m.version({dist_name!r}))",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            **hidden_subprocess_kwargs(),
+        )
+        candidate = (res.stdout or "").strip()
+        if res.returncode == 0 and candidate:
+            version = candidate
+            _VERSION_CACHE[cache_key] = version
+    except (OSError, subprocess.TimeoutExpired):
+        version = "subprocess"
+    return version
 
 
 def _utf8_child_env() -> dict[str, str]:
@@ -89,6 +128,8 @@ def run_isolated_transcriber(
     stop_token: StopToken | None = None,
     timeout_per_audio_second: float = 0.0,
     timeout_slack_s: float = 120.0,
+    sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+    engine_version: str | None = None,
 ) -> TranscriptionResult:
     opts = options or TranscribeOptions()
     opts.validate()
@@ -104,7 +145,9 @@ def run_isolated_transcriber(
         out_dir.mkdir()
         if on_progress is not None:
             on_progress(0.1, "extracting wav")
-        extract_audio_to_wav(audio_path, wav_in, stop_token=stop_token)
+        extract_audio_to_wav(
+            audio_path, wav_in, sample_rate=sample_rate, stop_token=stop_token
+        )
         if stop_token is not None and stop_token.stopped:
             raise LyraError(ErrorCode.PLAYBACK_ABORTED, "transcription cancelled")
 
@@ -155,7 +198,7 @@ def run_isolated_transcriber(
             on_progress(1.0, "completed")
         return TranscriptionResult(
             engine_id=engine_id,
-            engine_version="subprocess",
+            engine_version=engine_version or "subprocess",
             midi_bytes=midi_bytes,
             note_count=len(score.notes),
             duration_ms=round(score.duration_us / 1000),

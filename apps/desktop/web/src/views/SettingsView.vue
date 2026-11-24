@@ -274,16 +274,16 @@ async function copyText(text: string): Promise<void> {
 
               <div class="row">
                 <div class="field" style="flex: 1 1 240px">
-                  <label for="dettato-device">推理设备（dettato 与 Demucs 共用）</label>
+                  <label for="dettato-device">推理设备（CUDA/CPU 通用；MPS 加速 Demucs，dettato 在 macOS 自动走 CPU）</label>
                   <select
                     id="dettato-device"
                     :value="store.gpuStatus.value.device"
                     @change="onDettatoDeviceChange"
                   >
-                    <option value="auto">自动（优先 CUDA/MPS，否则 CPU）</option>
+                    <option value="auto">自动（优先 CUDA/MPS，macOS dettato 自动 CPU）</option>
                     <option value="cpu">CPU</option>
                     <option value="cuda">CUDA</option>
-                    <option value="mps">MPS（Apple Silicon）</option>
+                    <option value="mps">MPS（Apple Silicon，仅加速 Demucs）</option>
                   </select>
                 </div>
                 <button

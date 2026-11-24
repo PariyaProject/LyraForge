@@ -136,7 +136,17 @@ class BuiltinMonoTranscriber:
             available=True,
             license="Self-authored (Project internal)",
             scope_note="纯 Python 离线单音旋律识别；适合独奏/测试，复杂混音建议使用 Basic Pitch。",
-            details={"sample_rate": _INTERNAL_RATE, "version": ENGINE_VERSION},
+            details={
+                "sample_rate": _INTERNAL_RATE,
+                "version": ENGINE_VERSION,
+                "polyphonic": False,
+                "supported_options": [
+                    "min_pitch",
+                    "max_pitch",
+                    "min_note_ms",
+                    "onset_rms_threshold",
+                ],
+            },
         )
 
     def transcribe(
