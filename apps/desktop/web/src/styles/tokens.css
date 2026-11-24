@@ -1,110 +1,178 @@
+/* Hallmark · genre: atmospheric · theme: Darkroom (dealt 2/3, seed desktop-music-transcription-piano-d68c·700e5137·2026-11-24·r0) · shape: app screen · posture: restrained · redesign: full · v2.0.0 */
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · weakest: V, dark studio shell shares DAW chrome grammar; anchored distinctiveness on Darkroom amber safelight tokens, hairline-only surface ladder, and full-bleed 21-key Piano Roll */
+
 @layer tokens {
   :root {
     color-scheme: dark;
 
-    /* Tier 1 — Palette literals (Studio Dark Obsidian + Cyan/Gold) */
-    --palette-obsidian-950: #0a0d14;
-    --palette-obsidian-900: #101521;
-    --palette-obsidian-850: #151b2b;
-    --palette-obsidian-800: #1b2336;
-    --palette-obsidian-750: #222c42;
+    /* Neutral Obsidian Surfaces (Warm Hue ~55, Darkroom-derived) */
+    --color-paper: oklch(12.5% 0.008 55);
+    --color-paper-2: oklch(16% 0.008 55);
+    --color-paper-3: oklch(20.5% 0.009 55);
+    --color-paper-4: oklch(25% 0.010 55);
 
-    --palette-slate-100: #f1f5fb;
-    --palette-slate-200: #d5dfef;
-    --palette-slate-300: #a8b7d0;
-    --palette-slate-400: #8796b2;
-    --palette-slate-500: #5a6a8a;
-    --palette-slate-600: #394661;
-    --palette-slate-700: #273248;
+    /* Fibre-White Ink Ladder */
+    --color-ink: oklch(93% 0.010 78);
+    --color-ink-2: oklch(81% 0.011 72);
+    --color-muted: oklch(67% 0.011 65);
 
-    --palette-cyan-400: #38bdf8;
-    --palette-cyan-300: #7dd3fc;
-    --palette-cyan-950: #07283c;
+    /* Rules & Field Edges */
+    --color-rule: oklch(27% 0.009 55);
+    --color-rule-strong: oklch(38% 0.011 58);
+    --color-field-edge: oklch(55% 0.012 60);
 
-    --palette-gold-400: #f5b942;
-    --palette-gold-950: #382406;
+    /* Signature Warm Studio Amber Safelight */
+    --color-accent: oklch(75% 0.155 68);
+    --color-accent-hover: oklch(80% 0.155 70);
+    --color-accent-active: oklch(68% 0.145 64);
+    --color-accent-deep: oklch(24% 0.045 64);
+    --color-accent-tint: oklch(75% 0.155 68 / 0.14);
+    --color-accent-border: oklch(48% 0.105 64);
+    --color-accent-ink: oklch(13% 0.010 55);
+    --color-focus: oklch(82% 0.16 74);
 
-    --palette-emerald-400: #34d399;
-    --palette-emerald-950: #063022;
+    /* Semantic Statuses */
+    --color-ok: oklch(74% 0.13 158);
+    --color-ok-surface: oklch(21% 0.04 158);
+    --color-ok-border: oklch(42% 0.08 158);
 
-    --palette-rose-400: #f87171;
-    --palette-rose-950: #450d12;
+    --color-warn: oklch(78% 0.14 82);
+    --color-warn-surface: oklch(22% 0.045 78);
+    --color-warn-border: oklch(46% 0.095 78);
 
-    /* Tier 2 — Semantic tokens */
-    --bg-canvas: var(--palette-obsidian-950);
-    --bg-rail: var(--palette-obsidian-900);
-    --bg-panel: var(--palette-obsidian-850);
-    --bg-elevated: var(--palette-obsidian-800);
-    --bg-interactive: var(--palette-obsidian-750);
+    --color-danger: oklch(64% 0.19 25);
+    --color-danger-hover: oklch(69% 0.19 25);
+    --color-danger-active: oklch(58% 0.19 25);
+    --color-danger-ink: oklch(96% 0.008 25);
+    --color-danger-surface: oklch(21% 0.06 25);
+    --color-danger-border: oklch(45% 0.13 25);
 
-    --border-subtle: var(--palette-slate-700);
-    --border-default: var(--palette-slate-600);
-    --border-control: var(--palette-slate-500);
+    /* Piano Roll & 21-Key Instrument Tokens */
+    --color-note-kept: oklch(73% 0.135 68);
+    --color-note-kept-hover: oklch(79% 0.145 70);
+    --color-note-kept-ink: oklch(13% 0.010 55);
+    --color-note-kept-edge: oklch(84% 0.10 72);
+    --color-note-adjusted: oklch(68% 0.12 225);
+    --color-note-adjusted-ink: oklch(13% 0.010 225);
+    --color-note-adjusted-edge: oklch(79% 0.10 225);
+    --color-note-selected: oklch(90% 0.09 82);
+    --color-note-selected-ink: oklch(13% 0.010 55);
+    --color-note-selected-ring: oklch(75% 0.155 68);
+    --color-lane-alt: oklch(14% 0.008 55);
+    --color-grid-line: oklch(22% 0.008 55);
+    --color-grid-major: oklch(30% 0.009 55);
+    --color-octave-high: oklch(75% 0.155 68);
+    --color-octave-mid: oklch(67% 0.011 65);
+    --color-octave-low: oklch(66% 0.10 225);
 
-    --text-primary: var(--palette-slate-100);
-    --text-secondary: var(--palette-slate-200);
-    --text-muted: var(--palette-slate-300);
+    /* Overlays, Selection & Scrollbars */
+    --color-backdrop: oklch(8% 0.008 55 / 0.68);
+    --color-selection: oklch(75% 0.155 68 / 0.28);
+    --shadow-overlay: 0 8px 18px oklch(5% 0.008 55 / 0.48);
+    --sb-thumb: oklch(40% 0.010 58);
+    --sb-track: oklch(15% 0.008 55);
 
-    --accent-primary: var(--palette-cyan-400);
-    --accent-primary-hover: var(--palette-cyan-300);
-    --accent-primary-fg: #051b29;
-    --accent-tint: rgba(56, 189, 248, 0.14);
+    /* Compatibility Aliases (for any residual semantic references) */
+    --bg-canvas: var(--color-paper);
+    --bg-rail: var(--color-paper-2);
+    --bg-panel: var(--color-paper-2);
+    --bg-elevated: var(--color-paper-3);
+    --bg-interactive: var(--color-paper-4);
+    --border-subtle: var(--color-rule);
+    --border-default: var(--color-rule-strong);
+    --border-control: var(--color-field-edge);
+    --text-primary: var(--color-ink);
+    --text-secondary: var(--color-ink-2);
+    --text-muted: var(--color-muted);
+    --accent-primary: var(--color-accent);
+    --accent-primary-hover: var(--color-accent-hover);
+    --accent-primary-fg: var(--color-accent-ink);
+    --accent-tint: var(--color-accent-tint);
+    --focus-ring: var(--color-focus);
 
-    --status-ok: var(--palette-emerald-400);
-    --status-ok-bg: var(--palette-emerald-950);
-    --status-warn: var(--palette-gold-400);
-    --status-warn-bg: var(--palette-gold-950);
-    --status-danger: var(--palette-rose-400);
-    --status-danger-bg: var(--palette-rose-950);
-    --status-danger-fg: #2b0609;
+    /* Typography (Offline CJK + Latin, strictly 3 weights: 400 / 500 / 600) */
+    --font-sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI",
+      "Microsoft YaHei", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, SFMono-Regular, Menlo,
+      monospace;
+    --weight-regular: 400;
+    --weight-medium: 500;
+    --weight-semi: 600;
 
-    --focus-ring: #f5b942;
-    --sb-thumb: #4b5b7a;
-    --sb-track: #121826;
+    /* Strict 4px Spacing Scale (+ 2px hairline nudge) */
+    --space-3xs: 2px;
+    --space-2xs: 4px;
+    --space-xs: 8px;
+    --space-sm: 12px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
 
-    /* Tier 3 — Layout & rhythm tokens */
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
-      system-ui, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-    --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 14px;
+    /* Radii & Hairline */
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
     --radius-pill: 999px;
+    --rule-hair: 1px;
 
-    --space-1: 4px;
-    --space-2: 8px;
-    --space-3: 12px;
-    --space-4: 16px;
-    --space-5: 20px;
-    --space-6: 24px;
+    /* Motion */
+    --dur-micro: 120ms;
+    --dur-short: 200ms;
+    --dur-long: 320ms;
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-    --shadow-panel: 0 8px 24px rgba(3, 6, 14, 0.35);
-    --shadow-toast: 0 12px 32px rgba(0, 0, 0, 0.55);
+    /* Z-Index Scale */
+    --z-base: 1;
+    --z-raised: 10;
+    --z-sticky: 20;
+    --z-transport: 30;
+    --z-drawer: 40;
+    --z-toast: 60;
+    --z-menu: 80;
   }
 }
 
 @media (forced-colors: active) {
   @layer tokens {
     :root {
-      --bg-canvas: Canvas;
-      --bg-rail: Canvas;
-      --bg-panel: Canvas;
-      --bg-elevated: Canvas;
-      --bg-interactive: ButtonFace;
-      --border-subtle: CanvasText;
-      --border-default: CanvasText;
-      --border-control: ButtonText;
-      --text-primary: CanvasText;
-      --text-secondary: CanvasText;
-      --text-muted: GrayText;
-      --accent-primary: Highlight;
-      --accent-primary-fg: HighlightText;
-      --status-danger: Highlight;
-      --status-danger-fg: HighlightText;
-      --focus-ring: Highlight;
-      --shadow-panel: none;
-      --shadow-toast: none;
+      --color-paper: Canvas;
+      --color-paper-2: Canvas;
+      --color-paper-3: ButtonFace;
+      --color-paper-4: ButtonFace;
+      --color-ink: CanvasText;
+      --color-ink-2: CanvasText;
+      --color-muted: GrayText;
+      --color-rule: CanvasText;
+      --color-rule-strong: CanvasText;
+      --color-field-edge: ButtonText;
+      --color-accent: Highlight;
+      --color-accent-hover: Highlight;
+      --color-accent-active: Highlight;
+      --color-accent-deep: Highlight;
+      --color-accent-border: Highlight;
+      --color-accent-ink: HighlightText;
+      --color-focus: Highlight;
+      --color-ok: Highlight;
+      --color-ok-surface: Canvas;
+      --color-ok-border: CanvasText;
+      --color-warn: Highlight;
+      --color-warn-surface: Canvas;
+      --color-warn-border: CanvasText;
+      --color-danger: Highlight;
+      --color-danger-hover: Highlight;
+      --color-danger-active: Highlight;
+      --color-danger-ink: HighlightText;
+      --color-danger-surface: Canvas;
+      --color-danger-border: CanvasText;
+      --color-note-kept: Highlight;
+      --color-note-kept-ink: HighlightText;
+      --color-note-kept-edge: CanvasText;
+      --color-note-adjusted: ButtonFace;
+      --color-note-adjusted-ink: ButtonText;
+      --color-note-selected: Highlight;
+      --color-note-selected-ink: HighlightText;
+      --color-note-selected-ring: CanvasText;
+      --shadow-overlay: none;
     }
   }
 }

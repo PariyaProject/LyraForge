@@ -412,6 +412,31 @@
    - 未用完整 3:45 歌曲跑完 GPU 转谱计时（只跑了 15 秒片段）；
    - 任务进度仍只有粗粒度阶段，暂无按音频比例的 ETA。
 
+---
+
+## 23. Round 21 产品级 UI/UX 全面重设计与跨分辨率验收（2026-11-24）
+
+1. **设计系统与约束落地**：
+   - 新增 [DESIGN.md](../DESIGN.md)（Studio Obsidian + Warm Amber Safelight，OKLCH 令牌层级、4px 间距阶梯、三字重 `400/500/600`、平直细线分割容器规范与 Windows 10/11 WebView2 / DPI / IME 安全基线），并在 [AGENTS.md](../AGENTS.md) § 2 固化前端 UI 维护门禁。
+   - 重构 6 个核心工作区（`HomeView`、`LibraryView`、`TranscribeView`、`StudioView`、`PlaybackView`、`SettingsView`）与全局覆盖层（`App.vue` 左侧导航与底部固定试听传输栏、`QueueDrawer`、`AboutDialog` 原生 `<dialog>`、`ToastStack`、`PianoRollEditor`、`LyreKeyboard`）。
+   - 新增 `apps/desktop/web/src/__tests__/StudioOverlays.spec.ts`（4 项 overlay / dialog / store 预览播放头同步单测）。
+2. **Hallmark 设计审计（`sloplint` 前后对比）**：
+   - 基线（`before`）：`59 FAIL, 45 REFLEX, 17 WARN`。
+   - 终版重设计（`sloplint --kept`）：**`0 FAIL, 0 REFLEX, 13 WARN`**（`EXIT=0`，`links 1/1`、`fields 19/19`、`handlers 93/94` 且仅 1 项音符点击与拖拽统一处理器已登记）。
+3. **实时 FastAPI + Chrome 跨分辨率、High-DPI 与全流程 E2E 实测**：
+   - 覆盖 `1440×900`（6 视图 + 队列抽屉 + 关于弹窗）、`1280×720`（首页 / 编曲工作室 / 演奏控制台）、`1366×768`（本地曲库）、`1920×1080`（编曲工作室）与 `1440×900@2x` 共 **14 次视口采样**：全部 `horizontalOverflowPx == 0`、`hasFooterTransport == true`、`consoleErrors == []`、`pageErrors == []`。
+   - 编曲工作室首屏焦点提升：`1440×900` 下 Piano Roll 从改版前的 `top = 593`（`mainScrollH = 1577 > 802`）提升至 `top = 133`（`mainScrollH = 804 == mainClientH`，占视口 `51.20%`）；`1920×1080` 下占视口 `63.49%`（`1408×935`）。
+   - **10 / 10 项端到端真实交互全过**（本地 MIDI 导入、曲库搜索+打开+版本重命名、内置单音音频转谱完整生命周期、编曲预设+A/B 对比、Piano Roll 拖拽/微调/右键菜单、撤销/重做、跨视图离线试听 Blob 连续播放、Piano Roll 保存新版本、设置保存+4 端 MCP 切换、DryRun 两段确认+暂停/继续/急停）。
+4. **本地全量验证（最终编辑后重新执行 `make check`）**：
+   - `uv run ruff check .` → `All checks passed!`
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **218 passed, 2 warnings in 43.67s**，总覆盖率 **84.36%**。
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 10 passed (10)**。
+   - `pnpm --dir apps/desktop/web build` → `dist/index.html 1.07 kB`、`CSS 50.91 kB`、`JS 204.36 kB`（`926ms`）。
+   - `make smoke` & `desktop --self-check` → 退出码 `0`（DryRun 48 动作，`keys_still_pressed = []`）。
+5. **环境边界（如实标注）**：
+   - 上述跨分辨率与 E2E 验证运行于 macOS Headless Google Chrome + 真实本地 FastAPI 服务（`DryRun` 模拟模式）；Windows 10/11 PyWebView2 真实窗口渲染与 125%/150% DPI、以及《原神》真机 21 键校准与 `SendInput` 演奏仍未在 Windows 实体游戏机完成实测。
+   - 外置工具（`ffmpeg` / `basic-pitch` / `dettato`）当前测试机未安装，转谱 E2E 验证基于内置 `builtin-mono` (YIN) 完成。
+
 
 
 

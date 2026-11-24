@@ -36,12 +36,14 @@ const stageLabel = computed(() => {
   const labels: Record<string, string> = {
     queued: "排队中",
     extracting: "提取音频",
+    analyzing: "分析音高",
+    transcribing: "识别中",
     running: "识别中",
     completed: "已完成",
     failed: "失败",
     cancelled: "已取消",
   };
-  return labels[job.status] ?? job.status;
+  return labels[job.stage ?? ""] ?? labels[job.status] ?? job.stage ?? job.status;
 });
 
 const jobSongTitle = computed(() => {
@@ -54,6 +56,15 @@ async function onSongChange(event: Event): Promise<void> {
   const songId = (event.target as HTMLSelectElement).value;
   if (songId) {
     await props.store.selectTranscribeSong(songId);
+  }
+}
+
+async function onQuickAudioPick(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (file) {
+    await props.store.importDroppedOrPickedFile(file);
+    input.value = "";
   }
 }
 
@@ -70,7 +81,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
       <div>
         <h1 class="view-title">音频转谱</h1>
         <p class="view-subtitle">
-          音频转 MIDI 多引擎管理；高级选项中可使用自然语言辅助编排。
+          从音频或视频提取旋律生成标准 MIDI；转谱识别准确率与后续 21 键可演奏性相互独立评估。
         </p>
       </div>
       <button
@@ -79,14 +90,33 @@ function onAgentKeydown(event: KeyboardEvent): void {
         type="button"
         @click="store.setView('studio')"
       >
-        <StudioIcon name="sliders" />
+        <StudioIcon name="sliders" :size="15" />
         前往编曲工作室
       </button>
     </header>
 
-    <div class="split-2">
-      <div class="card">
-        <div class="card-title-row">
+    <div class="pipeline-stepper" aria-label="转谱流程状态">
+      <div class="pipe-step" :class="{ done: pipelineStage >= 1, current: pipelineStage === 0 }">
+        <StudioIcon :name="pipelineStage >= 1 ? 'check' : 'music'" :size="14" />
+        <span>1. 选择或导入音频</span>
+      </div>
+      <div class="pipe-step" :class="{ done: pipelineStage >= 3, current: pipelineStage === 2 }">
+        <StudioIcon :name="pipelineStage >= 3 ? 'check' : 'sparkles'" :size="14" />
+        <span>2. 引擎音符识别</span>
+      </div>
+      <div class="pipe-step" :class="{ done: pipelineStage >= 4, current: pipelineStage === 3 }">
+        <StudioIcon :name="pipelineStage >= 4 ? 'check' : 'sliders'" :size="14" />
+        <span>3. MIDI 入库校验</span>
+      </div>
+      <div class="pipe-step" :class="{ done: store.arrangements.value.length > 0 }">
+        <StudioIcon :name="store.arrangements.value.length > 0 ? 'check' : 'play'" :size="14" />
+        <span>4. 进入编曲适配</span>
+      </div>
+    </div>
+
+    <div class="split-asymmetric">
+      <div class="pane">
+        <div class="pane-header">
           <h2>音频转 MIDI 转录</h2>
           <span
             class="pill"
@@ -97,7 +127,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
 
         <div class="field">
-          <label for="transcribe-song-select">当前处理曲目</label>
+          <label for="transcribe-song-select">目标转谱曲目（与底部试听播放相互独立）</label>
           <select
             id="transcribe-song-select"
             :value="store.transcribeSongId.value ?? ''"
@@ -111,23 +141,20 @@ function onAgentKeydown(event: KeyboardEvent): void {
           </select>
         </div>
 
-        <div class="pipeline-stepper" aria-label="转谱流程状态">
-          <div class="pipe-step" :class="{ done: pipelineStage >= 1, current: pipelineStage === 0 }">
-            <StudioIcon :name="pipelineStage >= 1 ? 'check' : 'music'" :size="14" />
-            <span>1. 音频源</span>
-          </div>
-          <div class="pipe-step" :class="{ done: pipelineStage >= 3, current: pipelineStage === 2 }">
-            <StudioIcon :name="pipelineStage >= 3 ? 'check' : 'sparkles'" :size="14" />
-            <span>2. 引擎转录</span>
-          </div>
-          <div class="pipe-step" :class="{ done: pipelineStage >= 4, current: pipelineStage === 3 }">
-            <StudioIcon :name="pipelineStage >= 4 ? 'check' : 'sliders'" :size="14" />
-            <span>3. MIDI 入库</span>
-          </div>
-          <div class="pipe-step" :class="{ done: store.arrangements.value.length > 0 }">
-            <StudioIcon :name="store.arrangements.value.length > 0 ? 'check' : 'play'" :size="14" />
-            <span>4. 可编曲</span>
-          </div>
+        <div class="transcribe-upload-row">
+          <span class="muted" style="font-size: 13px">还没有音频曲目？支持直接导入 mp3、wav、mp4 或 m4s</span>
+          <label class="tr-file-btn" for="transcribe-file-input">
+            <StudioIcon name="upload" :size="13" />
+            <span>导入新音频</span>
+            <input
+              id="transcribe-file-input"
+              class="sr-only-input"
+              type="file"
+              accept=".wav,.mp3,.flac,.ogg,.oga,.opus,.m4a,.m4b,.aac,.wma,.aiff,.aif,.m4s,.mp4,.m4v,.mkv,.webm,.mov,.avi,.flv,.wmv,.ts,.m2ts,.mts,.3gp,.mpg,.mpeg,.vob,.ogv"
+              :disabled="store.busy.value"
+              @change="onQuickAudioPick"
+            />
+          </label>
         </div>
 
         <div class="field">
@@ -145,12 +172,12 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
 
         <div v-if="store.selectedEngineInfo.value" class="banner-info">
-          <StudioIcon name="alert" :size="16" />
-          <div>
-            <strong>{{ store.selectedEngineInfo.value.display_name }}</strong> ·
-            许可：<code>{{ store.selectedEngineInfo.value.license }}</code>
-            <div class="muted" style="margin-block-start: 2px">
-              {{ store.selectedEngineInfo.value.scope_note }}
+          <StudioIcon name="info" :size="15" />
+          <div style="min-inline-size: 0">
+            <strong>{{ store.selectedEngineInfo.value.display_name }}</strong>
+            <div class="meta-row" style="margin-block-start: var(--space-3xs)">
+              <code>{{ store.selectedEngineInfo.value.license }}</code>
+              <span>{{ store.selectedEngineInfo.value.scope_note }}</span>
             </div>
           </div>
         </div>
@@ -162,7 +189,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
             :disabled="!store.transcribeHasAudio.value || store.busy.value || !store.selectedEngineInfo.value?.available"
             @click="store.handleStartTranscribe"
           >
-            <StudioIcon name="sparkles" />
+            <StudioIcon name="sparkles" :size="15" />
             开始音频转谱
           </button>
           <button
@@ -171,59 +198,134 @@ function onAgentKeydown(event: KeyboardEvent): void {
             type="button"
             @click="store.handleCancelTranscribe"
           >
-            <StudioIcon name="stop" />
+            <StudioIcon name="stop" :size="15" />
             取消转谱
           </button>
         </div>
-
-        <div
-          v-if="store.activeJob.value"
-          class="view-stack"
-          style="gap: 6px; padding: 10px; border-radius: var(--radius-md); background: var(--bg-canvas); border: 1px solid var(--border-subtle)"
-        >
-          <div class="card-title-row">
-            <strong>任务进度：{{ stageLabel }}</strong>
-            <span class="pill tabular">{{ jobProgressValue }}%</span>
-          </div>
-          <progress max="100" :value="jobProgressValue" aria-label="音频转谱任务进度" />
-          <p class="muted" style="margin: 0">
-            曲目：{{ jobSongTitle }} · 引擎 {{ store.activeJob.value.engine_id }} · 已运行
-            {{ Math.round(store.activeJob.value.elapsed_s ?? 0) }} 秒
-          </p>
-          <p class="muted" style="margin: 0">
-            切换其他歌曲或去播放不会中断本任务；dettato 首次运行要加载模型，3–4 分钟的歌曲可能需要数分钟到十几分钟。
-          </p>
-          <p v-if="store.activeJob.value.transcription" class="muted" style="margin: 0">
-            输出音符数：{{ store.activeJob.value.transcription.note_count }}
-          </p>
-          <div v-if="store.activeJob.value.error" class="banner-error">
-            {{ store.activeJob.value.error.message }}
-          </div>
-        </div>
       </div>
 
+      <div class="pane">
+        <div class="pane-header">
+          <h2>任务状态与输出记录</h2>
+          <span v-if="store.activeJob.value" class="pill tabular">{{ jobProgressValue }}%</span>
+        </div>
+
+        <div v-if="store.activeJob.value" class="job-panel">
+          <div class="pane-header">
+            <strong>{{ stageLabel }}</strong>
+            <span class="muted tabular" style="font-size: 12px">
+              已运行 {{ Math.round(store.activeJob.value.elapsed_s ?? 0) }} 秒
+            </span>
+          </div>
+          <progress max="100" :value="jobProgressValue" aria-label="音频转谱任务进度" />
+          <div class="meta-row">
+            <span>曲目：{{ jobSongTitle }}</span>
+            <span>引擎：{{ store.activeJob.value.engine_id }}</span>
+          </div>
+          <p class="muted" style="margin: 0; font-size: 12px">
+            切换到其他曲目或页面不会中断本任务。dettato 首次运行需加载模型权重，3 到 4 分钟曲目可能需要数分钟。
+          </p>
+          <div v-if="store.activeJob.value.transcription" class="banner-info">
+            <StudioIcon name="check" :size="15" />
+            <span>
+              已完成入库，共识别 <strong>{{ store.activeJob.value.transcription.note_count }}</strong> 个原始音符，可直接前往编曲工作室。
+            </span>
+          </div>
+          <div v-if="store.activeJob.value.error" class="banner-error">
+            <div>
+              <div>{{ store.activeJob.value.error.message }}</div>
+              <div class="muted" style="font-size: 12px; margin-block-start: var(--space-3xs)">
+                建议检查 FFmpeg / 引擎安装路径，或尝试更换内置单音 / Basic Pitch 引擎后重试。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="banner-info">
+          <StudioIcon name="info" :size="15" />
+          <div>
+            <div>
+              当前选中曲目：<strong>{{ store.transcribeSongTitle.value || "未选择" }}</strong>
+            </div>
+            <div class="muted" style="font-size: 12px; margin-block-start: var(--space-3xs)">
+              {{
+                store.transcribeHasAudio.value
+                  ? "已检测到音频或视频源，选择引擎后点击「开始音频转谱」即可提交后台任务。"
+                  : "当前曲目为纯 MIDI 来源，无需 AI 转谱，可直接前往编曲工作室调整指法。"
+              }}
+            </div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <h3 class="subsection-heading">
+            本曲目转谱记录 ({{ store.transcribeTranscriptions.value.length }})
+          </h3>
+          <ul v-if="store.transcribeTranscriptions.value.length > 0" class="line-list">
+            <li v-for="tr in store.transcribeTranscriptions.value" :key="tr.id" class="line-list-row">
+              <div class="meta-row">
+                <span class="pill" :class="tr.status === 'completed' ? 'pill-ok' : ''">
+                  {{ tr.engine }}
+                </span>
+                <span>{{ tr.status }}</span>
+              </div>
+              <span class="tabular" style="font-size: 13px; font-weight: var(--weight-medium)">
+                {{ tr.note_count }} 音符
+              </span>
+            </li>
+          </ul>
+          <p v-else class="muted" style="margin: 0; font-size: 12px">
+            尚无转谱记录；完成后将自动保存为标准 MIDI 供 21 键编曲器使用。
+          </p>
+        </div>
+
+        <div class="section-block" style="padding-block-start: var(--space-sm)">
+          <div class="pane-header">
+            <h3 class="subsection-heading">已支持引擎状态</h3>
+            <button
+              type="button"
+              class="ghost btn-sm"
+              @click="store.setView('settings')"
+            >
+              前往设置安装依赖
+            </button>
+          </div>
+          <ul class="line-list">
+            <li v-for="eng in store.transcribers.value" :key="eng.id" class="line-list-row">
+              <div style="min-inline-size: 0; flex: 1">
+                <div style="font-size: 13px; font-weight: var(--weight-medium)">{{ eng.display_name }}</div>
+                <div class="meta-row">
+                  <code>{{ eng.license }}</code>
+                  <span class="truncate">{{ eng.scope_note }}</span>
+                </div>
+              </div>
+              <span class="pill" :class="eng.available ? 'pill-ok' : 'pill-warn'">
+                {{ eng.available ? "已就绪" : "未安装" }}
+              </span>
+            </li>
+          </ul>
+        </div>
+      </div>
     </div>
 
     <details class="advanced-box">
-        <summary>高级（可选）：自然语言辅助编排</summary>
-        <div class="card">
-          <div class="card-title-row">
-            <h2>自然语言辅助编排</h2>
-            <span class="pill">
-              {{ store.llmEnabledSetting.value ? "可选 HTTP 模型" : "确定性离线规划器" }}
-            </span>
-          </div>
-        <p class="muted" style="margin: 0">
-          离线模式下即可调度本地曲库、转录与 A/B 对比；外网检索仅在授权后抓取明确的 CC / Public Domain 来源。
-        </p>
+      <summary>高级（可选）：自然语言辅助编排</summary>
+      <div class="agent-box-body">
+        <div class="pane-header">
+          <p class="muted" style="margin: 0; font-size: 12px">
+            离线模式下即可调度本地曲库、转录与 A/B 对比；外网检索仅在授权后抓取明确的 CC / Public Domain 来源。
+          </p>
+          <span class="pill">
+            {{ store.llmEnabledSetting.value ? "可选 HTTP 模型" : "确定性离线规划器" }}
+          </span>
+        </div>
 
         <div class="button-row">
           <button
             v-for="preset in AGENT_PRESETS"
             :key="preset"
-            class="ghost"
+            class="ghost btn-sm"
             type="button"
-            style="font-size: 0.76rem; min-block-size: 28px; padding: 3px 10px"
             @click="store.agentPrompt.value = preset"
           >
             {{ preset.slice(0, 16) }}…
@@ -231,7 +333,7 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
 
         <div class="field">
-          <label for="agent-prompt">自然语言任务指令（Enter 提交 · Shift+Enter 换行）</label>
+          <label for="agent-prompt">自然语言任务指令（Enter 提交，Shift+Enter 换行）</label>
           <textarea
             id="agent-prompt"
             v-model="store.agentPrompt.value"
@@ -248,23 +350,23 @@ function onAgentKeydown(event: KeyboardEvent): void {
 
         <div class="button-row">
           <button
-            class="primary"
+            class="secondary"
             type="button"
             :disabled="store.busy.value"
             @click="store.handleRunAgent()"
           >
-            <StudioIcon name="sparkles" />
+            <StudioIcon name="sparkles" :size="14" />
             执行
           </button>
         </div>
 
         <div v-if="store.agentResult.value?.requires_confirmation" class="banner-warn">
-          <StudioIcon name="alert" />
-          <div class="view-stack" style="gap: 8px">
+          <StudioIcon name="alert" :size="15" />
+          <div style="display: flex; flex-direction: column; gap: var(--space-xs)">
             <div>{{ store.agentResult.value.confirmation_prompt ?? store.agentResult.value.message }}</div>
             <div>
               <button
-                class="primary"
+                class="primary btn-sm"
                 type="button"
                 @click="store.handleRunAgent(true)"
               >
@@ -274,18 +376,65 @@ function onAgentKeydown(event: KeyboardEvent): void {
           </div>
         </div>
 
-        <div v-if="store.agentResult.value" class="view-stack" style="gap: 8px">
+        <div v-if="store.agentResult.value" style="display: flex; flex-direction: column; gap: var(--space-xs)">
           <div class="banner-info">
             <strong>执行结果：</strong>
             <span>{{ store.agentResult.value.message }}</span>
           </div>
-          <ol v-if="store.agentResult.value.steps.length > 0" class="agent-steps">
+          <ol v-if="store.agentResult.value.steps.length" class="agent-steps">
             <li v-for="(step, idx) in store.agentResult.value.steps" :key="idx">
-              <code>{{ step.tool }}</code> ({{ step.status }}) — {{ step.detail }}
+              <code>{{ step.tool }}</code> ({{ step.status }}) {{ step.detail }}
             </li>
           </ol>
         </div>
-        </div>
+      </div>
     </details>
   </section>
 </template>
+
+<style scoped>
+.transcribe-upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-paper);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-sm);
+}
+
+.tr-file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-xs);
+  border: var(--rule-hair) solid var(--color-rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-3);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.job-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  background: var(--color-paper);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-sm);
+}
+
+.agent-box-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-block-start: var(--space-sm);
+  padding-block-start: var(--space-sm);
+  border-block-start: var(--rule-hair) solid var(--color-rule);
+}
+</style>
