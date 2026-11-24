@@ -502,3 +502,33 @@
 4. **环境边界（如实标注）**：
    - 本机为 macOS，GitHub `windows-latest` Runner 处于非交互 `runneradmin` 会话，且仅以 `--self-check --check-gui` 验证打包启动门禁；真实 Windows 10/11 桌面双击 `LyraForge.exe` 触发 UAC 提示以及在 `ffmpeg` / `basic-pitch` / `dettato` / `uv` / `nvidia-smi` 执行期间全程无 CMD 黑框闪现，仍待用户在物理 Windows 设备上下载 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 实测确认。
 
+## 27. Round 25：可扩展多流水线转谱与人声主旋律编曲增强验证记录
+
+1. **架构与核心改动**：
+   - **纯无头音乐核心（`src/lyraforge/music_core/`）**：
+     - `cleanup.py`：为 `CleanupOptions` 新增 `merge_vibrato_gap_ms` 与 `min_velocity`（默认调参行为与统计键完全向后兼容），实现 `_merge_vocal_vibrato()` 与多轨合并函数 `merge_stem_scores()`（保留多音轨元信息并分配独立非打击乐通道）；
+     - `arranger.py`：引入 `ArrangerStrategyInfo` 与 `classic` / `vocal_lead` 策略注册表；保留 `classic` 路径完全一致，新增 `vocal_lead` 策略：`_search_transpose_vocal_lead()`（多轨密度归一化约 75% 主旋律权重寻优 + 非对称乐器音域折返计分）、`_map_notes_vocal_lead()`（主旋律天花板压低 + 半音冲突避免与越顶强制折让）与 `_select_vocal_lead_clusters()`（按 `Style.MELODY`/`BALANCED`/`RICH` 差异化人声避让、大于 600ms/300ms 间奏自动放行伴奏、半音冲突单独记为 `DropReason.SEMITONE_DROPPED`，以及单轨轮廓连续性主旋律追踪）；增强人声轨名识别权重（`0.45`）；
+     - `performance.py` & `__init__.py`：`transform_json()` 对 `classic` 默认参数保持原 JSON 指纹（UUIDv5 `arrangement_id` 向后一致），对 `vocal_lead` 或手动 `melody_track` 显式附加区分字段。
+   - **按需隔离源分离与可扩展流水线（`separators/`、`pipelines/`、`toolchain/`）**：
+     - `toolchain/{specs,runtime,gpu,installer}.py`：新增 `demucs` (`4.0.1` + `soundfile`, MIT) 隔离工具定义、NVIDIA CUDA PyTorch 共享安装逻辑与 `LYRAFORGE_DEMUCS_DEVICE` 设备管理；不进入 PyInstaller 打包 ZIP；
+     - `separators/{base,demucs,registry}.py`：`DemucsSeparator` 使用隐藏窗口子进程策略调用隔离 `demucs` 拆出 `vocals` / `drums` / `bass` / `other`，自动剔除 `drums` 并合流 `bass+other` 为去鼓伴奏 `no_drums.wav`；
+     - `transcribers/{base,basic_pitch}.py` + `pipelines/{base,builtin,registry}.py`：扩展 Basic Pitch 可选人声频带/阈值参数，注册 `direct`、`vocal_split_full`（`Vocal Lead` + `Accompaniment` 双角色多轨 MIDI）、`vocal_split_lead` 与 `vocal_split_accomp` 四条独立可切换流水线。
+   - **存储 Schema v4、API、CLI 与桌面对比界面**：
+     - `library/schema.py` & `store.py`：Schema v4 幂等迁移增加 `transcriptions.{pipeline_id, tracks_json}` 与 `arrangements.{transcription_id, arranger_strategy}`；`transcribe_song` 按最终序列化 MIDI 同步分轨索引（SMF Type 1 中曲目轨从 `1` 起算），支持 `get_song_tracks()` 与按 `transcription_id` 指定编曲/编辑传承；
+     - `api/{app,job_service,tool_service}.py` & `cli.py`：新增 `GET /v1/pipelines`、`/v1/separators`、`/v1/arrangers`、`GET /v1/library/songs/{song_id}/tracks` 与 `POST /v1/gpu/install/demucs`，扩展 CLI `--pipeline` / `--vocal-engine` / `--accomp-engine` / `--arranger-strategy` / `--melody-track` / `--transcription-id`；
+     - `apps/desktop/web/src/{api.ts,composables/useLyraStore.ts,views/{Transcribe,Studio,Settings}View.vue}`：遵循 `DESIGN.md` 增加转谱流水线与分声部引擎选择器、同曲多转录结果「以此编曲」跳转、编曲工作室转录版本选择器/编曲策略切换/MIDI 分轨复选框与手动「设为主旋律」覆盖，以及设置页 Demucs CUDA 安装开关。
+2. **本地全量验证（合并前提交 `04260c1`）**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile && make check`：
+     - `uv run ruff check .` → `All checks passed!`
+     - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **241 passed, 2 warnings in 44.51s**，总覆盖率 **84.11%**（覆盖新增 `tests/unit/test_vocal_arranger.py` 6 例、`tests/unit/test_pipelines_and_separators.py` 4 例、分层纯净门禁 `tests/unit/test_layering.py` 10 例、GPU/工具链 `tests/unit/test_gpu_tools.py` 8 例与集成 `tests/integration/test_api.py`）。
+     - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 12 passed (12)**（含新增 `App.spec.ts` `vocal_split_full` 提交、状态轮询、「以此编曲」跳转、工作室版本与 `vocal_lead` 联动、分轨复选框与主旋律覆盖端到端 mock 用例）。
+     - `pnpm --dir apps/desktop/web build`（`vue-tsc --noEmit && vite build`） → `47 modules transformed`，`built in 917ms`。
+     - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.windsong_lyre.v1 (hash verified)`, `actions_sent: 48`, `state: "completed"`）。
+   - `uv run python scripts/eval_transcribers.py`：`builtin-mono` 与 `pipeline_roundtrip`（`ok: true`, `transcribed_notes: 8`, `arranged_events: 8`）通过（本机 macOS 沙盒未预装 `basic-pitch`/`dettato`）。
+3. **GitHub PR 与合并后 CI**：
+   - [PR #26](https://github.com/PariyaProject/LyraForge/pull/26)（`04260c154b1a7f09b40fd4335210a04cfc2eb325`）→ PR CI [Run #45340849334](https://github.com/PariyaProject/LyraForge/actions/runs/45340849334) 全部 4 项活动作业 `success`（`Publish Desktop Releases` 按 PR 条件跳过）；
+   - Squash 合入 `main`（`17f95f49a579a2e43cde77fbd00ffa6171bb71a9`）→ 合并后 CI [Run #45341468839](https://github.com/PariyaProject/LyraForge/actions/runs/45341468839) 全部 5 作业（`Test (macos-latest)`、`Test (windows-latest)`、`Build Windows Bundle`、`Build macOS Bundle`、`Publish Desktop Releases`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 构建。
+4. **环境边界（如实标注）**：
+   - `DemucsSeparator`、`VocalSplitPipeline` 与前端对比流程均在隔离 mock / 合成测试夹具上完成回归验证；由于 CI 与本机 macOS 沙盒未联网安装 `demucs`/`basic-pitch`/`dettato` 及 NVIDIA GPU 驱动，实际在物理 Windows 10/11 环境下首次安装 `demucs` + 下载 `htdemucs` 权重、CUDA GPU 推理速度与多首真实带人声流行歌在游戏琴键上的主观听感对比，仍待用户在新版 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 上实测对比确认。
+   - 本机 `PATH` 未安装 Hallmark `sloplint` CLI，前端按 `DESIGN.md` token（无字面量色值、无嵌套卡片）通过 grep 与人工检查确认。
+
