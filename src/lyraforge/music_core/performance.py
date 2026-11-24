@@ -57,6 +57,8 @@ def transform_json(arr: Arrangement) -> dict[str, Any]:
         doc["vocal_ducking"] = o.vocal_ducking
         doc["melody_ceiling"] = o.melody_ceiling
         doc["anti_clash_semitones"] = o.anti_clash_semitones
+    if str(o.timing_mode) != "adapted":
+        doc["timing_mode"] = str(o.timing_mode)
     return doc
 
 

@@ -34,6 +34,10 @@ class Timing:
     default_key_hold_ms: int
     max_key_hold_ms: int
     provisional: bool = True
+    min_key_release_gap_ms: int = 20
+    min_inter_key_interval_ms: int = 0
+    trigger_mode: str = "one_shot"
+    sustain_decay_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,10 +108,25 @@ def profile_from_dict(data: dict[str, Any]) -> InstrumentProfile:
         if dups:
             sem.append(f"duplicate {attr}: {dups}")
     t = data["timing"]
+    interval_room = max(0, int(t["min_same_key_interval_ms"]) - int(t["min_key_hold_ms"]))
+    default_release_gap = min(20, interval_room)
+    release_gap = int(t.get("min_key_release_gap_ms", default_release_gap))
+    inter_key = int(t.get("min_inter_key_interval_ms", 0))
+    trigger_mode = str(t.get("trigger_mode", "one_shot"))
+    sustain_decay = t.get("sustain_decay_ms")
     if not (t["min_key_hold_ms"] <= t["default_key_hold_ms"] <= t["max_key_hold_ms"]):
         sem.append("timing requires min_key_hold_ms <= default_key_hold_ms <= max_key_hold_ms")
     if t["min_same_key_interval_ms"] < t["min_key_hold_ms"]:
         sem.append("timing requires min_same_key_interval_ms >= min_key_hold_ms")
+    if release_gap < 0 or t["min_key_hold_ms"] + release_gap > t["min_same_key_interval_ms"]:
+        sem.append(
+            "timing requires 0 <= min_key_release_gap_ms and "
+            "min_key_hold_ms + min_key_release_gap_ms <= min_same_key_interval_ms"
+        )
+    if inter_key < 0:
+        sem.append("timing requires min_inter_key_interval_ms >= 0")
+    if trigger_mode not in {"one_shot", "sustained"}:
+        sem.append(f"invalid trigger_mode {trigger_mode!r}")
     if data["supports_sustain"]:
         sem.append("supports_sustain=true is not implemented in arranger v0")
     if sem:
@@ -128,6 +147,10 @@ def profile_from_dict(data: dict[str, Any]) -> InstrumentProfile:
             default_key_hold_ms=t["default_key_hold_ms"],
             max_key_hold_ms=t["max_key_hold_ms"],
             provisional=t.get("provisional", True),
+            min_key_release_gap_ms=release_gap,
+            min_inter_key_interval_ms=inter_key,
+            trigger_mode=trigger_mode,
+            sustain_decay_ms=int(sustain_decay) if sustain_decay is not None else None,
         ),
         supports_sustain=data["supports_sustain"],
         calibration_status=data["calibration"]["status"],
@@ -136,3 +159,14 @@ def profile_from_dict(data: dict[str, Any]) -> InstrumentProfile:
         by_pitch={k.pitch: k for k in keys},
         by_id={k.key_id: k for k in keys},
     )
+
+
+def with_timing_override(profile: InstrumentProfile, **timing_updates: Any) -> InstrumentProfile:
+    """Return a derived InstrumentProfile with updated timing constraints."""
+    raw = json.loads(json.dumps(profile.raw))
+    timing_obj = dict(raw.get("timing") or {})
+    for key, value in timing_updates.items():
+        if value is not None or key == "sustain_decay_ms":
+            timing_obj[key] = value
+    raw["timing"] = timing_obj
+    return profile_from_dict(raw)

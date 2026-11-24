@@ -17,10 +17,12 @@ from lyraforge.library import LibraryStore
 from lyraforge.music_core.performance import validate_performance
 from lyraforge.music_core.profile import InstrumentProfile
 from lyraforge.playback import (
+    LateEventPolicy,
     MonotonicClock,
     PauseToken,
     PlaybackDriver,
     PlaybackMode,
+    PlaybackOptions,
     Player,
     StopToken,
     VirtualClock,
@@ -44,6 +46,8 @@ class _PendingPrepare:
     allowed_processes: tuple[str, ...] | None
     events: list[dict[str, Any]]
     profile: InstrumentProfile
+    playback_options: PlaybackOptions
+    is_calibration: bool = False
 
 
 class PlaybackManager:
@@ -70,13 +74,107 @@ class PlaybackManager:
         realtime: bool = False,
         allowed_window_titles: Sequence[str] | None = None,
         allowed_processes: Sequence[str] | None = None,
+        min_key_release_gap_ms: int | None = None,
+        key_hold_ms: int | None = None,
+        late_event_policy: LateEventPolicy | str = LateEventPolicy.SHIFT_CLOCK,
+        late_threshold_ms: int = 25,
+        record_trace: bool = False,
         store: LibraryStore,
     ) -> dict[str, Any]:
         mode = PlaybackMode(mode)
-        effective_realtime = True if mode == PlaybackMode.WINDOWS else realtime
         doc = store.load_arrangement_performance(arrangement_id)
         profile = load_builtin_profile(str(doc["instrument_profile_id"]))
         validate_performance(doc, profile)
+        return self._prepare_validated_doc(
+            arrangement_id=arrangement_id,
+            doc=doc,
+            profile=profile,
+            mode=mode,
+            realtime=realtime,
+            allowed_window_titles=allowed_window_titles,
+            allowed_processes=allowed_processes,
+            min_key_release_gap_ms=min_key_release_gap_ms,
+            key_hold_ms=key_hold_ms,
+            late_event_policy=late_event_policy,
+            late_threshold_ms=late_threshold_ms,
+            record_trace=record_trace,
+            is_calibration=False,
+        )
+
+    def prepare_events(
+        self,
+        target_id: str,
+        *,
+        doc: dict[str, Any],
+        profile: InstrumentProfile,
+        mode: PlaybackMode = PlaybackMode.DRY_RUN,
+        realtime: bool = False,
+        allowed_window_titles: Sequence[str] | None = None,
+        allowed_processes: Sequence[str] | None = None,
+        min_key_release_gap_ms: int | None = None,
+        key_hold_ms: int | None = None,
+        late_event_policy: LateEventPolicy | str = LateEventPolicy.SHIFT_CLOCK,
+        late_threshold_ms: int = 25,
+        record_trace: bool = True,
+    ) -> dict[str, Any]:
+        """Prepare a standalone validated performance (used by calibration benchmark tier 3)."""
+        mode = PlaybackMode(mode)
+        validate_performance(doc, profile)
+        return self._prepare_validated_doc(
+            arrangement_id=target_id,
+            doc=doc,
+            profile=profile,
+            mode=mode,
+            realtime=realtime,
+            allowed_window_titles=allowed_window_titles,
+            allowed_processes=allowed_processes,
+            min_key_release_gap_ms=min_key_release_gap_ms,
+            key_hold_ms=key_hold_ms,
+            late_event_policy=late_event_policy,
+            late_threshold_ms=late_threshold_ms,
+            record_trace=record_trace,
+            is_calibration=True,
+        )
+
+    def _prepare_validated_doc(
+        self,
+        *,
+        arrangement_id: str,
+        doc: dict[str, Any],
+        profile: InstrumentProfile,
+        mode: PlaybackMode,
+        realtime: bool,
+        allowed_window_titles: Sequence[str] | None,
+        allowed_processes: Sequence[str] | None,
+        min_key_release_gap_ms: int | None,
+        key_hold_ms: int | None,
+        late_event_policy: LateEventPolicy | str,
+        late_threshold_ms: int,
+        record_trace: bool,
+        is_calibration: bool,
+    ) -> dict[str, Any]:
+        effective_realtime = True if mode == PlaybackMode.WINDOWS else realtime
+        rel_gap = (
+            profile.timing.min_key_release_gap_ms
+            if min_key_release_gap_ms is None
+            else int(min_key_release_gap_ms)
+        )
+        min_hold_val = (
+            1
+            if key_hold_ms is None
+            else max(1, min(profile.timing.min_key_hold_ms, int(key_hold_ms)))
+        )
+        try:
+            pb_options = PlaybackOptions(
+                min_key_release_gap_ms=rel_gap,
+                min_key_hold_ms=min_hold_val,
+                key_hold_ms_override=key_hold_ms,
+                late_event_policy=LateEventPolicy(str(late_event_policy)),
+                late_threshold_ms=int(late_threshold_ms),
+                record_trace=bool(record_trace),
+            )
+        except ValueError as exc:
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, str(exc)) from exc
 
         # Verify backend compatibility on the current OS before issuing a token.
         titles = tuple(allowed_window_titles) if allowed_window_titles else None
@@ -106,6 +204,8 @@ class PlaybackManager:
                 allowed_processes=processes,
                 events=list(doc["events"]),
                 profile=profile,
+                playback_options=pb_options,
+                is_calibration=is_calibration,
             )
 
         return {
@@ -118,6 +218,8 @@ class PlaybackManager:
             "duration_ms": doc["duration_ms"],
             "calibration_status": profile.calibration_status,
             "sends_os_input": mode == PlaybackMode.WINDOWS,
+            "min_key_release_gap_ms": pb_options.min_key_release_gap_ms,
+            "late_event_policy": str(pb_options.late_event_policy),
             "risk_notice": (
                 "Dry-run mode simulates playback internally and sends no OS keyboard events."
                 if mode == PlaybackMode.DRY_RUN
@@ -238,9 +340,19 @@ class PlaybackManager:
                         stop_token=stop_token,
                         pause_token=pause_token,
                         emergency_stop_fn=emergency_stop_fn,
+                        options=pending.playback_options,
                     )
-                    result = player.play(pending.events)
-                    if stop_token.reason not in {"library_restore", "server_shutdown"}:
+                    if pending.mode == PlaybackMode.WINDOWS:
+                        from lyraforge.playback.windows import high_resolution_timer
+
+                        with high_resolution_timer(1):
+                            result = player.play(pending.events)
+                    else:
+                        result = player.play(pending.events)
+                    if (
+                        not pending.is_calibration
+                        and stop_token.reason not in {"library_restore", "server_shutdown"}
+                    ):
                         try:
                             with LibraryStore(data_dir) as s:
                                 mode_label = (

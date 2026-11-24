@@ -6,10 +6,14 @@ import {
   type ArrangementRecord,
   type ArrangePresetInfo,
   type ArrangerStrategyInfo,
+  type CalibrationAnalyzeResponse,
+  type CalibrationPatternInfo,
+  type CalibrationRunDryResponse,
   type ComparisonResult,
   type GpuStatus,
   type HealthResponse,
   type HotkeyActionInfo,
+  type LateEventPolicy,
   type PerformanceEventItem,
   type PipelineInfo,
   type PlaybackPrepareResponse,
@@ -20,6 +24,7 @@ import {
   type SongSummary,
   type SongTrackInfo,
   type SourceRecord,
+  type TimingMode,
   type TranscriberInfo,
   type TranscriptionJob,
   type TranscriptionRecord,
@@ -161,6 +166,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const speed = ref(1.0);
   const transposeInput = ref("auto");
   const arpeggiateMs = ref(0);
+  const timingMode = ref<TimingMode>("adapted");
   const selectedArrangerStrategy = ref("classic");
   const selectedTranscriptionId = ref<string | null>(null);
   const songTracks = ref<SongTrackInfo[]>([]);
@@ -178,6 +184,13 @@ export function createLyraStore(api: LyraForgeApi) {
   // Playback
   const playbackMode = ref<"dry-run" | "windows">("dry-run");
   const realtime = ref(true);
+  const lateEventPolicy = ref<LateEventPolicy>("shift_clock");
+  const minKeyReleaseGapInput = ref("");
+  const keyHoldMsInput = ref("");
+  const calibrationPatterns = ref<CalibrationPatternInfo[]>([]);
+  const selectedCalibrationPatternId = ref("same_key_retrigger");
+  const calibrationDryResult = ref<CalibrationRunDryResponse | null>(null);
+  const calibrationAnalyzeResult = ref<CalibrationAnalyzeResponse | null>(null);
   const prepared = ref<PlaybackPrepareResponse | null>(null);
   const playbackStatus = ref<PlaybackStatusResponse | null>(null);
   const queue = ref<QueueState>({ items: [], index: 0, mode: "dry-run", realtime: false });
@@ -879,6 +892,7 @@ export function createLyraStore(api: LyraForgeApi) {
         arpeggiate_ms: Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0))),
         prefer_melody_track: true,
         arranger_strategy: selectedArrangerStrategy.value,
+        timing_mode: timingMode.value,
       };
       if (activeTr?.id) payload.transcription_id = activeTr.id;
       if (includeTracks !== null) payload.include_tracks = includeTracks;
@@ -932,6 +946,7 @@ export function createLyraStore(api: LyraForgeApi) {
           arranger_strategy: "classic",
           include_tracks: includeTracks,
           melody_track: selectedMelodyTrack.value,
+          timing_mode: timingMode.value,
           label: "A · 经典基线",
         },
         variant_b: {
@@ -942,6 +957,7 @@ export function createLyraStore(api: LyraForgeApi) {
           arranger_strategy: "vocal_lead",
           include_tracks: includeTracks,
           melody_track: selectedMelodyTrack.value,
+          timing_mode: timingMode.value,
           label: "B · 主旋律增强",
         },
       });
@@ -1262,15 +1278,28 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  function parseOptionalMs(raw: string, minVal = 0): number | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n < minVal) return null;
+    return Math.round(n);
+  }
+
   async function handlePrepare(): Promise<void> {
     if (!selectedArrId.value) return;
     busy.value = true;
     errorMessage.value = "";
     try {
+      const gap = parseOptionalMs(minKeyReleaseGapInput.value, 0);
+      const hold = parseOptionalMs(keyHoldMsInput.value, 5);
       prepared.value = await api.preparePlayback({
         arrangement_id: selectedArrId.value,
         mode: playbackMode.value,
         realtime: realtime.value,
+        late_event_policy: lateEventPolicy.value,
+        ...(gap !== null ? { min_key_release_gap_ms: gap } : {}),
+        ...(hold !== null ? { key_hold_ms: hold } : {}),
       });
       reportOk("已准备就绪，请核对风险提示后显式确认开始");
     } catch (err) {
@@ -1353,6 +1382,87 @@ export function createLyraStore(api: LyraForgeApi) {
     } catch (err) {
       reportError((err as Error).message);
     }
+  }
+
+  async function refreshCalibrationPatterns(): Promise<void> {
+    if (typeof api.listCalibrationPatterns !== "function") return;
+    const res = await api.listCalibrationPatterns();
+    calibrationPatterns.value = res.patterns;
+    if (
+      res.patterns.length > 0 &&
+      !res.patterns.some((p) => p.id === selectedCalibrationPatternId.value)
+    ) {
+      selectedCalibrationPatternId.value = res.patterns[0].id;
+    }
+  }
+
+  async function handleRunDryCalibration(): Promise<void> {
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      calibrationDryResult.value = await api.runDryCalibration({
+        pattern_id: selectedCalibrationPatternId.value,
+        instrument_profile_id: selectedProfileId.value,
+        realtime: realtime.value,
+      });
+      reportOk(
+        `已完成基准测试 ${calibrationDryResult.value.pattern.code}（漂移 ${calibrationDryResult.value.drift_ms} ms，重触发冲突 ${calibrationDryResult.value.result.retrigger_conflicts_count ?? 0}）`,
+      );
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function handlePrepareCalibration(): Promise<void> {
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      const gap = parseOptionalMs(minKeyReleaseGapInput.value, 0);
+      const hold = parseOptionalMs(keyHoldMsInput.value, 5);
+      prepared.value = await api.prepareCalibration({
+        pattern_id: selectedCalibrationPatternId.value,
+        instrument_profile_id: selectedProfileId.value,
+        mode: playbackMode.value,
+        realtime: realtime.value,
+        late_event_policy: lateEventPolicy.value,
+        ...(gap !== null ? { min_key_release_gap_ms: gap } : {}),
+        ...(hold !== null ? { key_hold_ms: hold } : {}),
+      });
+      reportOk("已生成校准曲谱并完成准备：切入游戏后请点击“2. 确认授权开始”，随后可录制音频上传分析");
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function handleAnalyzeCalibration(file: File): Promise<void> {
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      calibrationAnalyzeResult.value = await api.analyzeCalibrationWav(
+        file,
+        selectedCalibrationPatternId.value,
+        selectedProfileId.value,
+      );
+      reportOk(
+        `录音分析完成：检出 ${calibrationAnalyzeResult.value.matched_onsets}/${calibrationAnalyzeResult.value.expected_onset_clusters} 起音（${Math.round(calibrationAnalyzeResult.value.detection_rate * 100)}%）`,
+      );
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function handleCalibrationWavChange(ev: Event): Promise<void> {
+    const input = ev.target as HTMLInputElement | null;
+    const file = input?.files?.[0] ?? null;
+    if (input) input.value = "";
+    if (!file) return;
+    await handleAnalyzeCalibration(file);
   }
 
   async function refreshQueue(): Promise<void> {
@@ -1598,6 +1708,7 @@ export function createLyraStore(api: LyraForgeApi) {
       await refreshTools();
       await refreshQueue();
       await refreshGpu();
+      await refreshCalibrationPatterns();
       const { settings } = await api.getSettings();
       if (
         settings.default_style === "melody" ||
@@ -1707,6 +1818,7 @@ export function createLyraStore(api: LyraForgeApi) {
     speed,
     transposeInput,
     arpeggiateMs,
+    timingMode,
     previewUrl,
     previewCurrentMs,
     previewDurationMs,
@@ -1717,6 +1829,13 @@ export function createLyraStore(api: LyraForgeApi) {
     soundingKeyIds,
     playbackMode,
     realtime,
+    lateEventPolicy,
+    minKeyReleaseGapInput,
+    keyHoldMsInput,
+    calibrationPatterns,
+    selectedCalibrationPatternId,
+    calibrationDryResult,
+    calibrationAnalyzeResult,
     prepared,
     playbackStatus,
     allowedTitlesSetting,
@@ -1802,6 +1921,11 @@ export function createLyraStore(api: LyraForgeApi) {
     handlePause,
     handleResume,
     handleEmergencyStop,
+    refreshCalibrationPatterns,
+    handleRunDryCalibration,
+    handlePrepareCalibration,
+    handleAnalyzeCalibration,
+    handleCalibrationWavChange,
     initialize,
   };
 }

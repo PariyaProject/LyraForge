@@ -44,6 +44,10 @@
         "min_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 2000},
         "default_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 2000},
         "max_key_hold_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+        "min_key_release_gap_ms": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "min_inter_key_interval_ms": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "trigger_mode": {"enum": ["one_shot", "sustained"]},
+        "sustain_decay_ms": {"type": ["integer", "null"], "minimum": 1, "maximum": 30000},
         "provisional": {"type": "boolean"}
       }
     },
@@ -56,7 +60,8 @@
         "calibration_version": {"type": "integer", "minimum": 0},
         "verified_keys": {"type": "array", "items": {"type": "string"}},
         "sources": {"type": "array", "items": {"type": "string"}},
-        "notes": {"type": "string"}
+        "notes": {"type": "string"},
+        "measured_timing": {"type": "object"}
       }
     }
   }

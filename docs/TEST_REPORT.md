@@ -581,3 +581,27 @@
    - [PR #28](https://github.com/PariyaProject/LyraForge/pull/28)（`71b3aba`）→ PR CI [Run #45383657674](https://github.com/PariyaProject/LyraForge/actions/runs/45383657674) 全部 4 项活动作业 `success`（`Test (windows-latest)`、`Test (macos-latest)`、`Build macOS Bundle (PyInstaller)`、`Build Windows Bundle (PyInstaller)`）；
    - Squash 合入 `main`（`be4f0da`）→ 合并后 CI [Run #45385270232](https://github.com/PariyaProject/LyraForge/actions/runs/45385270232) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已发布双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`LyraForge-dev-20261124-be4f0da-windows-x64.zip`、`LyraForge-dev-20261124-be4f0da-macos-arm64.zip`、`SHA256SUMS.txt`）。
 
+---
+
+## 30. Round 28：演奏时间轴精度、快速琶音/同键重触发修复、高精度调度与三层乐器校准基准
+
+1. **核心修复与架构范围**：
+   - **乐理/编曲时间轴与同键重触发**：[src/lyraforge/music_core/profile.py](../src/lyraforge/music_core/profile.py) 与 Schema 扩展可选 `timing` 字段（`min_key_release_gap_ms=20` 暂定默认值、`min_inter_key_interval_ms=0`、`trigger_mode="one_shot"`、`sustain_decay_ms=None`，保持内置 3 份乐器档案 JSON 原字节与规范 SHA-256 哈希不变）；[src/lyraforge/music_core/arranger.py](../src/lyraforge/music_core/arranger.py) 新增 `TimingMode`（`adapted` / `strict_fidelity`），将 `_cluster_end()` 改为仅对单轨 `<= 4 ms` 真同步音符建簇（保护 `>= 5 ms` 快速上下行琶音不被并入和弦反转），并在 Step 7/8 实现同键紧凑冲突的主旋律优先让位与释放间隙保持时间截断。
+   - **高精度调度与 Win32 热路径**：[src/lyraforge/playback/player.py](../src/lyraforge/playback/player.py) 新增 `LateEventPolicy`（`shift_clock` / `drop_late` / `catch_up`）、确定性同键防重叠修复 `expand_events_with_stats()`、和弦同组批量下发、`active_seq_by_key` 防旧事件误杀、实时 `last_up_at` 间隙守护及 `P50/P95/P99/Max/late_events/retrigger_conflicts` 遥测；[src/lyraforge/playback/clock.py](../src/lyraforge/playback/clock.py) 分离粗眠与亚毫秒两级等待；[src/lyraforge/playback/windows/timer.py](../src/lyraforge/playback/windows/timer.py)、[win32_types.py](../src/lyraforge/playback/windows/win32_types.py)、[driver.py](../src/lyraforge/playback/windows/driver.py)、[game_window.py](../src/lyraforge/playback/windows/game_window.py) 实现 `winmm.timeBeginPeriod(1)`、Win32 结构体与 `user32` `@cache`、原子批量 `SendInput` 及其失败回滚保护、焦点轮询 `include_elevation=False` 与有界 PID 缓存。
+   - **三层校准引擎、CLI、MCP 与精简 UI**：[src/lyraforge/playback/calibration.py](../src/lyraforge/playback/calibration.py) 实现 7 组测试序列（A–G）、3 级校准（`dry_run_virtual` / `realtime_scheduler` / 沿用两步确认的 `in_game_prepare` + WAV 起音与余音衰减分析），同步接入 [api/app.py](../src/lyraforge/api/app.py)、[api/playback_service.py](../src/lyraforge/api/playback_service.py)、[cli.py](../src/lyraforge/cli.py)（`lyraforge calibrate`）、[mcp/tools.py](../src/lyraforge/mcp/tools.py) 与桌面端 `StudioView.vue` / `PlaybackView.vue`。
+2. **`scripts/eval_playback.py` 专项实测基准（macOS 本地运行）**：
+   - **5–100 ms 下行琶音矩阵**：`1x` 倍速下 `BALANCED (arpeggiate_ms=12)` 与 `MELODY` 在 **9/9** 间隔（`5, 10, 15, 20, 30, 40, 50, 75, 100 ms`）均完整保留 6/6 音且音序与时刻精确一致；`2x` 倍速在 `10–100 ms` 全部精确保序（`5 ms @ 2x` 压缩为 `2.5 ms` 进入 `<= 4 ms` 同步和弦窗）。
+   - **同键连击与跨轨让位**：连奏重复实测最小释放间隙 `20 ms`（原为 `0 ms`）；`Accomp @ 0 ms` 与 `Vocal @ 15 ms` 同键冲突中，主旋律轨 `track 0` 胜出（`melody_retrigger_replacements = 1`）。
+   - **100 ms 系统卡顿恢复策略对照**：`catch_up` 在卡顿后将 4 音压缩至 `120 ms` 并发和弦；`shift_clock` 输出 `[0, 120, 150, 180, 210]`（`clock_shifts_count = 1`，保留 `30 ms` 相对琶音节奏）；`drop_late` 丢弃 3 个滞后音符避免爆发错音。
+   - **Tier 2 实时 `MonotonicClock`（macOS Apple Silicon, `DryRunDriver`）**：
+     - `distinct_key_rapid`（36 音）：`drift = 0.031 ms`，`CPU = 2.02%`，`P50 = 0.023 ms`，`P95 = 0.086 ms`，`Max = 2.394 ms`，`overlapping_key_downs = 0`；
+     - `same_key_retrigger`（32 音）：`drift = 0.131 ms`，`CPU = 1.39%`，`P50 = 0.030 ms`，`P95 = 1.025 ms`，`Max = 2.432 ms`，`min_observed_release_gap = 20.002 ms`；
+     - `chord_simultaneous`（20 音）：`drift = 0.306 ms`，`CPU = 0.88%`，`P50 = 0.031 ms`，`P95 = 0.246 ms`；
+     - `rapid_arpeggio`（60 音）：`drift = 0.116 ms`，`CPU = 1.95%`，`P50 = 0.029 ms`，`P95 = 0.201 ms`；
+     - `hold_release_sweep`（21 音）：`drift = 0.165 ms`，`CPU = 1.83%`，`P50 = 0.015 ms`，`P95 = 0.052 ms`，`min_observed_release_gap = 10.019 ms`；
+     - `long_stability`（3.0s / 33 音）：`drift = 0.096 ms`，`CPU = 1.95%`，`P50 = 0.027 ms`，`P95 = 0.305 ms`，`Max = 1.292 ms`。
+   - **合成 PCM WAV 校准解析往返**：Pattern B（`+60 ms` 偏移、屏蔽 `<60 ms` 连击）测得 `offset = 58.0 ms`、`detection_rate = 0.8125`、推荐 `min_same_key_interval_ms = 60`；Pattern G 准确区分 `one_shot`（短按衰减 `115.0 ms` vs 长按 `118.3 ms`）与 `sustained`（`91.7 ms` vs `365.0 ms`）。
+3. **验证边界与实机待确认项**：
+   - 上述测试在 macOS `DryRunDriver`、虚拟时间膨胀/暂停时钟、Win32 API/winmm Mock 及合成 WAV 夹具上完成；`min_same_key_interval_ms=50`、`min_key_hold_ms=20`、`min_key_release_gap_ms=20`、`trigger_mode="one_shot"` 均明确标注 `provisional: true`。在物理 Windows 10/11 运行《原神》游戏客户端时不同琴种的真实最小发声保持时间、同键连击帧上限与多键同步上限，仍待维护者使用本轮 `lyraforge calibrate prepare` / 桌面校准面板实机录制 WAV 完成实测校准。
+
+

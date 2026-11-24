@@ -10,6 +10,7 @@ from lyraforge.music_core.arranger import (
     Arrangement,
     ArrangeOptions,
     ArrangerStrategyInfo,
+    TimingMode,
     arrange,
     detect_melody_track,
     get_arranger_strategy,
@@ -31,7 +32,13 @@ from lyraforge.music_core.midi_export import (
 from lyraforge.music_core.midi_import import ImportLimits, load_midi_file, parse_midi_bytes
 from lyraforge.music_core.models import NormalizedScore, Note, TimeSignature, TrackInfo
 from lyraforge.music_core.performance import build_performance, validate_performance
-from lyraforge.music_core.profile import InstrumentProfile, KeyDef, profile_from_dict
+from lyraforge.music_core.profile import (
+    InstrumentProfile,
+    KeyDef,
+    Timing,
+    profile_from_dict,
+    with_timing_override,
+)
 from lyraforge.music_core.scoring import (
     QualityBreakdown,
     TranscriptionAccuracy,
@@ -58,6 +65,8 @@ __all__ = [
     "TempoChange",
     "TempoMap",
     "TimeSignature",
+    "Timing",
+    "TimingMode",
     "TrackInfo",
     "TranscriptionAccuracy",
     "VOCAL_CLEANUP_PRESETS",
@@ -82,4 +91,5 @@ __all__ = [
     "score_to_midi_bytes",
     "validate_performance",
     "vocal_cleanup_options",
+    "with_timing_override",
 ]

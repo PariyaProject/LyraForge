@@ -360,6 +360,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "max_chord_keys": {"type": "integer", "minimum": 1, "maximum": 32},
                 "chord_window_ms": {"type": "integer", "minimum": 0, "maximum": 200, "default": 20},
                 "arpeggiate_ms": {"type": "integer", "minimum": 0, "maximum": 60, "default": 0},
+                "timing_mode": {
+                    "type": "string",
+                    "enum": ["adapted", "strict_fidelity"],
+                    "default": "adapted",
+                },
                 "label": {"type": "string"},
                 "task_id": {"type": "string"},
             },
@@ -987,6 +992,7 @@ class MCPToolExecutor:
             vocal_ducking=bool(args.get("vocal_ducking", True)),
             melody_ceiling=bool(args.get("melody_ceiling", True)),
             anti_clash_semitones=bool(args.get("anti_clash_semitones", True)),
+            timing_mode=str(args.get("timing_mode") or "adapted"),
         )
         transcription_id = (
             str(args["transcription_id"]).strip() if args.get("transcription_id") else None

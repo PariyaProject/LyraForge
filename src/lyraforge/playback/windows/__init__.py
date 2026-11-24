@@ -14,10 +14,12 @@ from lyraforge.playback.windows.game_window import (
     is_process_elevated,
     process_name_for_pid,
 )
+from lyraforge.playback.windows.timer import high_resolution_timer
 from lyraforge.playback.windows.win32_types import (
     KeyInputSpec,
     build_key_input_spec,
     is_escape_pressed_win32,
+    send_key_inputs_win32,
 )
 from lyraforge.playback.windows.window_guard import (
     DEFAULT_ALLOWED_TITLES,
@@ -35,7 +37,9 @@ __all__ = [
     "current_process_elevated",
     "elevation_blocker",
     "get_foreground_window_info",
+    "high_resolution_timer",
     "is_escape_pressed_win32",
     "is_process_elevated",
     "process_name_for_pid",
+    "send_key_inputs_win32",
 ]

@@ -5,6 +5,12 @@ All notable user-facing changes to LyraForge are documented in this file.
 ## [Unreleased] — 0.1.0-alpha
 
 ### Fixed
+- **Arpeggio pitch order fidelity, same-key release gaps & scheduler stall protection**: prevented `_cluster_end()` in `arranger.py` from grouping rapid sequential arpeggios (`>= 5 ms` per track) into chords (fixing descending pitch inversions and dropped melody notes across `5–100 ms` arpeggios); prioritized higher-priority melody tracks over accompanying holds during tight same-key collisions; enforced configurable `min_key_release_gap_ms` (`20 ms` provisional default for Windsong/Floral/Vintage, `0 ms` raw preservation option via `timing_mode="strict_fidelity"`); repaired overlapping `(down, up)` key actions deterministically inside `expand_events_with_stats()` with real-time `last_up_at` gap enforcement, `active_seq_by_key` pause safety, atomic batch chord `SendInput` (`key_down_batch` / `key_up_batch`), `winmm.timeBeginPeriod(1)` (`high_resolution_timer`), bounded PID cache / light focus polling, two-tier sub-ms `MonotonicClock` waits, and late-event recovery policies (`shift_clock`, `drop_late`, `catch_up`) with P50/P95/P99 latency telemetry.
+
+### Added
+- **Three-tier Instrument Benchmark & Calibration Suite (Patterns A–G + WAV Analysis)**: added `src/lyraforge/playback/calibration.py`, `/v1/calibration/{patterns,run-dry,prepare,analyze}`, `lyraforge calibrate {list,run,analyze}`, `scripts/eval_playback.py`, Studio `时序适配策略` & timing adjustment summary, and Playback diagnostics + collapsible calibration workflow (supporting VirtualClock Dry-Run, realtime `MonotonicClock` jitter benchmarks, user-authorized Windows two-step calibration sequence playback, and PCM WAV onset/offset/`one_shot`-vs-`sustained` decay analysis).
+
+### Fixed
 - **Studio Piano Roll full-length timeline, track selection persistence & live GPU cache refresh**: removed the hardcoded `4800px` (`60s` @ 100% zoom) canvas cap in `PianoRollEditor.vue` so grid lines and ruler ticks render across the entire song duration; stopped resetting MIDI track checkboxes and `melody_track` pins after arranging, A/B comparing, or saving manual Piano Roll edits; cleared stale in-memory `_DEVICE_CACHE` in `demucs.py` and `dettato.py` immediately after installing CUDA PyTorch or switching devices so GPU vocal separation takes effect without restarting; and updated Settings GPU status badges to display `dettato` and `Demucs` independent PyTorch environments side-by-side.
 
 ### Added

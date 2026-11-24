@@ -40,10 +40,16 @@ def _require_windows() -> None:
         )
 
 
+_PID_NAME_CACHE: dict[int, str] = {}
+
+
 def process_name_for_pid(pid: int) -> str:
     """Return the executable file name for ``pid`` (empty when it cannot be read)."""
     if pid <= 0:
         return ""
+    cached = _PID_NAME_CACHE.get(pid)
+    if cached is not None:
+        return cached
     _require_windows()
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
@@ -54,7 +60,11 @@ def process_name_for_pid(pid: int) -> str:
         buffer = ctypes.create_unicode_buffer(size.value)
         if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
             return ""
-        return Path(buffer.value).name
+        name = Path(buffer.value).name
+        if len(_PID_NAME_CACHE) >= 64:
+            _PID_NAME_CACHE.clear()
+        _PID_NAME_CACHE[pid] = name
+        return name
     finally:
         kernel32.CloseHandle(handle)
 
@@ -94,7 +104,7 @@ def current_process_elevated() -> bool | None:
     return is_process_elevated(os.getpid())
 
 
-def get_foreground_window_info() -> ForegroundWindowInfo:
+def get_foreground_window_info(*, include_elevation: bool = True) -> ForegroundWindowInfo:
     """Return the foreground window's handle, PID, process name, title and elevation."""
     _require_windows()
     user32 = ctypes.windll.user32
@@ -111,7 +121,11 @@ def get_foreground_window_info() -> ForegroundWindowInfo:
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         title = str(buffer.value)
     process_name = process_name_for_pid(pid.value)
-    elevated = is_process_elevated(pid.value) if process_name else None
+    elevated = (
+        is_process_elevated(pid.value)
+        if include_elevation and process_name
+        else None
+    )
     return ForegroundWindowInfo(hwnd, int(pid.value), process_name, title, elevated)
 
 

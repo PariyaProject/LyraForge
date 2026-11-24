@@ -317,6 +317,97 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       keys_still_pressed: [],
       last_result: null,
     }),
+    listCalibrationPatterns: vi.fn().mockResolvedValue({
+      patterns: [
+        {
+          id: "same_key_retrigger",
+          code: "B",
+          display_name: "B · 同键重复触发（30–150 ms 阶梯）",
+          description: "对单键 mid_1 连击",
+          default_duration_s: null,
+        },
+        {
+          id: "rapid_arpeggio",
+          code: "D",
+          display_name: "D · 快速上下行琶音（10–50 ms 音序）",
+          description: "验证快速琶音顺序",
+          default_duration_s: null,
+        },
+      ],
+    }),
+    runDryCalibration: vi.fn().mockResolvedValue({
+      tier: "realtime_scheduler",
+      verifies_game_audio: false,
+      notice: "Dry-Run 基准仅验证事件时间轴",
+      pattern: {
+        id: "same_key_retrigger",
+        code: "B",
+        display_name: "B · 同键重复触发（30–150 ms 阶梯）",
+        description: "对单键 mid_1 连击",
+        default_duration_s: null,
+      },
+      instrument_profile_id: "genshin.windsong_lyre.v1",
+      timing_profile: { min_key_release_gap_ms: 20 },
+      expected_events: 18,
+      expected_duration_ms: 1800,
+      actual_elapsed_ms: 1801.2,
+      drift_ms: 1.2,
+      cpu_pct: 0.4,
+      result: {
+        state: "completed",
+        actions_sent: 36,
+        actions_total: 36,
+        elapsed_ms: 1801.2,
+        stop_reason: null,
+        error: null,
+        p50_lateness_ms: 0.08,
+        p95_lateness_ms: 0.31,
+        max_lateness_ms: 0.45,
+        retrigger_conflicts_count: 0,
+      },
+      log_verification: {
+        down_count: 18,
+        first_12_keys: ["mid_1"],
+        overlapping_key_downs: 0,
+        min_observed_release_gap_ms: 20.0,
+      },
+      segments: [],
+    }),
+    prepareCalibration: vi.fn().mockResolvedValue({
+      prepare_token: "cal-tok-1",
+      expires_in_s: 60,
+      arrangement_id: "calibration:same_key_retrigger",
+      mode: "dry-run",
+      realtime: true,
+      event_count: 18,
+      duration_ms: 1800,
+      calibration_status: "unverified",
+      sends_os_input: false,
+      risk_notice: "Calibration dry-run",
+      pattern: {
+        id: "same_key_retrigger",
+        code: "B",
+        display_name: "B · 同键重复触发（30–150 ms 阶梯）",
+        description: "对单键 mid_1 连击",
+        default_duration_s: null,
+      },
+      segments: [],
+    }),
+    analyzeCalibrationWav: vi.fn().mockResolvedValue({
+      measurement_basis: "recorded_audio_onset_analysis",
+      pattern_id: "same_key_retrigger",
+      sample_rate: 44100,
+      duration_ms: 2200,
+      estimated_offset_ms: 58.5,
+      expected_onset_clusters: 18,
+      detected_onsets_total: 15,
+      matched_onsets: 15,
+      detection_rate: 0.8333,
+      mean_abs_error_ms: 6.2,
+      max_abs_error_ms: 14.0,
+      segments: [],
+      suggested_timing: { min_same_key_interval_ms: 60, provisional: false },
+    }),
     submitTranscribeJob: vi.fn().mockResolvedValue({
       job: {
         id: "job-1",
@@ -1271,5 +1362,150 @@ describe("App", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("dettato: CUDA 可用");
     expect(wrapper.text()).toContain("Demucs: CPU 推理");
+  });
+
+  it("wires timing_mode in Studio, scheduler timing options & diagnostics in Playback, and Benchmark A-G calibration", async () => {
+    const stub = makeStubApi("midi");
+    vi.mocked(stub.getArrangement).mockResolvedValue({
+      arrangement: {
+        id: "arr-1",
+        song_id: "song-1",
+        profile_id: "genshin.windsong_lyre.v1",
+        style: "balanced",
+        speed: 1.0,
+        transpose: 0,
+        arranger_strategy: "classic",
+        playable_ratio: 1.0,
+        event_count: 8,
+        duration_ms: 4000,
+        preview_path: null,
+        is_favorite: false,
+        user_vote: 0,
+        score: 94.0,
+        label: "均衡版",
+        created_at: "2026-11-24T00:00:00Z",
+      },
+      performance: {
+        arrangement_id: "arr-1",
+        duration_ms: 4000,
+        events: [{ at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40 }],
+      },
+      report: {
+        calibration_status: "unverified",
+        stats: {
+          emitted_events: 8,
+          considered_notes: 8,
+          octave_folded: 0,
+          semitone_substituted: 0,
+          playable_ratio: 1.0,
+          timing_mode: "adapted",
+          timing_adjustments: {
+            arpeggiated_events: 3,
+            melody_retrigger_replacements: 1,
+            hold_shortened_for_retrigger: 2,
+          },
+        },
+        quality: {
+          overall_score: 94.0,
+          melody_preservation: 1.0,
+          rhythmic_fidelity: 0.98,
+          pitch_contour_preservation: 1.0,
+          harmonic_coherence: 0.95,
+          missing_note_penalty: 0,
+          dense_key_conflict_penalty: 0,
+          large_leap_penalty: 0,
+          warnings: [],
+        },
+      },
+    });
+    vi.mocked(stub.playbackStatus).mockResolvedValue({
+      state: "completed",
+      session_id: "sess-1",
+      arrangement_id: "arr-1",
+      mode: "dry-run",
+      sends_os_input: false,
+      keys_still_pressed: [],
+      last_result: {
+        state: "completed",
+        actions_sent: 16,
+        actions_total: 16,
+        elapsed_ms: 4001.0,
+        stop_reason: null,
+        error: null,
+        p50_lateness_ms: 0.12,
+        p95_lateness_ms: 0.42,
+        max_lateness_ms: 0.78,
+        late_events_count: 1,
+        clock_shifts_count: 1,
+        retrigger_conflicts_count: 2,
+      },
+    });
+
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "编曲工作室");
+    await flushPromises();
+
+    // Studio timing adjustments rendered and timing_mode selector forwarded
+    expect(wrapper.text()).toContain("和弦自动琶音 3");
+    expect(wrapper.text()).toContain("同键让位主旋律 1");
+    expect(wrapper.text()).toContain("释放间隙缩短保持 2");
+
+    await wrapper.find("#studio-timing-mode").setValue("strict_fidelity");
+    await flushPromises();
+    const arrangeBtn = wrapper.findAll("button").find((b) => b.text().includes("生成改编版本"))!;
+    await arrangeBtn.trigger("click");
+    await flushPromises();
+    expect(stub.arrangeSong).toHaveBeenCalledWith(
+      expect.objectContaining({ timing_mode: "strict_fidelity" }),
+    );
+
+    // Playback timing telemetry, overrides & Benchmark A-G calibration
+    await clickNav(wrapper, "试听与演奏");
+    await flushPromises();
+    expect(wrapper.text()).toContain("0.12 / 0.42 / 0.78 ms");
+    expect(wrapper.text()).toContain("同键冲突修复: 2");
+
+    await wrapper.find("#playback-late-policy").setValue("drop_late");
+    await wrapper.find("#playback-release-gap").setValue("25");
+    await wrapper.find("#playback-key-hold").setValue("35");
+    const prepBtn = wrapper.findAll("button").find((b) => b.text().includes("1. 准备演奏"))!;
+    await prepBtn.trigger("click");
+    await flushPromises();
+    expect(stub.preparePlayback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        late_event_policy: "drop_late",
+        min_key_release_gap_ms: 25,
+        key_hold_ms: 35,
+      }),
+    );
+
+    await wrapper.find("#calibration-pattern-select").setValue("rapid_arpeggio");
+    const runCalBtn = wrapper.findAll("button").find((b) => b.text().includes("运行调度基准"))!;
+    await runCalBtn.trigger("click");
+    await flushPromises();
+    expect(stub.runDryCalibration).toHaveBeenCalledWith(
+      expect.objectContaining({ pattern_id: "rapid_arpeggio" }),
+    );
+    expect(wrapper.text()).toContain("realtime_scheduler");
+    expect(wrapper.text()).toContain("重叠按键 0");
+
+    const prepCalBtn = wrapper.findAll("button").find((b) => b.text().includes("准备实机校准序列"))!;
+    await prepCalBtn.trigger("click");
+    await flushPromises();
+    expect(stub.prepareCalibration).toHaveBeenCalledWith(
+      expect.objectContaining({ pattern_id: "rapid_arpeggio" }),
+    );
+    const startCalBtn = wrapper.findAll("button").find((b) => b.text().includes("2. 确认授权开始"))!;
+    expect(startCalBtn.attributes("disabled")).toBeUndefined();
+
+    const fileInput = wrapper.find("#calibration-wav-file").element as HTMLInputElement;
+    const wavFile = new File([new Uint8Array(64)], "cal.wav", { type: "audio/wav" });
+    Object.defineProperty(fileInput, "files", { value: [wavFile], configurable: true });
+    await wrapper.find("#calibration-wav-file").trigger("change");
+    await flushPromises();
+    expect(stub.analyzeCalibrationWav).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("15 / 18");
+    expect(wrapper.text()).toContain("58.5 ms");
   });
 });
