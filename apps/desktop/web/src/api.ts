@@ -317,10 +317,25 @@ export interface ArrangementDetailResponse {
       max_chord_size?: number;
       melody_track?: number | null;
       arranger_strategy?: string;
+      timing_mode?: TimingMode;
+      timing_adjustments?: {
+        arpeggiated_events?: number;
+        melody_retrigger_replacements?: number;
+        hold_shortened_for_retrigger?: number;
+        inter_key_adjusted?: number;
+        min_same_key_interval_ms?: number;
+        min_key_release_gap_ms?: number;
+        min_inter_key_interval_ms?: number;
+        trigger_mode?: string;
+        timing_provisional?: boolean;
+      };
     };
     quality?: QualityBreakdown;
   } | null;
 }
+
+export type TimingMode = "adapted" | "strict_fidelity";
+export type LateEventPolicy = "shift_clock" | "drop_late" | "catch_up";
 
 export interface PlaybackPrepareResponse {
   prepare_token: string;
@@ -349,7 +364,70 @@ export interface PlaybackStatusResponse {
     elapsed_ms: number;
     stop_reason: string | null;
     error: string | null;
+    p50_lateness_ms?: number;
+    p95_lateness_ms?: number;
+    p99_lateness_ms?: number;
+    max_lateness_ms?: number;
+    mean_lateness_ms?: number;
+    late_events_count?: number;
+    late_events_dropped?: number;
+    clock_shifts_count?: number;
+    total_clock_shift_ms?: number;
+    retrigger_conflicts_count?: number;
+    late_event_policy?: LateEventPolicy;
+    min_key_release_gap_ms?: number;
   } | null;
+}
+
+export interface CalibrationPatternInfo {
+  id: string;
+  code: string;
+  display_name: string;
+  description: string;
+  default_duration_s: number | null;
+}
+
+export interface CalibrationRunDryResponse {
+  tier: "dry_run_virtual" | "realtime_scheduler";
+  verifies_game_audio: boolean;
+  notice: string;
+  pattern: CalibrationPatternInfo;
+  instrument_profile_id: string;
+  timing_profile: Record<string, unknown>;
+  expected_events: number;
+  expected_duration_ms: number;
+  actual_elapsed_ms: number;
+  drift_ms: number;
+  cpu_pct: number;
+  result: NonNullable<PlaybackStatusResponse["last_result"]>;
+  log_verification: {
+    down_count: number;
+    first_12_keys: string[];
+    overlapping_key_downs: number;
+    min_observed_release_gap_ms: number | null;
+  };
+  segments: Array<Record<string, unknown>>;
+}
+
+export interface CalibrationPrepareResponse extends PlaybackPrepareResponse {
+  pattern: CalibrationPatternInfo;
+  segments: Array<Record<string, unknown>>;
+}
+
+export interface CalibrationAnalyzeResponse {
+  measurement_basis: string;
+  pattern_id: string;
+  sample_rate: number;
+  duration_ms: number;
+  estimated_offset_ms: number;
+  expected_onset_clusters: number;
+  detected_onsets_total: number;
+  matched_onsets: number;
+  detection_rate: number;
+  mean_abs_error_ms: number | null;
+  max_abs_error_ms: number | null;
+  segments: Array<Record<string, unknown>>;
+  suggested_timing: Record<string, unknown>;
 }
 
 export interface ApiClientConfig {
@@ -643,6 +721,7 @@ export class LyraForgeApi {
     vocal_ducking?: boolean;
     melody_ceiling?: boolean;
     anti_clash_semitones?: boolean;
+    timing_mode?: TimingMode;
     label?: string | null;
   }): Promise<{ arrangement: ArrangementRecord }> {
     return this.request("/v1/jobs/arrange", {
@@ -664,6 +743,7 @@ export class LyraForgeApi {
       arranger_strategy?: string;
       include_tracks?: number[] | null;
       melody_track?: number | null;
+      timing_mode?: TimingMode;
       label?: string;
     };
     variant_b?: {
@@ -674,6 +754,7 @@ export class LyraForgeApi {
       arranger_strategy?: string;
       include_tracks?: number[] | null;
       melody_track?: number | null;
+      timing_mode?: TimingMode;
       label?: string;
     };
   }): Promise<{
@@ -764,12 +845,67 @@ export class LyraForgeApi {
     arrangement_id: string;
     mode: "dry-run" | "windows";
     realtime: boolean;
+    min_key_release_gap_ms?: number | null;
+    key_hold_ms?: number | null;
+    late_event_policy?: LateEventPolicy;
+    late_threshold_ms?: number;
+    record_trace?: boolean;
   }): Promise<PlaybackPrepareResponse> {
     return this.request("/v1/playback/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+  }
+
+  listCalibrationPatterns(): Promise<{ patterns: CalibrationPatternInfo[] }> {
+    return this.request("/v1/calibration/patterns");
+  }
+
+  runDryCalibration(payload: {
+    pattern_id: string;
+    instrument_profile_id?: string;
+    realtime?: boolean;
+    duration_s?: number | null;
+  }): Promise<CalibrationRunDryResponse> {
+    return this.request("/v1/calibration/run-dry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  prepareCalibration(payload: {
+    pattern_id: string;
+    instrument_profile_id?: string;
+    mode: "dry-run" | "windows";
+    realtime?: boolean;
+    duration_s?: number | null;
+    min_key_release_gap_ms?: number | null;
+    key_hold_ms?: number | null;
+    late_event_policy?: LateEventPolicy;
+  }): Promise<CalibrationPrepareResponse> {
+    return this.request("/v1/calibration/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  analyzeCalibrationWav(
+    file: File,
+    patternId: string,
+    instrumentProfileId?: string,
+    toleranceMs = 45,
+  ): Promise<CalibrationAnalyzeResponse> {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("pattern_id", patternId);
+    if (instrumentProfileId) {
+      fd.append("instrument_profile_id", instrumentProfileId);
+    }
+    fd.append("tolerance_ms", String(toleranceMs));
+    return this.request("/v1/calibration/analyze", { method: "POST", body: fd });
   }
 
   startPlayback(

@@ -42,6 +42,11 @@ class SemitonePolicy(StrEnum):
     DROP = "drop"
 
 
+class TimingMode(StrEnum):
+    ADAPTED = "adapted"
+    STRICT_FIDELITY = "strict_fidelity"
+
+
 class Adjustment(StrEnum):
     OCTAVE_FOLDED = "octave_folded"
     SEMITONE_SUBSTITUTED = "semitone_substituted"
@@ -134,6 +139,7 @@ class ArrangeOptions:
     vocal_ducking: bool = True
     melody_ceiling: bool = True
     anti_clash_semitones: bool = True
+    timing_mode: str = TimingMode.ADAPTED
 
     def validate(self) -> None:
         problems: list[str] = []
@@ -156,6 +162,8 @@ class ArrangeOptions:
             problems.append(f"unknown arranger_strategy: {self.arranger_strategy!r}")
         if self.melody_track is not None and self.melody_track < 0:
             problems.append("melody_track must be >= 0")
+        if self.timing_mode not in {m.value for m in TimingMode}:
+            problems.append(f"unknown timing_mode: {self.timing_mode!r}")
         if problems:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "invalid arrange options",
                             {"problems": problems})
@@ -665,6 +673,67 @@ def _pick_balanced_voices(
     return picked
 
 
+_CHORD_SIMULTANEOUS_TOLERANCE_MS = 4
+
+
+def _cluster_end(
+    deduped: list[_Cand],
+    start_idx: int,
+    chord_window_ms: int,
+    *,
+    strict_fidelity: bool,
+) -> int:
+    start = deduped[start_idx].at_ms
+    if strict_fidelity or chord_window_ms <= 0:
+        j = start_idx + 1
+        while j < len(deduped) and deduped[j].at_ms == start:
+            j += 1
+        return j
+    track_first_at: dict[int, int] = {deduped[start_idx].note.track: start}
+    j = start_idx + 1
+    while j < len(deduped):
+        cand = deduped[j]
+        if cand.at_ms - start > chord_window_ms:
+            break
+        prev_first = track_first_at.get(cand.note.track)
+        if (
+            prev_first is not None
+            and cand.at_ms - prev_first > _CHORD_SIMULTANEOUS_TOLERANCE_MS
+        ):
+            break
+        track_first_at.setdefault(cand.note.track, cand.at_ms)
+        j += 1
+    return j
+
+
+def _apply_arpeggiate(kept_cluster: list[_Cand], arpeggiate_ms: int) -> int:
+    """Stagger simultaneous sub-chords without reordering rapid sequential arpeggios."""
+    if arpeggiate_ms <= 0 or len(kept_cluster) <= 1:
+        return 0
+    ordered = sorted(kept_cluster, key=lambda c: (c.at_ms, c.mapped, c.key_id))
+    staggered = 0
+    idx_s = 0
+    while idx_s < len(ordered):
+        sub_base = ordered[idx_s].at_ms
+        sub_end = idx_s + 1
+        while (
+            sub_end < len(ordered)
+            and ordered[sub_end].at_ms - sub_base <= _CHORD_SIMULTANEOUS_TOLERANCE_MS
+        ):
+            sub_end += 1
+        if sub_end - idx_s > 1:
+            sub = sorted(
+                ordered[idx_s:sub_end], key=lambda c: (c.mapped, c.at_ms, c.key_id)
+            )
+            for off_idx, cand in enumerate(sub):
+                next_ms = sub_base + off_idx * arpeggiate_ms
+                if next_ms != cand.at_ms:
+                    cand.at_ms = next_ms
+                    staggered += 1
+        idx_s = sub_end
+    return staggered
+
+
 def _select_vocal_lead_clusters(
     deduped: list[_Cand],
     *,
@@ -678,19 +747,19 @@ def _select_vocal_lead_clusters(
     mel_end_prefix_max: Sequence[int],
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
-) -> list[_Cand]:
+) -> tuple[list[_Cand], int]:
     limited: list[_Cand] = []
+    arpeggiated_events = 0
     cursor = 0
     prev_mel_pitch: int | None = None
     lo = profile.min_pitch
+    strict = options.timing_mode == TimingMode.STRICT_FIDELITY
 
     i = 0
     while i < len(deduped):
         _check_cancel(is_cancelled)
         start = deduped[i].at_ms
-        j = i
-        while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
-            j += 1
+        j = _cluster_end(deduped, i, options.chord_window_ms, strict_fidelity=strict)
         cluster = deduped[i:j]
 
         clash_ids: set[int] = set()
@@ -844,9 +913,10 @@ def _select_vocal_lead_clusters(
                 dropped.append(
                     DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track, reason)
                 )
+        arpeggiated_events += _apply_arpeggiate(kept_cluster, options.arpeggiate_ms)
         i = j
 
-    return limited
+    return limited, arpeggiated_events
 
 
 def arrange(
@@ -963,9 +1033,11 @@ def arrange(
             dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
                                        DropReason.DUPLICATE_KEY))
 
-    # 6. chord limit per onset cluster (+ optional arpeggiation stagger)
+    # 6. chord limit per onset cluster (+ optional simultaneous-chord arpeggiation)
+    arpeggiated_events = 0
+    strict = options.timing_mode == TimingMode.STRICT_FIDELITY
     if vocal_lead_mode:
-        limited = _select_vocal_lead_clusters(
+        limited, arpeggiated_events = _select_vocal_lead_clusters(
             deduped,
             max_chord=max_chord,
             profile=profile,
@@ -978,36 +1050,12 @@ def arrange(
             dropped=dropped,
             is_cancelled=is_cancelled,
         )
-        # Re-apply arpeggiation stagger across onset clusters if requested
-        if options.arpeggiate_ms > 0:
-            limited.sort(
-                key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch)
-            )
-            idx_a = 0
-            while idx_a < len(limited):
-                start_a = limited[idx_a].at_ms
-                idx_b = idx_a
-                while (
-                    idx_b < len(limited)
-                    and limited[idx_b].at_ms - start_a <= options.chord_window_ms
-                ):
-                    idx_b += 1
-                grp = limited[idx_a:idx_b]
-                if len(grp) > 1:
-                    grp.sort(key=lambda c: (c.mapped, c.at_ms, c.key_id))
-                    base_at = min(c.at_ms for c in grp)
-                    for idx_arp, cand in enumerate(grp):
-                        cand.at_ms = base_at + idx_arp * options.arpeggiate_ms
-                idx_a = idx_b
     else:
         limited = []
         i = 0
         while i < len(deduped):
             _check_cancel(is_cancelled)
-            start = deduped[i].at_ms
-            j = i
-            while j < len(deduped) and deduped[j].at_ms - start <= options.chord_window_ms:
-                j += 1
+            j = _cluster_end(deduped, i, options.chord_window_ms, strict_fidelity=strict)
             cluster = deduped[i:j]
             if len(cluster) <= max_chord:
                 kept_cluster = list(cluster)
@@ -1041,31 +1089,102 @@ def arrange(
                     else:
                         dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
                                                    DropReason.POLYPHONY_LIMIT))
-            if options.arpeggiate_ms > 0 and len(kept_cluster) > 1:
-                kept_cluster.sort(key=lambda c: (c.mapped, c.at_ms, c.key_id))
-                base_at = min(c.at_ms for c in kept_cluster)
-                for idx_arp, cand in enumerate(kept_cluster):
-                    cand.at_ms = base_at + idx_arp * options.arpeggiate_ms
+            arpeggiated_events += _apply_arpeggiate(kept_cluster, options.arpeggiate_ms)
             limited.extend(kept_cluster)
             i = j
 
     if options.arpeggiate_ms > 0 or vocal_lead_mode:
         limited.sort(key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch))
 
-    # 7. same-key retrigger guard
-    last_at: dict[str, int] = {}
-    kept: list[_Cand] = []
+    # 6b. optional calibrated minimum inter-key interval enforcement (adapted mode only)
+    inter_key_adjusted = 0
+    if not strict and timing.min_inter_key_interval_ms > 0 and limited:
+        prev_orig_at = limited[0].at_ms
+        prev_out_at = limited[0].at_ms
+        for cand in limited[1:]:
+            orig_at = cand.at_ms
+            if orig_at == prev_orig_at:
+                cand.at_ms = prev_out_at
+                if cand.at_ms != orig_at:
+                    inter_key_adjusted += 1
+            else:
+                min_allowed = prev_out_at + timing.min_inter_key_interval_ms
+                if orig_at < min_allowed:
+                    cand.at_ms = min_allowed
+                    inter_key_adjusted += 1
+                prev_orig_at = orig_at
+                prev_out_at = cand.at_ms
+        if inter_key_adjusted:
+            limited.sort(
+                key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch)
+            )
+
+    # 7. deterministic same-key retrigger guard (prefer melody track over accompaniment)
+    if strict:
+        min_same_interval = min(
+            timing.min_same_key_interval_ms,
+            max(1, timing.min_key_hold_ms + timing.min_key_release_gap_ms),
+        )
+    else:
+        min_same_interval = timing.min_same_key_interval_ms
+    key_history: dict[str, list[int]] = defaultdict(list)
+    kept_slots: list[_Cand | None] = []
+    melody_retrigger_replacements = 0
     for c in limited:  # already time-ordered
         _check_cancel(is_cancelled)
-        prev = last_at.get(c.key_id)
-        if prev is not None and c.at_ms - prev < timing.min_same_key_interval_ms:
-            dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
-                                       DropReason.REPEAT_TOO_FAST))
-            continue
-        last_at[c.key_id] = c.at_ms
-        kept.append(c)
+        hist = key_history[c.key_id]
+        if hist:
+            prev_slot = hist[-1]
+            prev_cand = kept_slots[prev_slot]
+            assert prev_cand is not None
+            if c.at_ms - prev_cand.at_ms < min_same_interval:
+                prev_before_ok = (
+                    len(hist) < 2
+                    or (c.at_ms - kept_slots[hist[-2]].at_ms) >= min_same_interval  # type: ignore[union-attr]
+                )
+                c_is_mel = (
+                    use_melody_priority
+                    and melody_track is not None
+                    and c.note.track == melody_track
+                )
+                prev_is_mel = (
+                    use_melody_priority
+                    and melody_track is not None
+                    and prev_cand.note.track == melody_track
+                )
+                if c_is_mel and not prev_is_mel and prev_before_ok:
+                    dropped.append(
+                        DroppedNote(
+                            prev_cand.at_ms,
+                            prev_cand.note.pitch,
+                            prev_cand.mapped,
+                            prev_cand.note.track,
+                            DropReason.REPEAT_TOO_FAST,
+                        )
+                    )
+                    kept_slots[prev_slot] = None
+                    hist.pop()
+                    slot = len(kept_slots)
+                    kept_slots.append(c)
+                    hist.append(slot)
+                    melody_retrigger_replacements += 1
+                    continue
+                dropped.append(
+                    DroppedNote(
+                        c.at_ms,
+                        c.note.pitch,
+                        c.mapped,
+                        c.note.track,
+                        DropReason.REPEAT_TOO_FAST,
+                    )
+                )
+                continue
+        slot = len(kept_slots)
+        kept_slots.append(c)
+        hist.append(slot)
+    kept = [c for c in kept_slots if c is not None]
 
-    # 8. hold computation (never overlapping the next press of the same key)
+    # 8. hold & release-gap computation (respecting trigger_mode & min_key_release_gap_ms)
     next_at: dict[int, int] = {}
     following: dict[str, int] = {}
     for idx in range(len(kept) - 1, -1, -1):
@@ -1074,11 +1193,21 @@ def arrange(
             next_at[idx] = following[c.key_id]
         following[c.key_id] = c.at_ms
     events: list[PerformanceEvent] = []
+    hold_shortened_for_retrigger = 0
+    one_shot_tap = timing.trigger_mode == "one_shot" and not profile.supports_sustain
+    release_gap = timing.min_key_release_gap_ms
     for idx, c in enumerate(kept):
         _check_cancel(is_cancelled)
-        hold = min(max(c.dur_ms, timing.min_key_hold_ms), timing.max_key_hold_ms)
+        if one_shot_tap:
+            hold = min(max(c.dur_ms, timing.min_key_hold_ms), timing.default_key_hold_ms)
+        else:
+            hold = min(max(c.dur_ms, timing.min_key_hold_ms), timing.max_key_hold_ms)
         if idx in next_at:
-            hold = min(hold, next_at[idx] - c.at_ms)
+            gap = next_at[idx] - c.at_ms
+            max_hold = gap - release_gap if gap > release_gap else max(1, gap // 2)
+            if max_hold < hold:
+                hold = max_hold
+                hold_shortened_for_retrigger += 1
         events.append(PerformanceEvent(
             at_ms=c.at_ms, key_id=c.key_id, hold_ms=hold, source_pitch=c.note.pitch,
             mapped_pitch=c.mapped, source_track=c.note.track, source_channel=c.note.channel,
@@ -1112,6 +1241,18 @@ def arrange(
         "duration_ms": max(e.at_ms + e.hold_ms for e in events),
         "melody_track": melody_track,
         "arranger_strategy": options.arranger_strategy,
+        "timing_mode": str(options.timing_mode),
+        "timing_adjustments": {
+            "arpeggiated_events": arpeggiated_events,
+            "melody_retrigger_replacements": melody_retrigger_replacements,
+            "hold_shortened_for_retrigger": hold_shortened_for_retrigger,
+            "inter_key_adjusted": inter_key_adjusted,
+            "min_same_key_interval_ms": min_same_interval,
+            "min_key_release_gap_ms": release_gap,
+            "min_inter_key_interval_ms": timing.min_inter_key_interval_ms,
+            "trigger_mode": timing.trigger_mode,
+            "timing_provisional": timing.provisional,
+        },
     }
     return Arrangement(
         events=tuple(events), dropped=tuple(dropped), transpose=k,

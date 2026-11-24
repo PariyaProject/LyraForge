@@ -77,6 +77,41 @@ const dropBreakdown = computed(() => {
     }));
 });
 
+const timingAdjustmentItems = computed(() => {
+  const adj = props.store.arrDetail.value?.report?.stats?.timing_adjustments;
+  if (!adj) return [];
+  const items: Array<{ key: string; label: string; value: number }> = [];
+  if ((adj.arpeggiated_events ?? 0) > 0) {
+    items.push({
+      key: "arpeggiated",
+      label: "和弦自动琶音",
+      value: adj.arpeggiated_events ?? 0,
+    });
+  }
+  if ((adj.melody_retrigger_replacements ?? 0) > 0) {
+    items.push({
+      key: "melody_replace",
+      label: "同键让位主旋律",
+      value: adj.melody_retrigger_replacements ?? 0,
+    });
+  }
+  if ((adj.hold_shortened_for_retrigger ?? 0) > 0) {
+    items.push({
+      key: "hold_gap",
+      label: "释放间隙缩短保持",
+      value: adj.hold_shortened_for_retrigger ?? 0,
+    });
+  }
+  if ((adj.inter_key_adjusted ?? 0) > 0) {
+    items.push({
+      key: "inter_key",
+      label: "异键防吞音微调",
+      value: adj.inter_key_adjusted ?? 0,
+    });
+  }
+  return items;
+});
+
 async function confirmDeleteCurrentArrangement(): Promise<void> {
   const targetId = confirmDeleteArrId.value;
   if (!targetId) return;
@@ -480,6 +515,18 @@ async function onArrangementChange(event: Event): Promise<void> {
                   {{ item.label }} {{ item.count }}
                 </span>
               </div>
+              <div
+                v-if="timingAdjustmentItems.length > 0"
+                class="drop-summary-list"
+              >
+                <span
+                  v-for="item in timingAdjustmentItems"
+                  :key="item.key"
+                  class="drop-summary-item"
+                >
+                  {{ item.label }} {{ item.value }}
+                </span>
+              </div>
             </div>
 
             <p class="muted" style="margin: 0; font-size: 12px">
@@ -548,6 +595,13 @@ async function onArrangementChange(event: Event): Promise<void> {
 
         <div class="inspector-section">
           <h2 class="subsection-heading">高级编曲参数</h2>
+          <div class="field">
+            <label for="studio-timing-mode">时序适配策略</label>
+            <select id="studio-timing-mode" v-model="store.timingMode.value">
+              <option value="adapted">乐器时序适配（保真琶音顺序 + 同键释放间隙）</option>
+              <option value="strict_fidelity">严格忠实原谱（保留 0 ms 原始时值）</option>
+            </select>
+          </div>
           <div class="field">
             <label for="studio-transpose">移调半音（auto 或整数）</label>
             <input id="studio-transpose" v-model="store.transposeInput.value" type="text" />

@@ -43,7 +43,17 @@ from lyraforge.music_core.performance import (
     build_report,
     validate_performance,
 )
-from lyraforge.playback import DryRunDriver, MonotonicClock, Player, StopToken, VirtualClock
+from lyraforge.playback import (
+    DryRunDriver,
+    MonotonicClock,
+    Player,
+    StopToken,
+    VirtualClock,
+    analyze_calibration_recording,
+    build_calibration_performance,
+    list_calibration_patterns,
+    run_calibration_benchmark,
+)
 from lyraforge.preview import DEFAULT_SAMPLE_RATE, synthesize_performance_to_wav
 
 EXIT_OK = 0
@@ -100,11 +110,13 @@ def _build_arrange_options(args: argparse.Namespace) -> ArrangeOptions:
         speed=args.speed,
         include_tracks=args.tracks,
         exclude_percussion=not args.include_percussion,
+        arpeggiate_ms=getattr(args, "arpeggiate_ms", 0),
         arranger_strategy=getattr(args, "arranger_strategy", "classic"),
         melody_track=getattr(args, "melody_track", None),
         vocal_ducking=not getattr(args, "no_vocal_ducking", False),
         melody_ceiling=not getattr(args, "no_melody_ceiling", False),
         anti_clash_semitones=not getattr(args, "no_anti_clash_semitones", False),
+        timing_mode=getattr(args, "timing_mode", "adapted"),
     )
 
 
@@ -124,6 +136,7 @@ def _add_arrange_option_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--max-chord-keys", type=int, default=None)
     parser.add_argument("--chord-window-ms", type=int, default=20)
+    parser.add_argument("--arpeggiate-ms", type=int, default=0)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--tracks", type=_parse_tracks, default=None, help="e.g. 0,2")
     parser.add_argument("--include-percussion", action="store_true")
@@ -136,6 +149,11 @@ def _add_arrange_option_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-vocal-ducking", action="store_true")
     parser.add_argument("--no-melody-ceiling", action="store_true")
     parser.add_argument("--no-anti-clash-semitones", action="store_true")
+    parser.add_argument(
+        "--timing-mode",
+        choices=["adapted", "strict_fidelity"],
+        default="adapted",
+    )
 
 
 def _validate_doc_with_builtin_profile(doc: Any) -> None:
@@ -771,6 +789,37 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_calibrate_list(args: argparse.Namespace) -> int:
+    _emit(pretty_json({"patterns": list_calibration_patterns()}), getattr(args, "output", None))
+    return EXIT_OK
+
+
+def cmd_calibrate_run(args: argparse.Namespace) -> int:
+    profile = load_builtin_profile(args.instrument)
+    report = run_calibration_benchmark(
+        args.pattern,
+        profile,
+        realtime=bool(args.realtime),
+        duration_s=args.duration_s,
+    )
+    _emit(pretty_json(report), args.output)
+    return EXIT_OK
+
+
+def cmd_calibrate_analyze(args: argparse.Namespace) -> int:
+    profile = load_builtin_profile(args.instrument)
+    built = build_calibration_performance(args.pattern, profile, duration_s=args.duration_s)
+    res = analyze_calibration_recording(
+        args.wav,
+        built["performance"]["events"],
+        pattern_id=args.pattern,
+        segments=built["segments"],
+        tolerance_ms=float(args.tolerance_ms),
+    )
+    _emit(pretty_json(res), args.output)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="lyraforge", description="LyraForge CLI (offline)")
     ap.add_argument("--version", action="version", version=f"lyraforge {__version__}")
@@ -994,6 +1043,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow online catalog/URL calls when invoked by MCP tools",
     )
     pm.set_defaults(func=cmd_mcp)
+
+    pcal = sub.add_parser("calibrate", help="instrument playback benchmark & WAV onset calibration")
+    pcals = pcal.add_subparsers(dest="calibrate_command", required=True)
+    p = pcals.add_parser("list", help="list calibration patterns A-G")
+    p.add_argument("-o", "--output", default=None)
+    p.set_defaults(func=cmd_calibrate_list)
+
+    p = pcals.add_parser("run", help="run tier-1/tier-2 dry-run scheduler benchmark")
+    p.add_argument("pattern", help="calibration pattern id (see 'calibrate list')")
+    p.add_argument("--instrument", default=DEFAULT_PROFILE_ID)
+    p.add_argument("--realtime", action="store_true", help="measure MonotonicClock jitter")
+    p.add_argument(
+        "--duration-s", type=float, default=None, help="duration override for long_stability"
+    )
+    p.add_argument("-o", "--output", default=None)
+    p.set_defaults(func=cmd_calibrate_run)
+
+    p = pcals.add_parser(
+        "analyze", help="analyze a recorded game-audio WAV against pattern onsets"
+    )
+    p.add_argument("wav", help="recorded PCM WAV file path")
+    p.add_argument("--pattern", required=True, help="calibration pattern id")
+    p.add_argument("--instrument", default=DEFAULT_PROFILE_ID)
+    p.add_argument("--duration-s", type=float, default=None)
+    p.add_argument("--tolerance-ms", type=float, default=45.0)
+    p.add_argument("-o", "--output", default=None)
+    p.set_defaults(func=cmd_calibrate_analyze)
 
     return ap
 

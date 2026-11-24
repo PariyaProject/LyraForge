@@ -7,7 +7,10 @@ only inside ``send_key_input_win32`` when running on ``win32``.
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cache
+from typing import Any
 
 from lyraforge.errors import ErrorCode, LyraError
 
@@ -83,13 +86,8 @@ def build_key_input_spec(binding: str, *, key_up: bool) -> KeyInputSpec:
     return KeyInputSpec(binding=norm, scan_code=scan, flags=flags)
 
 
-def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Windows-only OS call
-    """Send a single scan-code keyboard event via Win32 ``SendInput``."""
-    if sys.platform != "win32":
-        raise LyraError(
-            ErrorCode.INVALID_ARGUMENT,
-            "send_key_input_win32 is only supported on Windows",
-        )
+@cache
+def _win32_keyboard_api() -> tuple[Any, Any, Any, Any]:  # pragma: no cover - Windows-only OS call
     import ctypes
     from ctypes import wintypes
 
@@ -134,34 +132,68 @@ def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Wind
             ("union", _INPUT_UNION),
         ]
 
-    inp = _INPUT(
-        type=INPUT_KEYBOARD,
-        union=_INPUT_UNION(
-            ki=_KEYBDINPUT(
-                wVk=0,
-                wScan=spec.scan_code,
-                dwFlags=spec.flags,
-                time=0,
-                dwExtraInfo=0,
-            )
-        ),
-    )
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
-    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
-    if sent != 1:
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return _INPUT, _INPUT_UNION, _KEYBDINPUT, user32
+
+
+def send_key_inputs_win32(
+    specs: Sequence[KeyInputSpec],
+) -> None:  # pragma: no cover - Windows-only OS call
+    """Atomically inject one or more scan-code events via Win32 ``SendInput``."""
+    if sys.platform != "win32":
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            "send_key_inputs_win32 is only supported on Windows",
+        )
+    if not specs:
+        return
+    import ctypes
+
+    input_cls, union_cls, keybd_cls, user32 = _win32_keyboard_api()
+    count = len(specs)
+    arr = (input_cls * count)(
+        *(
+            input_cls(
+                type=INPUT_KEYBOARD,
+                union=union_cls(
+                    ki=keybd_cls(
+                        wVk=0,
+                        wScan=spec.scan_code,
+                        dwFlags=spec.flags,
+                        time=0,
+                        dwExtraInfo=0,
+                    )
+                ),
+            )
+            for spec in specs
+        )
+    )
+    sent = user32.SendInput(count, arr, ctypes.sizeof(input_cls))
+    if sent != count:
         err = ctypes.get_last_error()
-        raise OSError(f"Win32 SendInput failed for {spec.binding!r} (sent={sent}, win32_err={err})")
+        bindings = ",".join(s.binding for s in specs)
+        raise OSError(
+            f"Win32 SendInput failed for {bindings!r} (sent={sent}/{count}, win32_err={err})"
+        )
+
+
+def send_key_input_win32(spec: KeyInputSpec) -> None:  # pragma: no cover - Windows-only OS call
+    """Send a single scan-code keyboard event via Win32 ``SendInput``."""
+    if sys.platform != "win32":
+        raise LyraError(
+            ErrorCode.INVALID_ARGUMENT,
+            "send_key_input_win32 is only supported on Windows",
+        )
+    send_key_inputs_win32((spec,))
 
 
 def is_escape_pressed_win32() -> bool:  # pragma: no cover - Windows-only OS call
     """Return True if the physical ESC key is currently down on Windows."""
     if sys.platform != "win32":
         return False
-    import ctypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-    user32.GetAsyncKeyState.restype = ctypes.c_short
+    _, _, _, user32 = _win32_keyboard_api()
     return bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)

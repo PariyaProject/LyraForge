@@ -60,7 +60,7 @@ class ForegroundWindowGuard:
         self._get_title = get_title_fn
         self._get_info = get_info_fn
 
-    def current_info(self) -> ForegroundWindowInfo | None:
+    def current_info(self, *, include_elevation: bool = True) -> ForegroundWindowInfo | None:
         """Return the current foreground window info, or ``None`` when unavailable."""
         if self._get_info is not None:
             try:
@@ -73,7 +73,7 @@ class ForegroundWindowGuard:
             except Exception:
                 return None
         try:
-            return get_foreground_window_info()
+            return get_foreground_window_info(include_elevation=include_elevation)
         except Exception:
             return None
 
@@ -82,7 +82,8 @@ class ForegroundWindowGuard:
         return any(allowed.lower() in low for allowed in self.allowed_titles)
 
     def is_target_focused(self) -> bool:
-        info = self.current_info()
+        # Skip expensive token-elevation Win32 calls during per-note polling.
+        info = self.current_info(include_elevation=False)
         if info is None:
             return False
         if info.process_name and info.process_name.lower() in self.allowed_processes:

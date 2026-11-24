@@ -47,7 +47,15 @@ from lyraforge.music_core.arranger import (
 )
 from lyraforge.music_core.midi_import import ImportLimits
 from lyraforge.pipelines import DEFAULT_PIPELINE_ID, list_pipelines
-from lyraforge.playback import PlaybackMode, is_windows_playback_available
+from lyraforge.playback import (
+    LateEventPolicy,
+    PlaybackMode,
+    analyze_calibration_recording,
+    build_calibration_performance,
+    is_windows_playback_available,
+    list_calibration_patterns,
+    run_calibration_benchmark,
+)
 from lyraforge.presets import list_presets
 from lyraforge.preview import DEFAULT_SAMPLE_RATE
 from lyraforge.separators import list_separators
@@ -196,6 +204,7 @@ class ArrangeVariantConfig(BaseModel):
     vocal_ducking: bool = True
     melody_ceiling: bool = True
     anti_clash_semitones: bool = True
+    timing_mode: str = "adapted"
     transcription_id: str | None = None
     label: str | None = None
 
@@ -256,6 +265,31 @@ class PlaybackPrepareRequest(BaseModel):
     realtime: bool = False
     allowed_window_titles: list[str] | None = Field(default=None)
     allowed_processes: list[str] | None = Field(default=None)
+    min_key_release_gap_ms: int | None = Field(default=None, ge=0, le=500)
+    key_hold_ms: int | None = Field(default=None, ge=1, le=2000)
+    late_event_policy: LateEventPolicy = LateEventPolicy.SHIFT_CLOCK
+    late_threshold_ms: int = Field(default=25, ge=1, le=1000)
+    record_trace: bool = False
+
+
+class CalibrationRunRequest(BaseModel):
+    pattern_id: str
+    instrument_profile_id: str = DEFAULT_PROFILE_ID
+    realtime: bool = False
+    duration_s: float | None = Field(default=None, ge=1.0, le=180.0)
+
+
+class CalibrationPrepareRequest(BaseModel):
+    pattern_id: str
+    instrument_profile_id: str = DEFAULT_PROFILE_ID
+    mode: PlaybackMode = PlaybackMode.DRY_RUN
+    realtime: bool = False
+    duration_s: float | None = Field(default=None, ge=1.0, le=180.0)
+    allowed_window_titles: list[str] | None = Field(default=None)
+    allowed_processes: list[str] | None = Field(default=None)
+    min_key_release_gap_ms: int | None = Field(default=None, ge=0, le=500)
+    key_hold_ms: int | None = Field(default=None, ge=1, le=2000)
+    late_event_policy: LateEventPolicy = LateEventPolicy.SHIFT_CLOCK
 
 
 class PlaybackStartRequest(BaseModel):
@@ -719,6 +753,7 @@ def create_app(
             vocal_ducking=v.vocal_ducking,
             melody_ceiling=v.melody_ceiling,
             anti_clash_semitones=v.anti_clash_semitones,
+            timing_mode=v.timing_mode,
         )
 
     @app.post("/v1/jobs/transcribe", dependencies=[Depends(require_token)])
@@ -1050,35 +1085,123 @@ def create_app(
     def step_playback_queue(req: QueueStepRequest) -> dict[str, Any]:
         return _step_queue(req.delta)
 
+    def _resolve_window_allowlists(
+        store: LibraryStore,
+        req_titles: list[str] | None,
+        req_processes: list[str] | None,
+    ) -> tuple[list[str] | None, list[str] | None]:
+        settings = store.get_settings()
+        allowed_titles = req_titles
+        if allowed_titles is None:
+            raw_titles = settings.get("windows_allowed_titles")
+            if isinstance(raw_titles, str):
+                allowed_titles = [t.strip() for t in raw_titles.split(",") if t.strip()] or None
+            elif isinstance(raw_titles, list):
+                allowed_titles = [str(t).strip() for t in raw_titles if str(t).strip()] or None
+        allowed_processes = req_processes
+        if allowed_processes is None:
+            raw_processes = settings.get("windows_allowed_processes")
+            if isinstance(raw_processes, str):
+                allowed_processes = (
+                    [p.strip() for p in raw_processes.split(",") if p.strip()] or None
+                )
+            elif isinstance(raw_processes, list):
+                allowed_processes = (
+                    [str(p).strip() for p in raw_processes if str(p).strip()] or None
+                )
+        return allowed_titles, allowed_processes
+
     @app.post("/v1/playback/prepare", dependencies=[Depends(require_token)])
     def playback_prepare(req: PlaybackPrepareRequest) -> dict[str, Any]:
         with open_store() as store:
-            allowed_titles = req.allowed_window_titles
-            if allowed_titles is None:
-                raw_titles = store.get_settings().get("windows_allowed_titles")
-                if isinstance(raw_titles, str):
-                    parsed_titles = [t.strip() for t in raw_titles.split(",") if t.strip()]
-                    allowed_titles = parsed_titles or None
-                elif isinstance(raw_titles, list):
-                    parsed_titles = [str(t).strip() for t in raw_titles if str(t).strip()]
-                    allowed_titles = parsed_titles or None
-            allowed_processes = req.allowed_processes
-            if allowed_processes is None:
-                raw_processes = store.get_settings().get("windows_allowed_processes")
-                if isinstance(raw_processes, str):
-                    parsed_processes = [p.strip() for p in raw_processes.split(",") if p.strip()]
-                    allowed_processes = parsed_processes or None
-                elif isinstance(raw_processes, list):
-                    parsed_processes = [str(p).strip() for p in raw_processes if str(p).strip()]
-                    allowed_processes = parsed_processes or None
+            allowed_titles, allowed_processes = _resolve_window_allowlists(
+                store, req.allowed_window_titles, req.allowed_processes
+            )
             return manager.prepare(
                 req.arrangement_id,
                 mode=req.mode,
                 realtime=req.realtime,
                 allowed_window_titles=allowed_titles,
                 allowed_processes=allowed_processes,
+                min_key_release_gap_ms=req.min_key_release_gap_ms,
+                key_hold_ms=req.key_hold_ms,
+                late_event_policy=req.late_event_policy,
+                late_threshold_ms=req.late_threshold_ms,
+                record_trace=req.record_trace,
                 store=store,
             )
+
+    @app.get("/v1/calibration/patterns", dependencies=[Depends(require_token)])
+    def get_calibration_patterns() -> dict[str, Any]:
+        return {"patterns": list_calibration_patterns()}
+
+    @app.post("/v1/calibration/run-dry", dependencies=[Depends(require_token)])
+    async def run_calibration_dry(req: CalibrationRunRequest) -> dict[str, Any]:
+        profile = load_builtin_profile(req.instrument_profile_id)
+        return await anyio.to_thread.run_sync(
+            lambda: run_calibration_benchmark(
+                req.pattern_id,
+                profile,
+                realtime=req.realtime,
+                duration_s=req.duration_s,
+            )
+        )
+
+    @app.post("/v1/calibration/prepare", dependencies=[Depends(require_token)])
+    def prepare_calibration(req: CalibrationPrepareRequest) -> dict[str, Any]:
+        profile = load_builtin_profile(req.instrument_profile_id)
+        built = build_calibration_performance(
+            req.pattern_id, profile, duration_s=req.duration_s
+        )
+        with open_store() as store:
+            allowed_titles, allowed_processes = _resolve_window_allowlists(
+                store, req.allowed_window_titles, req.allowed_processes
+            )
+        prep = manager.prepare_events(
+            f"calibration:{req.pattern_id}:{profile.id}",
+            doc=built["performance"],
+            profile=profile,
+            mode=req.mode,
+            realtime=req.realtime,
+            allowed_window_titles=allowed_titles,
+            allowed_processes=allowed_processes,
+            min_key_release_gap_ms=req.min_key_release_gap_ms,
+            key_hold_ms=req.key_hold_ms,
+            late_event_policy=req.late_event_policy,
+            record_trace=True,
+        )
+        return {**prep, "pattern": built["pattern"], "segments": built["segments"]}
+
+    @app.post("/v1/calibration/analyze", dependencies=[Depends(require_token)])
+    async def analyze_calibration(
+        file: UploadFile = File(...),  # noqa: B008
+        pattern_id: str = Form(...),  # noqa: B008
+        instrument_profile_id: str = Form(DEFAULT_PROFILE_ID),  # noqa: B008
+        tolerance_ms: float = Form(45.0),  # noqa: B008
+    ) -> dict[str, Any]:
+        max_bytes = 50 * 1024 * 1024
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := await file.read(65_536):
+            total += len(chunk)
+            if total > max_bytes:
+                raise LyraError(
+                    ErrorCode.LIMIT_EXCEEDED,
+                    f"calibration WAV exceeds limit ({max_bytes} bytes)",
+                )
+            chunks.append(chunk)
+        wav_bytes = b"".join(chunks)
+        profile = load_builtin_profile(instrument_profile_id)
+        built = build_calibration_performance(pattern_id, profile)
+        return await anyio.to_thread.run_sync(
+            lambda: analyze_calibration_recording(
+                wav_bytes,
+                built["performance"]["events"],
+                pattern_id=pattern_id,
+                segments=built["segments"],
+                tolerance_ms=tolerance_ms,
+            )
+        )
 
     @app.post("/v1/playback/start", dependencies=[Depends(require_token)])
     def playback_start(req: PlaybackStartRequest) -> dict[str, Any]:

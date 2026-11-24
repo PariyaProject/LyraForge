@@ -143,6 +143,26 @@ defineProps<{
           </div>
         </dl>
 
+        <div
+          v-if="store.playbackStatus.value?.last_result?.p50_lateness_ms !== undefined"
+          class="timing-diag-strip tabular"
+        >
+          <span>
+            调度误差 P50/P95/Max:
+            {{ store.playbackStatus.value.last_result.p50_lateness_ms?.toFixed(2) }} /
+            {{ store.playbackStatus.value.last_result.p95_lateness_ms?.toFixed(2) }} /
+            {{ store.playbackStatus.value.last_result.max_lateness_ms?.toFixed(2) }} ms
+          </span>
+          <span>
+            迟到/时钟平移: {{ store.playbackStatus.value.last_result.late_events_count ?? 0 }} /
+            {{ store.playbackStatus.value.last_result.clock_shifts_count ?? 0 }}
+          </span>
+          <span>
+            同键冲突修复:
+            {{ store.playbackStatus.value.last_result.retrigger_conflicts_count ?? 0 }}
+          </span>
+        </div>
+
         <div class="banner-info">
           <StudioIcon name="shield" :size="15" />
           <span>
@@ -165,11 +185,129 @@ defineProps<{
 
         <details class="advanced-box">
           <summary>高级时序控制（实时节拍发送）</summary>
-          <div style="margin-block-start: var(--space-xs)">
+          <div class="timing-controls-body">
             <label class="checkbox-row">
               <input v-model="store.realtime.value" type="checkbox" />
               按真实演奏时间间隔发送事件（测试可取消勾选加快 Dry-Run）
             </label>
+            <div class="field">
+              <label for="playback-late-policy">延迟事件策略</label>
+              <select id="playback-late-policy" v-model="store.lateEventPolicy.value">
+                <option value="shift_clock">平移时间轴（避免迟到音符堆成一团和弦）</option>
+                <option value="drop_late">丢弃严重滞后音符（保持节拍准点）</option>
+                <option value="catch_up">追赶补发（严格按绝对时钟）</option>
+              </select>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label for="playback-release-gap">同键释放间隙 (ms)</label>
+                <input
+                  id="playback-release-gap"
+                  v-model="store.minKeyReleaseGapInput.value"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="默认 20 ms（暂定待实测）"
+                />
+              </div>
+              <div class="field">
+                <label for="playback-key-hold">最小按住覆盖 (ms)</label>
+                <input
+                  id="playback-key-hold"
+                  v-model="store.keyHoldMsInput.value"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="沿用编曲默认值"
+                />
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="advanced-box">
+          <summary>乐器基准与实机校准（Benchmark A–G）</summary>
+          <div class="timing-controls-body">
+            <p class="hint">
+              Dry-Run / 调度测试仅验证事件时序与无重叠输出；是否真正发声请切到游戏后录制 WAV 并上传分析。
+            </p>
+            <div class="field">
+              <label for="calibration-pattern-select">测试序列</label>
+              <select
+                id="calibration-pattern-select"
+                v-model="store.selectedCalibrationPatternId.value"
+              >
+                <option
+                  v-for="pat in store.calibrationPatterns.value"
+                  :key="pat.id"
+                  :value="pat.id"
+                >
+                  {{ pat.display_name }}
+                </option>
+                <option
+                  v-if="store.calibrationPatterns.value.length === 0"
+                  value="same_key_retrigger"
+                >
+                  B · 同键重复触发（30–150 ms 阶梯）
+                </option>
+              </select>
+            </div>
+            <div class="row">
+              <button
+                class="secondary btn-sm"
+                :disabled="store.busy.value"
+                @click="store.handleRunDryCalibration"
+              >
+                运行调度基准
+              </button>
+              <button
+                class="secondary btn-sm"
+                :disabled="store.busy.value"
+                @click="store.handlePrepareCalibration"
+              >
+                准备实机校准序列
+              </button>
+            </div>
+            <div class="field">
+              <label for="calibration-wav-file">上传游戏实录 WAV（起音 / 余音检验）</label>
+              <input
+                id="calibration-wav-file"
+                type="file"
+                accept=".wav,audio/wav"
+                :disabled="store.busy.value"
+                @change="store.handleCalibrationWavChange"
+              />
+            </div>
+            <div v-if="store.calibrationDryResult.value" class="calibration-result tabular">
+              <div>
+                层级：{{ store.calibrationDryResult.value.tier }}（游戏发声已验证：{{
+                  store.calibrationDryResult.value.verifies_game_audio ? "是" : "否"
+                }}）
+              </div>
+              <div>
+                漂移 {{ store.calibrationDryResult.value.drift_ms }} ms / CPU
+                {{ store.calibrationDryResult.value.cpu_pct }}% / 重叠按键
+                {{ store.calibrationDryResult.value.log_verification.overlapping_key_downs }} / 最小间隙
+                {{
+                  store.calibrationDryResult.value.log_verification.min_observed_release_gap_ms ??
+                  "N/A"
+                }}
+                ms
+              </div>
+            </div>
+            <div v-if="store.calibrationAnalyzeResult.value" class="calibration-result tabular">
+              <div>
+                检出起音：{{ store.calibrationAnalyzeResult.value.matched_onsets }} /
+                {{ store.calibrationAnalyzeResult.value.expected_onset_clusters }}（{{
+                  Math.round(store.calibrationAnalyzeResult.value.detection_rate * 100)
+                }}%）
+              </div>
+              <div>
+                估计偏移 {{ store.calibrationAnalyzeResult.value.estimated_offset_ms }} ms / 平均误差
+                {{ store.calibrationAnalyzeResult.value.mean_abs_error_ms ?? "N/A" }} ms
+              </div>
+              <div class="hint">
+                建议参数：{{ JSON.stringify(store.calibrationAnalyzeResult.value.suggested_timing) }}
+              </div>
+            </div>
           </div>
         </details>
 
