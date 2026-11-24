@@ -11,6 +11,7 @@ from typing import Any
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.library import LibraryStore
+from lyraforge.pipelines import DEFAULT_PIPELINE_ID, get_pipeline
 from lyraforge.playback.guards import StopToken
 from lyraforge.transcribers import TranscribeOptions, get_transcriber
 
@@ -20,6 +21,7 @@ class _TranscriptionJob:
     id: str
     song_id: str
     engine_id: str
+    pipeline_id: str = DEFAULT_PIPELINE_ID
     status: str = "queued"  # queued | running | completed | cancelled | failed
     stage: str = "queued"
     progress: float = 0.0
@@ -37,6 +39,7 @@ class _TranscriptionJob:
             "id": self.id,
             "song_id": self.song_id,
             "engine_id": self.engine_id,
+            "pipeline_id": self.pipeline_id,
             "status": self.status,
             "stage": self.stage,
             "progress": round(self.progress, 4),
@@ -81,6 +84,9 @@ class TranscriptionJobManager:
         song_id: str,
         *,
         engine_id: str,
+        pipeline_id: str = DEFAULT_PIPELINE_ID,
+        vocal_engine_id: str | None = None,
+        accomp_engine_id: str | None = None,
         options: TranscribeOptions,
         data_dir: Path,
     ) -> dict[str, Any]:
@@ -91,13 +97,32 @@ class TranscriptionJobManager:
                     f"transcription submissions paused ({self._pause_reason or 'maintenance'})",
                 )
         options.validate()
-        eng = get_transcriber(engine_id)
-        info = eng.probe()
-        if not info.available:
+        pipeline = get_pipeline(pipeline_id)
+        p_info = pipeline.probe()
+        if not p_info.available:
+            missing = ", ".join(p_info.missing_tools) or pipeline_id
             raise LyraError(
                 ErrorCode.MODEL_MISSING,
-                f"transcriber {engine_id!r} is not installed on this machine",
+                f"pipeline {pipeline_id!r} requires missing tool(s): {missing}",
             )
+        if pipeline_id == DEFAULT_PIPELINE_ID:
+            eng = get_transcriber(engine_id)
+            info = eng.probe()
+            if not info.available:
+                raise LyraError(
+                    ErrorCode.MODEL_MISSING,
+                    f"transcriber {engine_id!r} is not installed on this machine",
+                )
+        else:
+            for candidate_id in (vocal_engine_id, accomp_engine_id):
+                if candidate_id and candidate_id != "auto":
+                    eng = get_transcriber(candidate_id)
+                    if not eng.probe().available:
+                        raise LyraError(
+                            ErrorCode.MODEL_MISSING,
+                            f"transcriber {candidate_id!r} is not installed on this machine",
+                        )
+
         with LibraryStore(data_dir) as store:
             detail = store.get_song(song_id)
             if not any(s.kind == "audio" for s in detail.sources):
@@ -105,7 +130,17 @@ class TranscriptionJobManager:
                     ErrorCode.SOURCE_UNAVAILABLE, f"song {song_id} has no audio/video source"
                 )
 
-        job = _TranscriptionJob(id=str(uuid.uuid4()), song_id=song_id, engine_id=engine_id)
+        display_engine = (
+            engine_id
+            if pipeline_id == DEFAULT_PIPELINE_ID
+            else p_info.default_engine_id
+        )
+        job = _TranscriptionJob(
+            id=str(uuid.uuid4()),
+            song_id=song_id,
+            engine_id=display_engine,
+            pipeline_id=pipeline_id,
+        )
 
         def _on_progress(fraction: float, stage: str) -> None:
             with self._lock:
@@ -127,6 +162,9 @@ class TranscriptionJobManager:
                     rec = store.transcribe_song(
                         song_id,
                         engine_id=engine_id,
+                        pipeline_id=pipeline_id,
+                        vocal_engine_id=vocal_engine_id,
+                        accomp_engine_id=accomp_engine_id,
                         options=options,
                         on_progress=_on_progress,
                         stop_token=job.stop_token,
@@ -136,6 +174,7 @@ class TranscriptionJobManager:
                     job.stage = "completed"
                     job.progress = 1.0
                     job.finished_at = time.time()
+                    job.engine_id = rec.engine
                     job.transcription = rec.to_json()
             except LyraError as exc:
                 with self._lock:

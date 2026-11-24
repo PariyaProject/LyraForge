@@ -9,10 +9,14 @@ from lyraforge.music_core.arranger import (
     ARRANGER_VERSION,
     Arrangement,
     ArrangeOptions,
+    ArrangerStrategyInfo,
     arrange,
     detect_melody_track,
+    get_arranger_strategy,
+    list_arranger_strategies,
+    register_arranger_strategy,
 )
-from lyraforge.music_core.cleanup import CleanupOptions, clean_score
+from lyraforge.music_core.cleanup import CleanupOptions, clean_score, merge_stem_scores
 from lyraforge.music_core.midi_export import (
     arrangement_to_midi_bytes,
     performance_to_midi_bytes,
@@ -37,6 +41,7 @@ __all__ = [
     "ARRANGER_VERSION",
     "ArrangeOptions",
     "Arrangement",
+    "ArrangerStrategyInfo",
     "CleanupOptions",
     "ImportLimits",
     "InstrumentProfile",
@@ -58,10 +63,14 @@ __all__ = [
     "evaluate_arrangement_against_reference",
     "evaluate_events_against_reference",
     "evaluate_transcription_against_reference",
+    "get_arranger_strategy",
+    "list_arranger_strategies",
     "load_midi_file",
+    "merge_stem_scores",
     "parse_midi_bytes",
     "performance_to_midi_bytes",
     "profile_from_dict",
+    "register_arranger_strategy",
     "score_arrangement",
     "score_to_midi_bytes",
     "validate_performance",

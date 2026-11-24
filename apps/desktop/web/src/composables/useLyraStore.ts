@@ -5,17 +5,20 @@ import {
   type ArrangementDetailResponse,
   type ArrangementRecord,
   type ArrangePresetInfo,
+  type ArrangerStrategyInfo,
   type ComparisonResult,
   type GpuStatus,
   type HealthResponse,
   type HotkeyActionInfo,
   type PerformanceEventItem,
+  type PipelineInfo,
   type PlaybackPrepareResponse,
   type PlaybackStatusResponse,
   type ProfileDetail,
   type ProfileSummary,
   type QueueState,
   type SongSummary,
+  type SongTrackInfo,
   type SourceRecord,
   type TranscriberInfo,
   type TranscriptionJob,
@@ -57,8 +60,42 @@ export function arrangementTitle(arr: ArrangementRecord): string {
   const style = styles[arr.style] ?? arr.style;
   const transpose =
     arr.transpose === 0 ? "原调" : `移调${arr.transpose > 0 ? "+" : ""}${arr.transpose}`;
-  return `${style} · ${transpose} · ${arr.speed}x`;
+  const stratSuffix = arr.arranger_strategy === "vocal_lead" ? " · 主旋律增强" : "";
+  return `${style} · ${transpose} · ${arr.speed}x${stratSuffix}`;
 }
+
+const DEFAULT_PIPELINES: PipelineInfo[] = [
+  {
+    id: "direct",
+    display_name: "经典直转（原流程）",
+    description: "直接把音频送入所选转谱引擎识别，速度快，与原有行为完全一致。",
+    recommended_for: "纯钢琴 / 独奏 / BGM / 现成简单混音",
+    stages: ["音频提取", "单引擎转谱", "常规清理入库"],
+    required_tools: [],
+    available: true,
+    missing_tools: [],
+    default_engine_id: "builtin-mono",
+    default_vocal_engine_id: null,
+    default_accomp_engine_id: null,
+    default_arranger_strategy: "classic",
+    supports_engine_override: true,
+  },
+];
+
+const DEFAULT_ARRANGER_STRATEGIES: ArrangerStrategyInfo[] = [
+  {
+    id: "classic",
+    display_name: "经典基线（原算法）",
+    description: "保留原始全局均衡移调与高音优先和弦裁剪逻辑。",
+    recommended_for: "纯器乐 / 独奏 / 精选 MIDI",
+  },
+  {
+    id: "vocal_lead",
+    display_name: "主旋律优先 · 音乐学增强",
+    description: "主旋律加权移调、伴奏低于主旋律、回避撞音并自动在人声段让路。",
+    recommended_for: "人声流行歌 / 分轨转录 / 复杂混音",
+  },
+];
 
 export function createLyraStore(api: LyraForgeApi) {
   const activeView = ref<StudioViewId>("home");
@@ -74,6 +111,8 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedProfileId = ref("genshin.windsong_lyre.v1");
   const profile = ref<ProfileDetail | null>(null);
   const transcribers = ref<TranscriberInfo[]>([]);
+  const pipelines = ref<PipelineInfo[]>([...DEFAULT_PIPELINES]);
+  const arrangerStrategies = ref<ArrangerStrategyInfo[]>([...DEFAULT_ARRANGER_STRATEGIES]);
   const presets = ref<ArrangePresetInfo[]>([]);
   const hotkeyActions = ref<HotkeyActionInfo[]>([]);
   const hotkeyBindings = ref<Record<string, string>>({});
@@ -109,7 +148,10 @@ export function createLyraStore(api: LyraForgeApi) {
   const restoreConfirmed = ref(false);
 
   // Transcription state
+  const selectedPipelineId = ref("direct");
   const selectedEngineId = ref("builtin-mono");
+  const selectedVocalEngineId = ref("auto");
+  const selectedAccompEngineId = ref("auto");
   const transcriptionJobs = ref<TranscriptionJob[]>([]);
 
   // Arrangement state
@@ -117,6 +159,12 @@ export function createLyraStore(api: LyraForgeApi) {
   const speed = ref(1.0);
   const transposeInput = ref("auto");
   const arpeggiateMs = ref(0);
+  const selectedArrangerStrategy = ref("classic");
+  const selectedTranscriptionId = ref<string | null>(null);
+  const songTracks = ref<SongTrackInfo[]>([]);
+  const selectedTrackIndices = ref<number[] | null>(null);
+  const selectedMelodyTrack = ref<number | null>(null);
+  const detectedMelodyTrack = ref<number | null>(null);
 
   // Preview audio
   const previewUrl = ref<string | null>(null);
@@ -171,6 +219,12 @@ export function createLyraStore(api: LyraForgeApi) {
   );
   const selectedEngineInfo = computed(
     () => transcribers.value.find((t) => t.id === selectedEngineId.value) ?? null,
+  );
+  const selectedPipelineInfo = computed(
+    () => pipelines.value.find((p) => p.id === selectedPipelineId.value) ?? pipelines.value[0] ?? null,
+  );
+  const availableTranscribers = computed(() =>
+    transcribers.value.filter((t) => t.available),
   );
   const selectedSong = computed(() => {
     const id = selectedSongId.value;
@@ -355,6 +409,40 @@ export function createLyraStore(api: LyraForgeApi) {
     };
   }
 
+  async function refreshSongTracks(songId: string, transcriptionId?: string | null): Promise<void> {
+    if (!songId) {
+      songTracks.value = [];
+      selectedTrackIndices.value = null;
+      selectedMelodyTrack.value = null;
+      detectedMelodyTrack.value = null;
+      return;
+    }
+    if (typeof api.getSongTracks === "function") {
+      try {
+        const res = await api.getSongTracks(songId, transcriptionId);
+        if (selectedSongId.value !== songId) return;
+        songTracks.value = res.tracks ?? [];
+        detectedMelodyTrack.value = res.detected_melody_track ?? null;
+        selectedTrackIndices.value = songTracks.value
+          .filter((t) => !t.is_percussion)
+          .map((t) => t.index);
+        selectedMelodyTrack.value = null;
+        return;
+      } catch {
+        // fallback cleanly below when no MIDI/transcription exists yet
+      }
+    }
+    const tr =
+      (transcriptionId ? songTranscriptions.value.find((t) => t.id === transcriptionId) : null) ??
+      songTranscriptions.value[0] ??
+      null;
+    const trTracks = tr?.tracks ?? [];
+    songTracks.value = trTracks;
+    detectedMelodyTrack.value = trTracks[0]?.index ?? null;
+    selectedTrackIndices.value = trTracks.filter((t) => !t.is_percussion).map((t) => t.index);
+    selectedMelodyTrack.value = null;
+  }
+
   function applySongDetail(
     songId: string,
     detail: {
@@ -390,6 +478,13 @@ export function createLyraStore(api: LyraForgeApi) {
     const detail = await api.getSong(targetId);
     if (seq !== selectSongSeq || selectedSongId.value !== targetId) return;
     applySongDetail(targetId, detail);
+    if (
+      !selectedTranscriptionId.value ||
+      !songTranscriptions.value.some((t) => t.id === selectedTranscriptionId.value)
+    ) {
+      selectedTranscriptionId.value = songTranscriptions.value[0]?.id ?? null;
+    }
+    await refreshSongTracks(targetId, selectedTranscriptionId.value);
   }
 
   function ensureJobPolling(): void {
@@ -504,12 +599,50 @@ export function createLyraStore(api: LyraForgeApi) {
     const detail = await api.getSong(songId);
     if (seq !== selectSongSeq || selectedSongId.value !== songId) return;
     applySongDetail(songId, detail);
+    selectedTranscriptionId.value = detail.transcriptions?.[0]?.id ?? null;
+    await refreshSongTracks(songId, selectedTranscriptionId.value);
     if (detail.arrangements.length > 0) {
       await selectArrangement(detail.arrangements[0].id, arrSeq);
     } else if (arrSeq === selectArrSeq) {
       selectedArrId.value = "";
       arrDetail.value = null;
     }
+  }
+
+  async function selectTranscriptionForStudio(transcriptionId: string): Promise<void> {
+    selectedTranscriptionId.value = transcriptionId || null;
+    if (selectedSongId.value) {
+      await refreshSongTracks(selectedSongId.value, selectedTranscriptionId.value);
+    }
+  }
+
+  async function openTranscriptionInStudio(
+    songId: string,
+    transcriptionId?: string | null,
+  ): Promise<void> {
+    if (songId && songId !== selectedSongId.value) {
+      await selectSong(songId);
+    }
+    if (transcriptionId) {
+      selectedTranscriptionId.value = transcriptionId;
+      const tr = songTranscriptions.value.find((t) => t.id === transcriptionId);
+      if (tr?.pipeline_id?.startsWith("vocal_split")) {
+        selectedArrangerStrategy.value = "vocal_lead";
+      }
+      await refreshSongTracks(selectedSongId.value ?? songId, transcriptionId);
+    }
+    setView("studio");
+  }
+
+  function toggleTrackIncluded(trackIndex: number): void {
+    const pitched = songTracks.value.filter((t) => !t.is_percussion).map((t) => t.index);
+    const current = new Set(selectedTrackIndices.value ?? pitched);
+    if (current.has(trackIndex)) {
+      current.delete(trackIndex);
+    } else {
+      current.add(trackIndex);
+    }
+    selectedTrackIndices.value = pitched.filter((idx) => current.has(idx));
   }
 
   const selectTranscribeSong = selectSong;
@@ -618,7 +751,15 @@ export function createLyraStore(api: LyraForgeApi) {
     busy.value = true;
     errorMessage.value = "";
     try {
-      const { job } = await api.submitTranscribeJob(songId, selectedEngineId.value);
+      const pipelineId = selectedPipelineId.value || "direct";
+      const { job } =
+        pipelineId === "direct"
+          ? await api.submitTranscribeJob(songId, selectedEngineId.value)
+          : await api.submitTranscribeJob(songId, selectedEngineId.value, {
+              pipelineId,
+              vocalEngineId: selectedVocalEngineId.value,
+              accompEngineId: selectedAccompEngineId.value,
+            });
       upsertTranscriptionJob(job);
       reportOk(`已提交音频转谱任务：${songTitleById(songId)} (${job.engine_id})`);
       ensureJobPolling();
@@ -653,6 +794,14 @@ export function createLyraStore(api: LyraForgeApi) {
     return Number.isInteger(val) ? val : "invalid";
   }
 
+  function resolveIncludeTracksPayload(): number[] | null {
+    const pitched = songTracks.value.filter((t) => !t.is_percussion).map((t) => t.index);
+    if (pitched.length === 0 || selectedTrackIndices.value === null) return null;
+    if (selectedTrackIndices.value.length === 0) return [];
+    if (selectedTrackIndices.value.length === pitched.length) return null;
+    return [...selectedTrackIndices.value];
+  }
+
   async function handleArrange(): Promise<void> {
     if (!selectedSongId.value) return;
     const parsedTranspose = parseTranspose();
@@ -660,10 +809,31 @@ export function createLyraStore(api: LyraForgeApi) {
       reportError("移调请输入 auto 或整数半音");
       return;
     }
+    const includeTracks = resolveIncludeTracksPayload();
+    if (includeTracks !== null && includeTracks.length === 0) {
+      reportError("请至少勾选一条音轨参与编曲");
+      return;
+    }
     busy.value = true;
     errorMessage.value = "";
     try {
-      const res = await api.arrangeSong({
+      const activeTr = !hasMidiSource.value
+        ? songTranscriptions.value.find((t) => t.id === selectedTranscriptionId.value) ??
+          songTranscriptions.value[0] ??
+          null
+        : null;
+      const pipePrefix =
+        activeTr?.pipeline_id && activeTr.pipeline_id !== "direct"
+          ? `${activeTr.pipeline_id} · `
+          : "";
+      const strategyLabel =
+        selectedArrangerStrategy.value === "vocal_lead" ? "主旋律增强" : "经典基线";
+      const customLabel =
+        selectedArrangerStrategy.value !== "classic" || pipePrefix
+          ? `${pipePrefix}${strategyLabel} · ${style.value}`
+          : null;
+
+      const payload: Parameters<LyraForgeApi["arrangeSong"]>[0] = {
         song_id: selectedSongId.value,
         instrument_profile_id: selectedProfileId.value,
         style: style.value,
@@ -671,10 +841,21 @@ export function createLyraStore(api: LyraForgeApi) {
         transpose: parsedTranspose,
         arpeggiate_ms: Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0))),
         prefer_melody_track: true,
-      });
+        arranger_strategy: selectedArrangerStrategy.value,
+      };
+      if (activeTr?.id) payload.transcription_id = activeTr.id;
+      if (includeTracks !== null) payload.include_tracks = includeTracks;
+      if (selectedMelodyTrack.value !== null) payload.melody_track = selectedMelodyTrack.value;
+      if (customLabel) payload.label = customLabel;
+
+      const res = await api.arrangeSong(payload);
       comparisonResult.value = null;
       await refreshSongs({ alsoRefreshAll: true });
       await selectSong(selectedSongId.value);
+      if (activeTr?.id) {
+        selectedTranscriptionId.value = activeTr.id;
+        await refreshSongTracks(selectedSongId.value, activeTr.id);
+      }
       await selectArrangement(res.arrangement.id);
       reportOk(`已生成 ${res.arrangement.style} 版本（${res.arrangement.event_count} 个音符）`);
     } catch (err) {
@@ -691,29 +872,49 @@ export function createLyraStore(api: LyraForgeApi) {
       reportError("移调请输入 auto 或整数半音");
       return;
     }
+    const includeTracks = resolveIncludeTracksPayload();
+    if (includeTracks !== null && includeTracks.length === 0) {
+      reportError("请至少勾选一条音轨参与编曲");
+      return;
+    }
     busy.value = true;
     errorMessage.value = "";
     try {
+      const trId = !hasMidiSource.value
+        ? selectedTranscriptionId.value ?? songTranscriptions.value[0]?.id ?? null
+        : null;
+      const arp = Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0)));
       const res = await api.arrangeAB({
         song_id: selectedSongId.value,
         instrument_profile_id: selectedProfileId.value,
+        transcription_id: trId,
         variant_a: {
-          style: "balanced",
+          style: style.value,
           speed: speed.value,
           transpose: parsedTranspose,
-          arpeggiate_ms: 0,
-          label: "A · 均衡主旋律",
+          arpeggiate_ms: arp,
+          arranger_strategy: "classic",
+          include_tracks: includeTracks,
+          melody_track: selectedMelodyTrack.value,
+          label: "A · 经典基线",
         },
         variant_b: {
-          style: "rich",
+          style: style.value,
           speed: speed.value,
           transpose: parsedTranspose,
-          arpeggiate_ms: 20,
-          label: "B · 丰满琶音",
+          arpeggiate_ms: arp,
+          arranger_strategy: "vocal_lead",
+          include_tracks: includeTracks,
+          melody_track: selectedMelodyTrack.value,
+          label: "B · 主旋律增强",
         },
       });
       await refreshSongs({ alsoRefreshAll: true });
       await selectSong(selectedSongId.value);
+      if (trId) {
+        selectedTranscriptionId.value = trId;
+        await refreshSongTracks(selectedSongId.value, trId);
+      }
       comparisonResult.value = res.comparison;
       const pickId =
         res.comparison.winner === res.arrangement_b.id
@@ -906,6 +1107,11 @@ export function createLyraStore(api: LyraForgeApi) {
       arrangements.value = [];
       selectedArrId.value = "";
       arrDetail.value = null;
+      selectedTranscriptionId.value = null;
+      songTracks.value = [];
+      selectedTrackIndices.value = null;
+      selectedMelodyTrack.value = null;
+      detectedMelodyTrack.value = null;
       await refreshSongs({ alsoRefreshAll: true });
       reportOk(`已安全恢复曲库备份，共载入 ${res.restored.song_count} 首曲目`);
     } catch (err) {
@@ -1126,22 +1332,26 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
-  async function handleInstallGpuTorch(): Promise<void> {
+  async function runGpuTorchInstall(
+    toolKey: "dettato-gpu" | "demucs-gpu",
+    starter: () => Promise<unknown>,
+    label: string,
+  ): Promise<void> {
     if (toolBusy.value) return;
-    toolBusy.value = "dettato-gpu";
+    toolBusy.value = toolKey;
     try {
-      await api.installDettatoGpu();
-      pushToast("info", "正在安装 CUDA 版 PyTorch（约 2.5 GB），请保持网络连接…");
+      await starter();
+      pushToast("info", `正在为 ${label} 安装 CUDA 版 PyTorch（约 2.5 GB），请保持网络连接…`);
       const deadline = Date.now() + 60 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         await refreshTools();
-        const state = toolInstalls.value["dettato-gpu"];
+        const state = toolInstalls.value[toolKey];
         if (state && state.status !== "running") {
           if (state.status === "installed") {
-            pushToast("ok", "CUDA 版 PyTorch 已安装并验证可用");
+            pushToast("ok", `${label} CUDA 版 PyTorch 已安装并验证可用`);
           } else {
-            pushToast("error", state.error ?? "CUDA 版 PyTorch 安装失败");
+            pushToast("error", state.error ?? `${label} CUDA 版 PyTorch 安装失败`);
           }
           break;
         }
@@ -1152,6 +1362,14 @@ export function createLyraStore(api: LyraForgeApi) {
     } finally {
       toolBusy.value = null;
     }
+  }
+
+  async function handleInstallGpuTorch(): Promise<void> {
+    await runGpuTorchInstall("dettato-gpu", () => api.installDettatoGpu(), "dettato");
+  }
+
+  async function handleInstallDemucsGpu(): Promise<void> {
+    await runGpuTorchInstall("demucs-gpu", () => api.installDemucsGpu(), "Demucs");
   }
 
   async function refreshHotkeys(): Promise<void> {
@@ -1220,6 +1438,29 @@ export function createLyraStore(api: LyraForgeApi) {
     toolInstalls.value = map;
   }
 
+  async function refreshPipelinesAndArrangers(): Promise<void> {
+    if (typeof api.listPipelines === "function") {
+      try {
+        const res = await api.listPipelines();
+        if (res.pipelines?.length) {
+          pipelines.value = res.pipelines;
+        }
+      } catch {
+        pipelines.value = [...DEFAULT_PIPELINES];
+      }
+    }
+    if (typeof api.listArrangers === "function") {
+      try {
+        const res = await api.listArrangers();
+        if (res.strategies?.length) {
+          arrangerStrategies.value = res.strategies;
+        }
+      } catch {
+        arrangerStrategies.value = [...DEFAULT_ARRANGER_STRATEGIES];
+      }
+    }
+  }
+
   async function handleInstallTool(toolId: string): Promise<void> {
     if (toolBusy.value) return;
     toolBusy.value = toolId;
@@ -1241,6 +1482,8 @@ export function createLyraStore(api: LyraForgeApi) {
         }
       }
       transcribers.value = (await api.listTranscribers()).transcribers;
+      await refreshPipelinesAndArrangers();
+      await refreshGpu();
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -1262,6 +1505,7 @@ export function createLyraStore(api: LyraForgeApi) {
       }
       profile.value = await api.getProfile(selectedProfileId.value);
       transcribers.value = (await api.listTranscribers()).transcribers;
+      await refreshPipelinesAndArrangers();
       await refreshPresets();
       await refreshHotkeys();
       await refreshTools();
@@ -1321,6 +1565,19 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedProfileId,
     profile,
     transcribers,
+    availableTranscribers,
+    pipelines,
+    selectedPipelineId,
+    selectedPipelineInfo,
+    selectedVocalEngineId,
+    selectedAccompEngineId,
+    arrangerStrategies,
+    selectedArrangerStrategy,
+    selectedTranscriptionId,
+    songTracks,
+    selectedTrackIndices,
+    selectedMelodyTrack,
+    detectedMelodyTrack,
     songs,
     allSongs,
     recentSongs,
@@ -1407,6 +1664,7 @@ export function createLyraStore(api: LyraForgeApi) {
     refreshGpu,
     handleSetGpuDevice,
     handleInstallGpuTorch,
+    handleInstallDemucsGpu,
     presets,
     refreshPresets,
     applyPreset,
@@ -1423,7 +1681,11 @@ export function createLyraStore(api: LyraForgeApi) {
     handleClearQueue,
     selectSong,
     selectArrangement,
+    selectTranscriptionForStudio,
     openSongInView,
+    openTranscriptionInStudio,
+    refreshSongTracks,
+    toggleTrackIncluded,
     reloadSelectedSongDetail,
     refreshJobs,
     handleProfileChange,

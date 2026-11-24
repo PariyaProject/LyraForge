@@ -59,6 +59,18 @@ class BasicPitchSubprocessTranscriber:
         on_progress: ProgressCallback | None = None,
         stop_token: StopToken | None = None,
     ) -> TranscriptionResult:
+        opts = options or TranscribeOptions()
+        opts.validate()
+        flags: list[str] = []
+        if opts.onset_threshold is not None:
+            flags.extend(("--onset-threshold", f"{opts.onset_threshold:.3f}"))
+        if opts.frame_threshold is not None:
+            flags.extend(("--frame-threshold", f"{opts.frame_threshold:.3f}"))
+        if opts.min_frequency_hz is not None:
+            flags.extend(("--minimum-frequency", f"{opts.min_frequency_hz:.2f}"))
+        if opts.max_frequency_hz is not None:
+            flags.extend(("--maximum-frequency", f"{opts.max_frequency_hz:.2f}"))
+
         return run_isolated_transcriber(
             engine_id=self.id,
             display_name="Basic Pitch",
@@ -68,8 +80,8 @@ class BasicPitchSubprocessTranscriber:
                 "or install 'basic-pitch' in an isolated environment"
             ),
             audio_path=audio_path,
-            build_cmd=lambda base, wav_in, out_dir: [*base, str(out_dir), str(wav_in)],
-            options=options,
+            build_cmd=lambda base, wav_in, out_dir: [*base, *flags, str(out_dir), str(wav_in)],
+            options=opts,
             on_progress=on_progress,
             stop_token=stop_token,
             timeout_per_audio_second=3.0,

@@ -40,6 +40,10 @@ class TranscribeOptions:
     min_note_ms: int = 60
     onset_rms_threshold: float = 0.025
     timeout_s: float = 300.0
+    onset_threshold: float | None = None
+    frame_threshold: float | None = None
+    min_frequency_hz: float | None = None
+    max_frequency_hz: float | None = None
 
     def validate(self) -> None:
         if not (0 <= self.min_pitch < self.max_pitch <= 127):
@@ -53,6 +57,23 @@ class TranscribeOptions:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "onset_rms_threshold must be > 0")
         if self.timeout_s <= 0:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "timeout_s must be > 0")
+        if self.onset_threshold is not None and not (0.0 < self.onset_threshold < 1.0):
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, "onset_threshold must be in (0, 1)")
+        if self.frame_threshold is not None and not (0.0 < self.frame_threshold < 1.0):
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, "frame_threshold must be in (0, 1)")
+        if self.min_frequency_hz is not None and self.min_frequency_hz <= 0:
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, "min_frequency_hz must be > 0")
+        if self.max_frequency_hz is not None and self.max_frequency_hz <= 0:
+            raise LyraError(ErrorCode.INVALID_ARGUMENT, "max_frequency_hz must be > 0")
+        if (
+            self.min_frequency_hz is not None
+            and self.max_frequency_hz is not None
+            and self.max_frequency_hz <= self.min_frequency_hz
+        ):
+            raise LyraError(
+                ErrorCode.INVALID_ARGUMENT,
+                "max_frequency_hz must be greater than min_frequency_hz",
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -100,6 +100,11 @@ def _build_arrange_options(args: argparse.Namespace) -> ArrangeOptions:
         speed=args.speed,
         include_tracks=args.tracks,
         exclude_percussion=not args.include_percussion,
+        arranger_strategy=getattr(args, "arranger_strategy", "classic"),
+        melody_track=getattr(args, "melody_track", None),
+        vocal_ducking=not getattr(args, "no_vocal_ducking", False),
+        melody_ceiling=not getattr(args, "no_melody_ceiling", False),
+        anti_clash_semitones=not getattr(args, "no_anti_clash_semitones", False),
     )
 
 
@@ -122,6 +127,15 @@ def _add_arrange_option_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--tracks", type=_parse_tracks, default=None, help="e.g. 0,2")
     parser.add_argument("--include-percussion", action="store_true")
+    parser.add_argument(
+        "--arranger-strategy",
+        choices=["classic", "vocal_lead"],
+        default="classic",
+    )
+    parser.add_argument("--melody-track", type=int, default=None)
+    parser.add_argument("--no-vocal-ducking", action="store_true")
+    parser.add_argument("--no-melody-ceiling", action="store_true")
+    parser.add_argument("--no-anti-clash-semitones", action="store_true")
 
 
 def _validate_doc_with_builtin_profile(doc: Any) -> None:
@@ -339,7 +353,12 @@ def cmd_library_show(args: argparse.Namespace) -> int:
 def cmd_library_arrange(args: argparse.Namespace) -> int:
     opts = _build_arrange_options(args)
     with LibraryStore(args.data_dir) as store:
-        rec = store.arrange_song(args.song_id, profile_id=args.instrument, options=opts)
+        rec = store.arrange_song(
+            args.song_id,
+            profile_id=args.instrument,
+            options=opts,
+            transcription_id=getattr(args, "transcription_id", None),
+        )
     print(pretty_json(rec.to_json()), end="")
     return EXIT_OK
 
@@ -691,12 +710,10 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
     import tempfile
 
     from lyraforge.media import extract_audio_to_wav
-    from lyraforge.music_core.cleanup import clean_score
-    from lyraforge.music_core.midi_export import score_to_midi_bytes
-    from lyraforge.music_core.midi_import import parse_midi_bytes
-    from lyraforge.transcribers import TranscribeOptions, get_transcriber
+    from lyraforge.pipelines import PipelineRequest, get_pipeline
+    from lyraforge.transcribers import TranscribeOptions
 
-    engine = get_transcriber(args.engine)
+    pipeline = get_pipeline(args.pipeline)
     opts = TranscribeOptions(
         min_pitch=args.min_pitch,
         max_pitch=args.max_pitch,
@@ -705,33 +722,47 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="lyraforge-cli-tr-") as tmpdir:
         wav_path = Path(tmpdir) / "extracted.wav"
         extract_audio_to_wav(args.audio, wav_path)
-        res = engine.transcribe(wav_path, options=opts)
+        res = pipeline.run(
+            wav_path,
+            PipelineRequest(
+                engine_id=args.engine,
+                vocal_engine_id=args.vocal_engine,
+                accomp_engine_id=args.accomp_engine,
+                options=opts,
+            ),
+        )
 
-    raw_score = parse_midi_bytes(res.midi_bytes)
-    cleaned_score, clean_stats = clean_score(raw_score)
-    cleaned_bytes = score_to_midi_bytes(cleaned_score)
+    cleaned_score = res.cleaned_score
+    cleaned_bytes = res.cleaned_midi_bytes
 
     if args.output:
-        atomic_write_bytes(Path(args.output), res.midi_bytes)
+        atomic_write_bytes(Path(args.output), res.raw_midi_bytes)
     if args.cleaned_out:
         atomic_write_bytes(Path(args.cleaned_out), cleaned_bytes)
     if args.arrange_out:
         profile = load_builtin_profile(args.instrument)
-        arr = arrange(cleaned_score, profile, ArrangeOptions(style=Style(args.style)))
+        arr = arrange(
+            cleaned_score,
+            profile,
+            ArrangeOptions(
+                style=Style(args.style),
+                arranger_strategy=args.arranger_strategy,
+            ),
+        )
         perf = build_performance(cleaned_score, profile, arr)
         validate_performance(perf, profile)
         atomic_write_text(Path(args.arrange_out), pretty_json(perf))
 
     summary = {
+        "pipeline_id": res.pipeline_id,
         "engine_id": res.engine_id,
         "engine_version": res.engine_version,
-        "raw_note_count": res.note_count,
-        "cleaned_note_count": clean_stats["kept_notes"],
-        "duration_ms": res.duration_ms,
+        "cleaned_note_count": len(cleaned_score.notes),
+        "track_count": len(cleaned_score.tracks),
+        "duration_ms": round(cleaned_score.duration_us / 1000),
         "raw_midi_out": args.output,
         "cleaned_midi_out": args.cleaned_out,
         "performance_out": args.arrange_out,
-        "warnings": list(res.warnings),
     }
     print(pretty_json(summary), end="")
     return EXIT_OK
@@ -820,6 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = pls.add_parser("arrange", help="create/fetch an arrangement for an imported song")
     p.add_argument("song_id")
+    p.add_argument("--transcription-id", default=None)
     _add_arrange_option_flags(p)
     p.add_argument("--data-dir", default=None)
     p.set_defaults(func=cmd_library_arrange)
@@ -915,12 +947,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     pt = sub.add_parser("transcribe", help="transcribe local audio/video into MIDI")
     pt.add_argument("audio")
+    pt.add_argument("--pipeline", default="direct")
     pt.add_argument("--engine", default="builtin-mono")
+    pt.add_argument("--vocal-engine", default=None)
+    pt.add_argument("--accomp-engine", default=None)
     pt.add_argument("-o", "--output", default=None, help="write raw.mid path")
     pt.add_argument("--cleaned-out", default=None, help="write cleaned.mid path")
     pt.add_argument("--arrange-out", default=None, help="also arrange into performance.json")
     pt.add_argument("--instrument", default=DEFAULT_PROFILE_ID)
     pt.add_argument("--style", choices=[s.value for s in Style], default=Style.BALANCED.value)
+    pt.add_argument("--arranger-strategy", choices=["classic", "vocal_lead"], default="classic")
     pt.add_argument("--min-pitch", type=int, default=36)
     pt.add_argument("--max-pitch", type=int, default=96)
     pt.add_argument("--min-note-ms", type=int, default=60)

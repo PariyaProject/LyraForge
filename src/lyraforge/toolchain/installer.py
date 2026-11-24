@@ -437,20 +437,29 @@ def _first_line(text: str) -> str:
     return line[0] if line else "unknown"
 
 
-def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
-    """Install a CUDA-enabled PyTorch build into the dettato virtualenv."""
-    python = venv_python("dettato")
+def _install_cuda_torch(
+    tool_id: str,
+    *,
+    packages: tuple[str, ...],
+    missing_msg: str,
+    ready_msg: str,
+    setting_key: str,
+    probe_fn: Callable[[], dict[str, Any] | None],
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Install CUDA-enabled PyTorch wheels into an existing isolated tool virtualenv."""
+    python = venv_python(tool_id)
     if not python.is_file():
-        raise LyraError(
-            ErrorCode.MODEL_MISSING,
-            "请先安装 dettato，再安装 GPU 加速版 PyTorch",
-        )
+        raise LyraError(ErrorCode.MODEL_MISSING, missing_msg)
     uv = install_uv(progress)
     index = os.environ.get(
         "LYRAFORGE_PYTORCH_CUDA_INDEX",
         "https://download.pytorch.org/whl/cu130",
     )
-    _emit(progress, 0.2, f"下载并安装 CUDA 版 PyTorch（约 2.5 GB，索引 {index}）…")
+    _emit(progress, 0.2, f"下载并安装 {tool_id} CUDA 版 PyTorch（约 2.5 GB，索引 {index}）…")
+    reinstall_flags: list[str] = []
+    for pkg in packages:
+        reinstall_flags.extend(("--reinstall-package", pkg))
     res = _run(
         [
             str(uv),
@@ -460,12 +469,8 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
             str(python),
             "--index-url",
             index,
-            # CPU wheels on PyPI are often newer than the newest CUDA wheel, so a plain
-            # --upgrade keeps 2.x+cpu. Force only torch to be reinstalled from the CUDA
-            # index; this may downgrade torch, which dettato accepts (torch>=2.2).
-            "--reinstall-package",
-            "torch",
-            "torch",
+            *reinstall_flags,
+            *packages,
         ],
         env=uv_env(),
         timeout=7200,
@@ -476,9 +481,7 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
             f"CUDA PyTorch 安装失败：{_tail(res.stderr)}",
         )
     _emit(progress, 0.9, "验证 CUDA 是否可用…")
-    from lyraforge.toolchain.gpu import probe_dettato_torch
-
-    probe = probe_dettato_torch()
+    probe = probe_fn()
     if probe is None or not probe.get("cuda_available"):
         raise LyraError(
             ErrorCode.SOURCE_UNAVAILABLE,
@@ -486,9 +489,39 @@ def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, A
             "请确认 NVIDIA 驱动支持该 CUDA 版本（当前默认 cu130），"
             "或设置 LYRAFORGE_PYTORCH_CUDA_INDEX 指向 cu128/cu126/cu124 后重试。",
         )
-    set_tool_setting("dettato_gpu", True)
-    _emit(progress, 1.0, "dettato GPU 加速已就绪")
+    set_tool_setting(setting_key, True)
+    _emit(progress, 1.0, ready_msg)
     return {"installed": True, "torch": probe}
+
+
+def install_dettato_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
+    """Install a CUDA-enabled PyTorch build into the dettato virtualenv."""
+    from lyraforge.toolchain.gpu import probe_dettato_torch
+
+    return _install_cuda_torch(
+        "dettato",
+        packages=("torch",),
+        missing_msg="请先安装 dettato，再安装 GPU 加速版 PyTorch",
+        ready_msg="dettato GPU 加速已就绪",
+        setting_key="dettato_gpu",
+        probe_fn=probe_dettato_torch,
+        progress=progress,
+    )
+
+
+def install_demucs_gpu(progress: ProgressCallback | None = None) -> dict[str, Any]:
+    """Install CUDA-enabled torch & torchaudio into the demucs virtualenv."""
+    from lyraforge.toolchain.gpu import probe_demucs_torch
+
+    return _install_cuda_torch(
+        "demucs",
+        packages=("torch", "torchaudio"),
+        missing_msg="请先安装 Demucs，再安装 GPU 加速版 PyTorch",
+        ready_msg="Demucs GPU 加速已就绪",
+        setting_key="demucs_gpu",
+        probe_fn=probe_demucs_torch,
+        progress=progress,
+    )
 
 
 def install(tool_id: str, progress: ProgressCallback | None = None) -> dict[str, Any]:
@@ -497,6 +530,10 @@ def install(tool_id: str, progress: ProgressCallback | None = None) -> dict[str,
         with _INSTALL_LOCK:
             install_dettato_gpu(progress)
         return {"tool_id": "dettato-gpu", "installed": True}
+    if tool_id == "demucs-gpu":
+        with _INSTALL_LOCK:
+            install_demucs_gpu(progress)
+        return {"tool_id": "demucs-gpu", "installed": True}
     spec = tool_spec(tool_id)
     if spec is None:
         raise LyraError(
