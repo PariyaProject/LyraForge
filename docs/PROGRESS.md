@@ -4,7 +4,7 @@
 > **状态分类标准**：`已实现且已测试` ｜ `已实现但未完成真实环境验收` ｜ `部分实现` ｜ `未实现` ｜ `因外部环境阻塞`  
 > **开源许可**：GNU General Public License v3.0 ([LICENSE](../LICENSE))  
 > **主要开发环境**：macOS Apple Silicon（Python 3.11.13, Node.js, pnpm 12.6.0）  
-> **目标运行平台**：Windows 10/11 x64（核心、曲库、FastAPI、MCP 与 Vue 3 + PyWebView 跨平台兼容）
+> **目标运行平台**：Windows 10/11 x64（完整工作台与游戏自由演奏）与 macOS Apple Silicon（完整工作台与 DryRun 模拟）
 
 ---
 
@@ -16,7 +16,7 @@
 | **M1 / Desktop** | 本地 `127.0.0.1` FastAPI + 会话 Token、Vue 3 工作台（含真实界面截图 [lyraforge-workbench.png](assets/lyraforge-workbench.png)）与 PyWebView 桌面壳 | **已实现且已测试** | `src/lyraforge/api/*`, `desktop/*`, `apps/desktop/web/*` |
 | **Round 1 P0** | API Key 安全凭据（Env / macOS Keychain / `0o600` 文件）、旧明文迁移、日志脱敏与备份/`.lyrapack` 清洗 | **已实现且已测试** | `src/lyraforge/secrets.py`, `library/{store,packaging}.py`, `tests/unit/test_secrets_and_security.py` |
 | **Round 1 P0** | Windows Credential Manager (`advapi32.dll` `CredReadW`/`CredWriteW`/`CredDeleteW`) | **已实现但未完成真实环境验收** | `src/lyraforge/secrets_win32.py`；macOS 端已隔离依赖并通过分层测试，Windows 真机存取待验证 |
-| **Round 1 P1** | 隔离 Windows `SendInput` 驱动（`key_up` 成功后更新 `pressed` + 重试恢复）与前景焦点守卫 | **已实现但未完成真实环境验收** | `src/lyraforge/playback/windows/*`, `tests/unit/test_windows_playback.py`；`calibration.status="unverified"`，需 Windows 《原神》真机校准与切窗/ESC 实音验收 |
+| **Round 1 P1** | 隔离 Windows `SendInput` 驱动（`key_up` 成功后更新 `pressed` + 重试恢复）与前景焦点守卫 | **已实现（维护者已于 Windows 实机验证）** | `src/lyraforge/playback/windows/*`, `tests/unit/test_windows_playback.py`；Windows 10/11《原神》自由演奏实机流程已由维护者验证通过，内置档案 JSON 的 `calibration.status` 元数据仍暂保持 `"unverified"` |
 | **Round 1 P1** | 全库备份分阶段暂存、SQLite 完整性校验与故障自动回滚 + DNS 固定防 SSRF 直链下载 | **已实现且已测试** | `library/packaging.py`, `sources/url.py`, `tests/unit/test_lyrapack_and_m5.py`, `test_secrets_and_security.py` |
 | **Round 2 P0** | GitHub Actions 双平台 CI（`pnpm@12.6.0` + `.gitattributes` 二进制保护 + Windows `LyraForge.exe` 强校验）与 CI 诊断脚本 `scripts/check_ci.py` | **已实现且已测试**（真机 `.exe` 启动待 Windows 验收） | [ci.yml](../.github/workflows/ci.yml), [.gitattributes](../.gitattributes), [check_ci.py](../scripts/check_ci.py)；基线提交 `1f2b34d` 在 Run `#44980488436` 三作业全绿；本轮 PR 与 merge 后 CI 将继续追验 |
 | **Round 2 P1** | 规范化开放曲库许可分类器（`classify_license_url()`：剔除 `mit`/`gpl`/`local` 弱子串，拒收 `NoDerivatives` 与混合私有文件）及完整权利 provenance | **已实现且已测试** | `src/lyraforge/sources/{base,local,online}.py`, `tests/unit/test_license_and_quality.py` |
@@ -44,8 +44,8 @@
 | **Round 9 AI 工具链** | Windows 实机接通外部转录引擎：Basic Pitch 0.4.x 模块入口修正、子进程强制 UTF-8（中文 Windows `cp936` 崩溃）、dettato `-o` 输出目录语义修正；安装 `ffmpeg`/`pnpm`/Basic Pitch/dettato 并写入用户环境变量；Claude Code 与 Antigravity MCP 配置实测连通 | **已实现且已测试**（[PR #11](https://github.com/PariyaProject/LyraForge/pull/11) 合入 `f65b768`，CI [Run #45141438765](https://github.com/PariyaProject/LyraForge/actions/runs/45141438765) 全绿；三引擎 `available: true`，真实音频转谱与 MP3 提取链路通过；应用内一键安装仍未实现） | `src/lyraforge/transcribers/{basic_pitch,dettato,_subprocess}.py`, `src/lyraforge/media/subprocess_utils.py`, `tests/unit/test_transcribers.py`, [DEVELOPMENT.md](DEVELOPMENT.md) §3, [TEST_REPORT.md](TEST_REPORT.md) §11 |
 | **Round 8 发行修复** | Windows 便携包 GUI 宿主缺失导致「双击无反应」：PyInstaller 补齐 `webview` / `clr` / `webview.platforms.edgechromium` 与 WebView2 + pythonnet payload，构建期 payload 断言、`--self-check --check-gui` 发布门禁、致命启动异常写入 `startup.log` 并弹出原生错误对话框、便携 ZIP `README.txt` 与归档校验 | **已实现且已测试**（[PR #10](https://github.com/PariyaProject/LyraForge/pull/10) 合入 `ed69b96`；PR CI [Run #45136702311](https://github.com/PariyaProject/LyraForge/actions/runs/45136702311) 与合并后 [Run #45137224454](https://github.com/PariyaProject/LyraForge/actions/runs/45137224454) 全绿；线上 `dev-latest` 实测开窗） | `packaging/lyraforge.spec`, `src/lyraforge/{cli,startup_report}.py`, `apps/desktop/main.py`, `scripts/release_helper.py`, `.github/workflows/ci.yml`, `tests/unit/test_desktop_startup.py`, [TEST_REPORT.md](TEST_REPORT.md) §10 |
 | **M2 / 音频** | 原生 WAV 提取标准化 + 内置单音 YIN 转谱（`builtin-mono`） | **部分实现** | 核心与任务取消可用；单音旋律 `F1=1.0000`、钢琴主旋律+琶音 `F1=0.6667`，和弦 `F1=0.0000`、人声伴奏 `F1=0.2000`、多乐器混音 `F1=0.2222` |
-| **M2 / 外部 ML** | `ffmpeg` 非 WAV 音视频提取 + 隔离进程 `basic-pitch` / `dettato` 多音转录 | **因外部环境阻塞** | 适配器和环境变量协议已实现并通过 Mock 测试；当前开发机未安装 `ffmpeg`、`basic-pitch`、`dettato` |
-| **M5 / 发行** | Windows 便携 ZIP 自动预发行与 SemVer 正式 Tag 发布流水线；实体机运行 `LyraForge.exe` 冒烟、`原神` 21 键校准与正式 Stable Release | **部分实现**（自动化 ZIP 发布已完成，真机《原神》校准与正式 Release 待实机验收） | [.github/workflows/ci.yml](../.github/workflows/ci.yml) + [scripts/release_helper.py](../scripts/release_helper.py) 在双平台测试与解压 `--self-check --check-gui` 全绿后自动发布实验性 Pre-release（固定 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) + 不可变 `dev-<YYYYMMDD>-<sha7>`）与独立 `vX.Y.Z` 正式通道；真机 21 键校准仍按 [TEST_REPORT.md](TEST_REPORT.md) §5 待 Windows 10/11 实体机执行 |
+| **M2 / 外部 ML** | `ffmpeg` 非 WAV 音视频提取 + 隔离进程 `basic-pitch` / `dettato` 多音转录与 GPU 加速 | **已实现且已真机验证（Windows）** | 见 Round 9 / 10 / 18 / 19：应用内一键安装与 RTX 2070 SUPER CUDA PyTorch 安装推理均已在 Windows 实机通过；macOS 端托管安装待 macOS 实机验证 |
+| **M5 / 发行** | Windows + macOS 双平台便携 ZIP 自动预发行与 SemVer 正式 Tag 发布流水线；实机《原神》自由演奏与正式 Stable Release | **已实现（双端预发行就绪；正式 Stable Release 待发版决策）** | [.github/workflows/ci.yml](../.github/workflows/ci.yml) + [scripts/release_helper.py](../scripts/release_helper.py) 在双平台测试与解压 `--self-check --check-gui` 全绿后自动发布预发行版（固定 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) + 不可变 `dev-<YYYYMMDD>-<sha7>`）与独立 `vX.Y.Z` 正式通道；Windows 实机开窗与《原神》自由演奏已由维护者验证 |
 
 ---
 

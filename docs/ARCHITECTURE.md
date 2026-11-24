@@ -1,15 +1,15 @@
 # LyraForge 架构设计（Architecture）
 
-> **更新日期**：2026-11-22  
-> **适用范围**：M0 已实现架构 + M1–M5 演进边界  
-> **平台模型**：macOS Apple Silicon（Mac mini M4）为主开发环境；Windows 10/11 x64 为主目标运行平台
+> **更新日期**：2026-11-24  
+> **适用范围**：M0–M5 已实现跨平台架构与分层边界  
+> **平台模型**：macOS Apple Silicon 与 Windows 10/11 x64 双平台桌面交付（Windows 端额外提供隔离的 `SendInput` 游戏自由演奏驱动）
 
 ---
 
 ## 1. 核心架构原则
 
 1. **跨平台核心与服务层**：`music_core`、MIDI 解析/写出、编曲、乐器配置、SQLite 曲库（M1+）、AI Agent 编排（M4+）、本地 FastAPI 服务（M1+）全部使用纯跨平台 Python，在 macOS Apple Silicon 与 Windows x64 上行为一致。
-2. **双平台桌面壳**：规划 UI 采用 Vue 3 + TypeScript + Vite + PyWebView（macOS 使用 WKWebView/Cocoa，Windows 使用 WebView2），通过本地 `127.0.0.1` 随机端口 + 会话 Token 与 Python 服务通信，不绑定单个桌面操作系统。
+2. **双平台桌面壳**：桌面 UI 采用 Vue 3 + TypeScript + Vite + PyWebView（macOS 使用 WKWebView/Cocoa，Windows 使用 WebView2），通过本地 `127.0.0.1` 随机端口 + 会话 Token 与 Python 服务通信，不绑定单个桌面操作系统。
 3. **Windows 键盘模拟严格隔离**：跨平台层仅定义 `PlaybackDriver` 与 `FocusGuard` 协议；`DryRunDriver` 与 `Player` 可在 macOS 和 Windows 无差异运行。Windows `SendInput` 与 `ForegroundWindowGuard` 在 M1 作为独立子包 `lyraforge.playback.windows` 实现，并仅在 `sys.platform == "win32"` 时按需延迟加载。
 4. **核心依赖零 Windows 污染**：`pyproject.toml` 主依赖不含任何 `pywin32`、`comtypes` 或 Win32 原生库；未来平台专属包必须通过 PEP 508 环境标记或 optional extras 隔离。
 5. **AI 模型与转录环境隔离**：Audio→MIDI 转录（Basic Pitch / dettato）通过独立子进程或独立虚拟环境接入（参见 [ADR-0001](adr/0001-headless-python-core-and-isolated-transcribers.md)），不与主核心共享强约束的 TensorFlow/PyTorch 依赖。

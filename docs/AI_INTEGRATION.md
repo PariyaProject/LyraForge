@@ -7,12 +7,12 @@ LyraForge 明确不将“单独购买 OpenAI / Anthropic / Gemini API Key”设�
    - `RuleBasedLLMProvider` 是确定性**离线规则命令解析器**（正则与关键词匹配），并非大模型生成。
 
 2. **第二层：MCP Server + Client Skill 接入用户自有已登录客户端（推荐 AI 工作流）**
-   - LyraForge 提供零外部依赖的 `stdio` JSON-RPC MCP Server（启动命令：`uv run lyraforge mcp`），向用户已有的 Claude Code、Codex CLI、Antigravity 等客户端暴露 10 个类型化工具：
+   - LyraForge 提供零外部依赖的 `stdio` JSON-RPC MCP Server（启动命令：`uv run lyraforge mcp`），向用户已有的 Claude Code、Codex CLI、Antigravity、DeepSeek 等客户端暴露 10 个类型化工具：
      - `search_music`、`import_media`、`transcribe`、`arrange`、`evaluate`、`preview`、`save_to_library`、`export_score`、`get_task_status`、`play_in_game`（强制交互确认守卫，绝不直接向操作系统注入按键）。
    - 该模式下模型推理和鉴权**完全保留在用户自己登录的官方客户端会话内部**；LyraForge **绝不读取、复制、转发、中继用户的 OAuth 凭据或订阅会话 Token**。
 
 3. **第三层：可选高级 HTTP LLM 接口与谨慎边界说明**
-   - 如用户自有 OpenAI-compatible 兼容端点（例如本地 Ollama `http://127.0.0.1:11434/v1` 或用户自行输入的 API Key），可在桌面“设置与默认偏好”中手动开启。API Key 通过 OS Keychain / Windows Credential Manager / `0o600` 本地受限文件或环境变量存储，不默认展示强制配置弹窗。
+   - 如用户自有 OpenAI-compatible 兼容端点（例如本地 Ollama `http://127.0.0.1:11434/v1` 或用户自行输入的 API Key），可在桌面 **设置 →「AI 与 MCP 集成」** 中手动开启。API Key 通过 OS Keychain / Windows Credential Manager / `0o600` 本地受限文件或环境变量存储，不默认展示强制配置弹窗。
 
 ---
 

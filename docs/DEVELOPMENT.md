@@ -1,6 +1,6 @@
 # LyraForge 开发者文档（Development Guide）
 
-> 本文档整理面向贡献者与高级用户的本地运行命令、代码结构、质量门禁与 Windows 构建方式。公开产品介绍请见 [README.md](../README.md)，实时模块成熟度见 [PROGRESS.md](PROGRESS.md)，AI/MCP 集成请见 [AI_INTEGRATION.md](AI_INTEGRATION.md)。
+> 本文档整理面向贡献者与高级用户的本地运行命令、代码结构、质量门禁与 Windows / macOS 构建方式。公开产品介绍请见 [README.md](../README.md)，实时模块成熟度见 [PROGRESS.md](PROGRESS.md)，AI/MCP 集成请见 [AI_INTEGRATION.md](AI_INTEGRATION.md)。
 
 ---
 
@@ -93,7 +93,7 @@ uv run lyraforge library backup -o /tmp/lyraforge-backup.zip
 
 ### 3.1 推荐：应用内一键安装（无需命令行、不改系统环境）
 
-桌面版 **设置 →「外部工具与转谱引擎」** 卡片中，每个工具都有「安装」按钮；也可用 CLI：
+桌面版 **设置 →「转谱引擎与 GPU」→「外部工具与转谱引擎」** 中，每个工具都有「安装」按钮；也可用 CLI：
 
 ```bash
 uv run lyraforge tools status          # 查看 ffmpeg / basic-pitch / dettato 是否就绪
@@ -135,7 +135,7 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
    ```
 
    - dettato 的 `-o` 是输出**目录**，它会在其中写入 `<曲名>.mid`；CPU 推理约 4 秒音频 / 20 秒耗时。
-   - **GPU 加速**：桌面 **设置 → 外部工具与转谱引擎 → dettato GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE`）。若只装了 CPU 版 torch，点「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu130` 完成（下载约 1.9 GiB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。注意 PyPI 的 CPU wheel 可能比 CUDA 索引里的最新版本更新（例如 2.15.0+cpu 对 2.14.1+cu130），所以必须 `--reinstall-package torch` 强制降级替换，普通 `--upgrade` 会“无变更”并继续报 CUDA 不可用。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps`。
+   - **GPU 加速**：桌面 **设置 →「转谱引擎与 GPU」→ dettato GPU 加速** 会自动检测 NVIDIA GPU 与隔离环境里的 PyTorch/CUDA；可在下拉框选 `auto / cpu / cuda / mps`（持久化到工具链清单，启动时注入 `LYRAFORGE_DETTATO_DEVICE`）。若只装了 CPU 版 torch，点「安装 CUDA 版 PyTorch」即可由应用调用 `uv pip install --reinstall-package torch torch --index-url https://download.pytorch.org/whl/cu130` 完成（下载约 1.9 GiB）；索引可用 `LYRAFORGE_PYTORCH_CUDA_INDEX` 覆盖，安装后会验证 `torch.cuda.is_available()`。注意 PyPI 的 CPU wheel 可能比 CUDA 索引里的最新版本更新（例如 2.15.0+cpu 对 2.14.1+cu130），所以必须 `--reinstall-package torch` 强制降级替换，普通 `--upgrade` 会“无变更”并继续报 CUDA 不可用。命令行仍可直接设置 `LYRAFORGE_DETTATO_DEVICE=cpu|cuda|mps`。
    - **超时**：转录子进程预算会随音频长度增长（dettato 约 10× 实时 + 180 秒余量，Basic Pitch 约 3× + 60 秒），不再固定 5 分钟。
 3. 校验：`uv run lyraforge engines list` 中三个引擎均为 `available: true`，再对一段 WAV/MP3 执行一次 `lyraforge transcribe`。
 
@@ -148,7 +148,7 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
 - 乐器 Profile 位于 `src/lyraforge/instruments/data/*.json`，当前内置：风物之诗琴（C 大调，MIDI 48–83）、镜花之琴（C 大调，48–83）、老旧的诗琴（低/中行 C Dorian、高行 C Phrygian，48–82）。
 - 预设位于 `src/lyraforge/presets.py`：每件乐器 5 套（主旋律优先 / 均衡 / 丰满 / 慢速练习 / 轻快），对应 `style`、移调、琶音与速度。命令行查看：`uv run lyraforge presets list --profile genshin.windsong_lyre.v1`；桌面端在编曲工作室顶部直接点选应用。
 - 新增 21 键乐器：复制现有 JSON，修改 `id`、`display_name`、`keys[].pitch`，在 `calibration` 中写明资料来源并保持 `status: "unverified"`；在 `presets.py` 的 `_PROFILE_IDS` 登记；运行 `uv run pytest tests/unit/test_presets.py`。
-- 校准边界：三件乐器的键位/绝对八度命名在真机逐键核对前均视为未验证；更换键位属于数据修改，不需要改编曲算法。
+- 校准边界：Windows 10/11《原神》自由演奏实机流程与默认键位表现已由维护者实机验证通过；三件内置乐器 JSON 的 `calibration.status` 元数据字段目前仍保持 `"unverified"`（待后续单独元数据更新）；更换键位属于数据修改，不需要改编曲算法。
 
 
 ---
@@ -178,7 +178,7 @@ uv run python scripts/generate_icons.py
 
 CI 复用 [.github/workflows/ci.yml](../.github/workflows/ci.yml) 中的 `package-windows` 与 `package-macos` 作业：在双平台测试及原生 `--self-check --check-gui` 全数通过后，由 [scripts/release_helper.py](../scripts/release_helper.py) 将完整 Windows 便携目录与 macOS `.app` 包分别打包为包含架构/构建版本、完整运行时依赖、前端 `dist/` 与 `LICENSE` 的 ZIP，生成统一的 `SHA256SUMS.txt` 并对两端**解压后的可执行文件 `--self-check --check-gui`** 进行二次验证：
 
-- **开发预发行渠道（Pre-release）**：`main` 分支每次受信任的 `push` 或手动 `workflow_dispatch` 会发布不可变快照 `dev-<YYYYMMDD>-<sha7>`（保留最近 10 个快照），并同步更新固定最新入口 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（同时包含 `windows-x64` 与 `macos-arm64` 构建）；所有开发版均显式标注为实验性未真机校准版本。
+- **开发预发行渠道（Pre-release）**：`main` 分支每次受信任的 `push` 或手动 `workflow_dispatch` 会发布不可变快照 `dev-<YYYYMMDD>-<sha7>`（保留最近 10 个快照），并同步更新固定最新入口 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest)（同时包含 `windows-x64` 与 `macos-arm64` 构建）；所有开发版均以 Pre-release 渠道发布，并附带校验哈希与当前版本说明。
 - **独立 SemVer 正式发行渠道**：仅当推送独立 `vX.Y.Z`（或 `vX.Y.Z-alpha.N`）Tag 时发布对应版本，绝不会被普通 `main` 推送覆盖或移动 Tag，且所有 Pull Request 均禁止执行发布作业（顶层默认 `contents: read`，仅发布作业授予 `contents: write`）。
 - 相关构建与发布辅助：[lyraforge.spec](../packaging/lyraforge.spec)、[release_helper.py](../scripts/release_helper.py)、[generate_icons.py](../scripts/generate_icons.py)。
 
@@ -200,7 +200,7 @@ lyraforge_starter/
 │  ├─ errors.py / fs.py       # 统一错误码与原子路径安全写
 │  ├─ secrets.py / secrets_win32.py  # 跨平台凭据管理与日志脱敏
 │  ├─ music_core/             # 无头纯 Python 音乐核心（MIDI/Tempo/编曲/分离式质量评价）
-│  ├─ instruments/            # 乐器预设（风物之诗琴/镜花之琴/老旧的诗琴，unverified 待真机校准）
+│  ├─ instruments/            # 乐器预设（风物之诗琴/镜花之琴/老旧的诗琴）
 │  ├─ media/ / transcribers/  # WAV 提取、YIN 转录与隔离进程外部 ML 适配器
 │  ├─ sources/                # 本地库/目录 + 规范化许可判定开放曲库 + DNS 固定直链获取
 │  ├─ agent/                  # 离线规则指令解析与可选 OpenAI-compatible HTTP 提供器
