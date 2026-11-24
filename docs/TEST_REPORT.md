@@ -601,7 +601,18 @@
      - `hold_release_sweep`（21 音）：`drift = 0.165 ms`，`CPU = 1.83%`，`P50 = 0.015 ms`，`P95 = 0.052 ms`，`min_observed_release_gap = 10.019 ms`；
      - `long_stability`（3.0s / 33 音）：`drift = 0.096 ms`，`CPU = 1.95%`，`P50 = 0.027 ms`，`P95 = 0.305 ms`，`Max = 1.292 ms`。
    - **合成 PCM WAV 校准解析往返**：Pattern B（`+60 ms` 偏移、屏蔽 `<60 ms` 连击）测得 `offset = 58.0 ms`、`detection_rate = 0.8125`、推荐 `min_same_key_interval_ms = 60`；Pattern G 准确区分 `one_shot`（短按衰减 `115.0 ms` vs 长按 `118.3 ms`）与 `sustained`（`91.7 ms` vs `365.0 ms`）。
-3. **验证边界与实机待确认项**：
+3. **本地全量验证（代码定稿与合入前最终校验）**：
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **283 passed, 2 warnings in 54.99s**，总覆盖率 **83.89%**（含 `test_playback_precision.py` 29 例与 `test_calibration.py` 5 例）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 17 passed (17)**；
+   - `pnpm --dir apps/desktop/web build`（`vue-tsc --noEmit && vite build`） → `49 modules transformed`，`built in 1.12s`；
+   - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.windsong_lyre.v1 (hash verified)`，`actions_sent: 48`，`state: "completed"`）；
+   - `uv run python scripts/eval_transcribers.py` → `pipeline_roundtrip` 通过（`transcribed_notes: 8`, `arranged_events: 8`）；
+   - CSS 规范扫描：除 `tokens.css` 外无字面量色值。
+4. **GitHub PR 与合并后 CI**：
+   - [PR #29](https://github.com/PariyaProject/LyraForge/pull/29)（`1e70a98`）→ PR CI [Run #45397777519](https://github.com/PariyaProject/LyraForge/actions/runs/45397777519) 全部 4 项活动作业 `success`（`Test (windows-latest)`、`Test (macos-latest)`、`Build macOS Bundle (PyInstaller)`、`Build Windows Bundle (PyInstaller)`）；
+   - Squash 合入 `main`（`afe8591`）→ 合并后 CI [Run #45398458703](https://github.com/PariyaProject/LyraForge/actions/runs/45398458703) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`LyraForge-dev-20261124-afe8591-windows-x64.zip`、`LyraForge-dev-20261124-afe8591-macos-arm64.zip`、`SHA256SUMS.txt`）。
+5. **验证边界与实机待确认项**：
    - 上述测试在 macOS `DryRunDriver`、虚拟时间膨胀/暂停时钟、Win32 API/winmm Mock 及合成 WAV 夹具上完成；`min_same_key_interval_ms=50`、`min_key_hold_ms=20`、`min_key_release_gap_ms=20`、`trigger_mode="one_shot"` 均明确标注 `provisional: true`。在物理 Windows 10/11 运行《原神》游戏客户端时不同琴种的真实最小发声保持时间、同键连击帧上限与多键同步上限，仍待维护者使用本轮 `lyraforge calibrate prepare` / 桌面校准面板实机录制 WAV 完成实测校准。
 
 
