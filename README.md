@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/lyraforge-icon.svg" alt="LyraForge — Swiss Mono L 型竖琴应用图标" width="96" height="96" />
+<img src="docs/assets/lyraforge-icon.svg" alt="LyraForge" width="96" height="96" />
 
 <h1>LyraForge</h1>
 
@@ -24,8 +24,6 @@
 </div>
 
 LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐转谱与游戏乐器编曲工作台，面向《原神》PC 版大世界中的**自由乐器演奏界面**（非下落式音游脚本）。你可以导入 MIDI 或音频、适配游戏乐器 21 键范围、在交互式 Piano Roll 中试听与微调，并保存到本地曲库或导出分享。
-
-应用采用统一的极简 **L 型竖琴（Swiss Mono L-Harp）** 标识（[矢量母版](docs/assets/lyraforge-icon.svg)），融合 `LyraForge` 首字母、竖琴共鸣框与 DAW 音律柱元素，同步内置于 Windows `.ico`、macOS `.icns` 及 Web 工作台界面。
 
 ![LyraForge 工作台实时渲染截图](docs/assets/lyraforge-workbench.png)
 
