@@ -23,6 +23,11 @@ from lyraforge.transcribers.registry import (
     get_transcriber,
     list_transcribers,
 )
+from lyraforge.transcribers.swift_f0 import (
+    SWIFT_F0_CLI_ENV,
+    SWIFT_F0_PYTHON_ENV,
+    SwiftF0SubprocessTranscriber,
+)
 
 __all__ = [
     "BASIC_PITCH_CLI_ENV",
@@ -35,6 +40,9 @@ __all__ = [
     "DettatoSubprocessTranscriber",
     "ModelInfo",
     "ProgressCallback",
+    "SWIFT_F0_CLI_ENV",
+    "SWIFT_F0_PYTHON_ENV",
+    "SwiftF0SubprocessTranscriber",
     "TranscribeOptions",
     "Transcriber",
     "TranscriptionResult",

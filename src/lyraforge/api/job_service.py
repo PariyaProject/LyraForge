@@ -11,7 +11,9 @@ from typing import Any
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.library import LibraryStore
+from lyraforge.music_core.cleanup import vocal_cleanup_options
 from lyraforge.pipelines import DEFAULT_PIPELINE_ID, get_pipeline
+from lyraforge.pipelines.builtin import VOCAL_RANGE_PRESETS
 from lyraforge.playback.guards import StopToken
 from lyraforge.transcribers import TranscribeOptions, get_transcriber
 
@@ -27,6 +29,7 @@ class _TranscriptionJob:
     progress: float = 0.0
     transcription: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    warnings: tuple[str, ...] = ()
     stop_token: StopToken = field(default_factory=StopToken)
     thread: threading.Thread | None = None
     started_at: float | None = None
@@ -43,6 +46,7 @@ class _TranscriptionJob:
             "status": self.status,
             "stage": self.stage,
             "progress": round(self.progress, 4),
+            "warnings": list(self.warnings),
             "transcription": self.transcription,
             "error": self.error,
             "started_at": self.started_at,
@@ -87,6 +91,8 @@ class TranscriptionJobManager:
         pipeline_id: str = DEFAULT_PIPELINE_ID,
         vocal_engine_id: str | None = None,
         accomp_engine_id: str | None = None,
+        vocal_cleanup: str = "standard",
+        vocal_range: str = "auto",
         options: TranscribeOptions,
         data_dir: Path,
     ) -> dict[str, Any]:
@@ -99,13 +105,14 @@ class TranscriptionJobManager:
         options.validate()
         pipeline = get_pipeline(pipeline_id)
         p_info = pipeline.probe()
-        if not p_info.available:
-            missing = ", ".join(p_info.missing_tools) or pipeline_id
-            raise LyraError(
-                ErrorCode.MODEL_MISSING,
-                f"pipeline {pipeline_id!r} requires missing tool(s): {missing}",
-            )
+        preflight_warnings: list[str] = list(p_info.warnings)
         if pipeline_id == DEFAULT_PIPELINE_ID:
+            if not p_info.available:
+                missing = ", ".join(p_info.missing_tools) or pipeline_id
+                raise LyraError(
+                    ErrorCode.MODEL_MISSING,
+                    f"pipeline {pipeline_id!r} requires missing tool(s): {missing}",
+                )
             eng = get_transcriber(engine_id)
             info = eng.probe()
             if not info.available:
@@ -113,7 +120,21 @@ class TranscriptionJobManager:
                     ErrorCode.MODEL_MISSING,
                     f"transcriber {engine_id!r} is not installed on this machine",
                 )
+            display_engine = engine_id
         else:
+            vocal_cleanup_options(vocal_cleanup)
+            if (vocal_range or "auto").strip().lower() not in VOCAL_RANGE_PRESETS:
+                raise LyraError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"unknown vocal range preset: {vocal_range!r}",
+                    {"available": list(VOCAL_RANGE_PRESETS)},
+                )
+            if not p_info.low_resource_available:
+                missing = ", ".join(p_info.missing_tools) or "demucs"
+                raise LyraError(
+                    ErrorCode.MODEL_MISSING,
+                    f"pipeline {pipeline_id!r} requires missing tool(s): {missing}",
+                )
             for candidate_id in (vocal_engine_id, accomp_engine_id):
                 if candidate_id and candidate_id != "auto":
                     eng = get_transcriber(candidate_id)
@@ -122,6 +143,35 @@ class TranscriptionJobManager:
                             ErrorCode.MODEL_MISSING,
                             f"transcriber {candidate_id!r} is not installed on this machine",
                         )
+            resolved_parts: list[str] = []
+            if pipeline_id in {"vocal_split_full", "vocal_split_lead"}:
+                v_eng = (
+                    vocal_engine_id
+                    if (vocal_engine_id and vocal_engine_id != "auto")
+                    else p_info.resolved_vocal_engine_id
+                )
+                if v_eng:
+                    resolved_parts.append(v_eng)
+            if pipeline_id in {"vocal_split_full", "vocal_split_accomp"}:
+                a_eng = (
+                    accomp_engine_id
+                    if (accomp_engine_id and accomp_engine_id != "auto")
+                    else p_info.resolved_accomp_engine_id
+                )
+                if a_eng is None:
+                    raise LyraError(
+                        ErrorCode.MODEL_MISSING,
+                        f"pipeline {pipeline_id!r} requires dettato or basic-pitch for "
+                        "polyphonic accompaniment (or explicitly choose "
+                        "accomp_engine_id='builtin-mono' for low-resource monophonic mode)",
+                    )
+                if a_eng in {"builtin-mono", "swift-f0"}:
+                    preflight_warnings.append(
+                        f"伴奏轨已设为单音引擎 {a_eng}（低资源/显式降级模式），"
+                        "输出结果不含多声部和弦。"
+                    )
+                resolved_parts.append(a_eng)
+            display_engine = "+".join(dict.fromkeys(resolved_parts)) or p_info.default_engine_id
 
         with LibraryStore(data_dir) as store:
             detail = store.get_song(song_id)
@@ -130,16 +180,12 @@ class TranscriptionJobManager:
                     ErrorCode.SOURCE_UNAVAILABLE, f"song {song_id} has no audio/video source"
                 )
 
-        display_engine = (
-            engine_id
-            if pipeline_id == DEFAULT_PIPELINE_ID
-            else p_info.default_engine_id
-        )
         job = _TranscriptionJob(
             id=str(uuid.uuid4()),
             song_id=song_id,
             engine_id=display_engine,
             pipeline_id=pipeline_id,
+            warnings=tuple(dict.fromkeys(preflight_warnings)),
         )
 
         def _on_progress(fraction: float, stage: str) -> None:
@@ -165,6 +211,8 @@ class TranscriptionJobManager:
                         pipeline_id=pipeline_id,
                         vocal_engine_id=vocal_engine_id,
                         accomp_engine_id=accomp_engine_id,
+                        vocal_cleanup=vocal_cleanup,
+                        vocal_range=vocal_range,
                         options=options,
                         on_progress=_on_progress,
                         stop_token=job.stop_token,
@@ -175,6 +223,9 @@ class TranscriptionJobManager:
                     job.progress = 1.0
                     job.finished_at = time.time()
                     job.engine_id = rec.engine
+                    job_warnings = rec.metadata.get("warnings")
+                    if isinstance(job_warnings, list):
+                        job.warnings = tuple(str(w) for w in job_warnings if w)
                     job.transcription = rec.to_json()
             except LyraError as exc:
                 with self._lock:

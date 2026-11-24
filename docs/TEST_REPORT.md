@@ -532,3 +532,25 @@
    - `DemucsSeparator`、`VocalSplitPipeline` 与前端对比流程均在隔离 mock / 合成测试夹具上完成回归验证；由于 CI 与本机 macOS 沙盒未联网安装 `demucs`/`basic-pitch`/`dettato` 及 NVIDIA GPU 驱动，实际在物理 Windows 10/11 环境下首次安装 `demucs` + 下载 `htdemucs` 权重、CUDA GPU 推理速度与多首真实带人声流行歌在游戏琴键上的主观听感对比，仍待用户在新版 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 上实测对比确认。
    - 本机 `PATH` 未安装 Hallmark `sloplint` CLI，前端按 `DESIGN.md` token（无字面量色值、无嵌套卡片）通过 grep 与人工检查确认。
 
+---
+
+## 28. Round 26：人声转谱质量、可选 SwiftF0 引擎与音乐编曲专项优化验证记录
+
+1. **核心改动核查**：
+   - **禁止伴奏静默降级与全链路溯源**：[src/lyraforge/pipelines/builtin.py](../src/lyraforge/pipelines/builtin.py) 将 `_pick_accomp_engine()` 从静默回退 `builtin-mono` 改为无多音引擎时返回 `None`，`PipelineInfo.available` 真实反映缺失引擎并在任务前暴露推荐引擎与降级/含鼓 warnings；修复 `VocalSplitPipeline.run()` `engine_id` 优先级导致忽略自动选择 `swift-f0` 的真实缺陷；保留用户主动选配低资源 `builtin-mono` 能力（标记 `degraded_mode: true`），完整记录实际引擎、`engine_version`（子进程版本探测缓存）、参数与警告至 SQLite `options_json` 及 API/CLI/MCP/桌面端；
+   - **人声音符清理顺序与预设**：[src/lyraforge/music_core/cleanup.py](../src/lyraforge/music_core/cleanup.py) 新增 `VOCAL_CLEANUP_PRESETS`（`off` / `light` / `standard` / `strong`），重排 `_clean_vocal_score()` 先做谐波幽灵剔除（`+12/+19/+24`）、孤立八度错误修复、重叠/序列颤音合并、单调/低响度滑音吸收与微断音粘连（保护零间隙清晰连续同音重击及快速装饰音/半音经过音不被误并），再做 `min_note_ms` 过滤；
+   - **宽人声音域、真实参数透传与跨设备修复**：新增 `VOCAL_RANGE_PRESETS`（`auto 73–1760 Hz` / `male 65–700 Hz` / `female 155–1760 Hz`），向 `BasicPitchSubprocessTranscriber` 真实转发 `--minimum-note-length`（实测验证 `basic_pitch.predict` 单位为毫秒）；`DemucsSeparator`（[src/lyraforge/separators/demucs.py](../src/lyraforge/separators/demucs.py)）改为原始 float32 `bass+other` 相加后统一 `0.98` 峰值限幅、记录 `drums_removed: bool` 诚实标签与 MPS→CPU 自动回退；`DettatoSubprocessTranscriber` 与 `toolchain/runtime.py` 自动避开 MPS float64 崩溃（macOS `dettato` 自动走 `cpu`，`demucs` 走 `mps`）；`format_log_tail()` 保留 `stdout` 尾行防错误信息被吞；
+   - **可选 `swift-f0` 轻量人声引擎与 `vocal_lead` 编曲打磨**：经实机多模型评测后引入 MIT 许可 `swift-f0==0.3.0`（[src/lyraforge/transcribers/swift_f0.py](../src/lyraforge/transcribers/swift_f0.py)，`model.onnx` `0.13 MB`，仅限单音人声）；`vocal_lead`（[src/lyraforge/music_core/arranger.py](../src/lyraforge/music_core/arranger.py)）增强主旋律标签防抢夺、轮廓陡跳/低音舒适惩罚、低八度支撑、原生 `sus2` 保留 vs 小二度冲突屏蔽与人声尾音间奏交接；同步补齐 [src/lyraforge/mcp/tools.py](../src/lyraforge/mcp/tools.py) 参数与 [apps/desktop/web/src/](../apps/desktop/web/src/) 预检/预设展示。
+2. **真音乐质量评测摘要**（完整四层对照数据与候选 F0 对照见 [MUSIC_QUALITY_EVAL.md](MUSIC_QUALITY_EVAL.md)）：
+   - Vocal F0 选型对比（8 类干声与 Demucs 分离真声）：`swift-f0 0.3.0` 录得最高均值 `F1 = 0.8416`、`0.0000` 八度误差、平均 `RTF = 0.0063`，在真实 VocalSet (`CC-BY-4.0`) + 乐队混音中将 `vocal_split_lead` 人声 F1 从 `0.061`/`0.703` 提升至 `0.476`/`0.941`，端到端 `vocal_split_full` 编曲主旋律精确召回在 `cat9`/`cat10`/`cat7` 分别达 `0.5714`、`0.9412`、`1.0000`（`Cliffs = 0`）；
+   - `cat8_vocal_artifacts` 修复清理执行顺序与 touching 同音保护后，4 次同音重击从错并至 `1` 次恢复为 `4/4` 完整保留（`basic-pitch` 清理 F1 `0.6207 → 0.7879`，`swift-f0 + light` `0.8571`）；
+   - 纯真值 MIDI 编曲矩阵中 `cat4_jpop_anime` (`vocal_lead`) 移调优化为 `-7`、主旋律精确召回 `0.8824 → 0.9412`、八度断崖 `1 → 0`，`classic` 保持 100% 字节向后兼容。
+3. **本地全量验证结果（最终提交前全套门禁）**：
+   - `uv run ruff check .` → `All checks passed!`
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **248 passed, 2 warnings**，总覆盖率 **83.83%**（覆盖新增 `test_transcribers.py`、`test_pipelines_and_separators.py`、`test_vocal_arranger.py`、`test_gpu_tools.py`、`test_toolchain.py`、`test_mcp_server.py` 与 `tests/integration/test_api.py`）。
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 13 passed (13)**；`pnpm --dir apps/desktop/web build` → `47 modules transformed`（`vue-tsc --noEmit && vite build` `1.07s`）。
+   - `make smoke` → 退出码 `0`（DryRun `actions_sent = 48`、`keys_still_pressed = []`）。
+   - `uv run python scripts/eval_transcribers.py` → 退出码 `0`（`pipeline_roundtrip.ok = true`、`preview_wav_bytes = 155276`，全部 4 引擎真实 `supported_options` 与 `polyphonic` 报告正确）。
+4. **环境边界（如实标注）**：
+   - macOS Apple Silicon 上真实端到端运行并对比 `ffmpeg 9.0`、`demucs 4.0.1`、`basic-pitch 0.4.0`、`dettato 2.0.0`、`swift-f0 0.3.0` 与 `builtin-mono`；物理 Windows 10/11 NVIDIA CUDA 上实测多轨分离/转录速度与真机《原神》游戏内实际敲键演奏未在本会话物理机复测，待用户在发行产物上实机验证。
+

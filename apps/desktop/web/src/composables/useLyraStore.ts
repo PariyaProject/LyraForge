@@ -152,6 +152,8 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedEngineId = ref("builtin-mono");
   const selectedVocalEngineId = ref("auto");
   const selectedAccompEngineId = ref("auto");
+  const selectedVocalCleanup = ref<"off" | "light" | "standard" | "strong">("standard");
+  const selectedVocalRange = ref<"auto" | "male" | "female">("auto");
   const transcriptionJobs = ref<TranscriptionJob[]>([]);
 
   // Arrangement state
@@ -759,6 +761,8 @@ export function createLyraStore(api: LyraForgeApi) {
               pipelineId,
               vocalEngineId: selectedVocalEngineId.value,
               accompEngineId: selectedAccompEngineId.value,
+              vocalCleanup: selectedVocalCleanup.value,
+              vocalRange: selectedVocalRange.value,
             });
       upsertTranscriptionJob(job);
       reportOk(`已提交音频转谱任务：${songTitleById(songId)} (${job.engine_id})`);
@@ -1571,6 +1575,8 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedPipelineInfo,
     selectedVocalEngineId,
     selectedAccompEngineId,
+    selectedVocalCleanup,
+    selectedVocalRange,
     arrangerStrategies,
     selectedArrangerStrategy,
     selectedTranscriptionId,

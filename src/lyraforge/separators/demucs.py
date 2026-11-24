@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import array
+import json
 import os
 import subprocess
 import sys
 import wave
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.media.subprocess_utils import (
@@ -26,6 +28,7 @@ from lyraforge.transcribers._subprocess import (
     _effective_timeout_s,
     _utf8_child_env,
     _wav_duration_s,
+    probe_installed_version,
     resolve_runner,
 )
 
@@ -44,7 +47,7 @@ _DEVICE_PROBE = (
 _DEVICE_CACHE: dict[str, str] = {}
 
 _DEMUCS_RUN_SCRIPT = r"""
-import pathlib, sys
+import json, pathlib, sys
 import numpy as np
 import soundfile as sf
 import torch
@@ -86,24 +89,45 @@ if ref_std > 1e-8:
     sources = sources * ref_std + ref.mean()
 
 sources_cpu = sources.detach().cpu().numpy()
-by_name = {}
-for idx, name in enumerate(model.sources):
-    stem_arr = np.clip(sources_cpu[idx].T, -1.0, 1.0)
-    by_name[name] = stem_arr
-    sf.write(str(out_root / f"{name}.wav"), stem_arr, target_sr, subtype="PCM_16")
+raw_by_name = {}
+stem_peaks = {}
 
+
+def _peak_limit(arr: np.ndarray, limit: float = 0.98) -> tuple[np.ndarray, float]:
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if peak > limit:
+        return (arr * (limit / peak)).astype(np.float32), peak
+    return arr.astype(np.float32), peak
+
+
+for idx, name in enumerate(model.sources):
+    raw_stem = sources_cpu[idx].T.astype(np.float32)
+    raw_by_name[name] = raw_stem
+    safe_stem, raw_peak = _peak_limit(raw_stem)
+    stem_peaks[name] = round(raw_peak, 4)
+    sf.write(str(out_root / f"{name}.wav"), safe_stem, target_sr, subtype="PCM_16")
+
+present_acc = [k for k in ("bass", "other") if k in raw_by_name]
 no_drums = None
-for key in ("bass", "other"):
-    if key in by_name:
-        no_drums = by_name[key].copy() if no_drums is None else (no_drums + by_name[key])
-if no_drums is None and "vocals" in by_name:
-    # Fallback for 2-stem models
-    pass
-elif no_drums is not None:
-    peak = float(np.max(np.abs(no_drums)))
-    if peak > 0.98:
-        no_drums = no_drums * (0.98 / peak)
-    sf.write(str(out_root / "no_drums.wav"), no_drums, target_sr, subtype="PCM_16")
+acc_source = None
+if present_acc:
+    for key in present_acc:
+        no_drums = raw_by_name[key].copy() if no_drums is None else (no_drums + raw_by_name[key])
+    acc_source = "+".join(present_acc)
+    no_drums_safe, mix_peak = _peak_limit(no_drums)
+    stem_peaks["no_drums"] = round(mix_peak, 4)
+    sf.write(str(out_root / "no_drums.wav"), no_drums_safe, target_sr, subtype="PCM_16")
+
+meta = {
+    "actual_device": device,
+    "model": model_name,
+    "sample_rate": target_sr,
+    "sources": list(model.sources),
+    "accompaniment_source": acc_source,
+    "drums_removed": bool(present_acc),
+    "stem_peaks": stem_peaks,
+}
+(out_root / "demucs_meta.json").write_text(json.dumps(meta), encoding="utf-8")
 """
 
 
@@ -231,6 +255,35 @@ class DemucsSeparator:
             },
         )
 
+    def _build_cmd(
+        self,
+        runner: list[str],
+        wav_path: Path,
+        out_dir: Path,
+        model_name: str,
+        device: str,
+    ) -> list[str]:
+        if len(runner) >= 3 and runner[1] == "-m":
+            return [
+                runner[0],
+                "-c",
+                _DEMUCS_RUN_SCRIPT,
+                str(wav_path),
+                str(out_dir),
+                model_name,
+                device,
+            ]
+        return [
+            *runner,
+            "-n",
+            model_name,
+            "-d",
+            device,
+            "-o",
+            str(out_dir),
+            str(wav_path),
+        ]
+
     def separate(
         self,
         wav_path: Path,
@@ -253,28 +306,7 @@ class DemucsSeparator:
         out_dir.mkdir(parents=True, exist_ok=True)
         model_name = os.environ.get(DEMUCS_MODEL_ENV, "").strip() or DEFAULT_DEMUCS_MODEL
         device = resolve_device(runner)
-
-        if len(runner) >= 3 and runner[1] == "-m":
-            cmd = [
-                runner[0],
-                "-c",
-                _DEMUCS_RUN_SCRIPT,
-                str(wav_path),
-                str(out_dir),
-                model_name,
-                device,
-            ]
-        else:
-            cmd = [
-                *runner,
-                "-n",
-                model_name,
-                "-d",
-                device,
-                "-o",
-                str(out_dir),
-                str(wav_path),
-            ]
+        explicit_device = os.environ.get(DEMUCS_DEVICE_ENV, "").strip().lower()
 
         if on_progress is not None:
             on_progress(0.15, "separating")
@@ -285,6 +317,13 @@ class DemucsSeparator:
             per_audio_second=12.0,
             slack_s=300.0,
         )
+        child_env = _utf8_child_env()
+        child_env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+        child_env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+        warnings: list[str] = []
+        fallback_from_device: str | None = None
+        cmd = self._build_cmd(runner, wav_path, out_dir, model_name, device)
         res = run_bounded_subprocess(
             cmd,
             work_dir=out_dir,
@@ -294,10 +333,29 @@ class DemucsSeparator:
             cancel_message="source separation cancelled",
             timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
             timeout_message=f"Demucs timed out after {eff_timeout:.1f}s",
-            env=_utf8_child_env(),
+            env=child_env,
         )
         if stop_token is not None and stop_token.stopped:
             raise LyraError(ErrorCode.PLAYBACK_ABORTED, "source separation cancelled")
+        if res.returncode != 0 and device == "mps" and not explicit_device:
+            fallback_from_device = "mps"
+            device = "cpu"
+            warnings.append("Demucs MPS 加速运行失败，已自动回退至 CPU 分离。")
+            cmd = self._build_cmd(runner, wav_path, out_dir, model_name, device)
+            res = run_bounded_subprocess(
+                cmd,
+                work_dir=out_dir,
+                prefix="demucs-cpu",
+                timeout_s=eff_timeout,
+                stop_token=stop_token,
+                cancel_message="source separation cancelled",
+                timeout_code=ErrorCode.TRANSCRIPTION_FAILED,
+                timeout_message=f"Demucs timed out after {eff_timeout:.1f}s",
+                env=child_env,
+            )
+            if stop_token is not None and stop_token.stopped:
+                raise LyraError(ErrorCode.PLAYBACK_ABORTED, "source separation cancelled")
+
         if res.returncode != 0:
             stderr_text = format_log_tail(
                 res.stderr_tail,
@@ -305,6 +363,13 @@ class DemucsSeparator:
                 stderr_truncated=res.stderr_truncated,
                 stderr_bytes=res.stderr_bytes,
             )
+            if "torchcodec" in stderr_text.lower():
+                raise LyraError(
+                    ErrorCode.TRANSCRIPTION_FAILED,
+                    "Demucs CLI failed because torchaudio requires TorchCodec; "
+                    f"configure {DEMUCS_PYTHON_ENV} (managed Demucs venv with soundfile) instead: "
+                    f"{stderr_text}",
+                )
             raise LyraError(
                 ErrorCode.TRANSCRIPTION_FAILED,
                 f"Demucs exited with code {res.returncode}: {stderr_text}",
@@ -315,13 +380,46 @@ class DemucsSeparator:
         other = _find_cli_stem(out_dir, "other.wav")
         drums = _find_cli_stem(out_dir, "drums.wav")
         no_drums = _find_cli_stem(out_dir, "no_drums.wav")
+
+        script_meta: dict[str, Any] = {}
+        meta_file = out_dir / "demucs_meta.json"
+        if meta_file.is_file():
+            try:
+                loaded = json.loads(meta_file.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    script_meta = loaded
+            except (OSError, ValueError):
+                script_meta = {}
+
+        accompaniment_source: str | None = (
+            str(script_meta["accompaniment_source"])
+            if isinstance(script_meta.get("accompaniment_source"), str)
+            else None
+        )
+        drums_removed = bool(script_meta.get("drums_removed", False))
+
+        if no_drums is not None and accompaniment_source is None:
+            present = [n for n, p in (("bass", bass), ("other", other)) if p is not None]
+            accompaniment_source = "+".join(present) if present else "no_drums"
+            drums_removed = True
+        elif no_drums is None:
+            present_paths = [(n, p) for n, p in (("bass", bass), ("other", other)) if p is not None]
+            if present_paths:
+                no_drums_target = out_dir / "no_drums.wav"
+                no_drums = _mix_pcm16_wavs([p for _, p in present_paths], no_drums_target)
+                if no_drums is not None:
+                    accompaniment_source = "+".join(n for n, _ in present_paths)
+                    drums_removed = True
+
         if no_drums is None:
-            no_drums_target = out_dir / "no_drums.wav"
-            no_drums = _mix_pcm16_wavs(
-                [p for p in (bass, other) if p is not None], no_drums_target
-            )
-        if no_drums is None:
-            no_drums = _find_cli_stem(out_dir, "no_vocals.wav")
+            no_vocals = _find_cli_stem(out_dir, "no_vocals.wav")
+            if no_vocals is not None:
+                no_drums = no_vocals
+                accompaniment_source = "no_vocals_with_drums"
+                drums_removed = False
+                warnings.append(
+                    "Demucs 回退至 no_vocals.wav，当前伴奏轨仍包含鼓声（未能移除鼓组）。"
+                )
 
         if vocals is None and no_drums is None:
             raise LyraError(
@@ -331,11 +429,25 @@ class DemucsSeparator:
         if on_progress is not None:
             on_progress(0.45, "separated")
 
+        metadata: dict[str, Any] = {
+            "separator": self.id,
+            "version": probe_installed_version(runner, "demucs"),
+            "model": model_name,
+            "device": device,
+            "drums_removed": drums_removed,
+            "accompaniment_source": accompaniment_source,
+            "warnings": warnings,
+        }
+        if fallback_from_device is not None:
+            metadata["fallback_from_device"] = fallback_from_device
+        if script_meta.get("stem_peaks"):
+            metadata["stem_peaks"] = script_meta["stem_peaks"]
+
         return SeparatedStems(
             vocals=vocals,
             accompaniment=no_drums,
             bass=bass,
             other=other,
             drums=drums,
-            metadata={"separator": self.id, "model": model_name, "device": device},
+            metadata=metadata,
         )

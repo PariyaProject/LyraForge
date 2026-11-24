@@ -511,6 +511,7 @@ def test_tools_status_and_background_install(
         "basic-pitch",
         "dettato",
         "demucs",
+        "swift-f0",
     }
     assert all(isinstance(item["installed"], bool) for item in payload["tools"])
 

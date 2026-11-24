@@ -285,14 +285,36 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "transcribe",
         "description": (
-            "Transcribe an imported audio/video song in the library to MIDI using builtin-mono "
-            "(YIN) or a configured isolated external engine."
+            "Transcribe an imported audio/video song in the library to MIDI using direct or "
+            "Demucs vocal-separation pipelines (never silently falls back to mono accompaniment)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "song_id": {"type": "string"},
+                "pipeline_id": {
+                    "type": "string",
+                    "enum": [
+                        "direct",
+                        "vocal_split_full",
+                        "vocal_split_lead",
+                        "vocal_split_accomp",
+                    ],
+                    "default": "direct",
+                },
                 "engine_id": {"type": "string", "default": DEFAULT_TRANSCRIBER_ID},
+                "vocal_engine_id": {"type": "string"},
+                "accomp_engine_id": {"type": "string"},
+                "vocal_cleanup": {
+                    "type": "string",
+                    "enum": ["off", "light", "standard", "strong"],
+                    "default": "standard",
+                },
+                "vocal_range": {
+                    "type": "string",
+                    "enum": ["auto", "male", "female"],
+                    "default": "auto",
+                },
                 "min_pitch": {"type": "integer", "minimum": 0, "maximum": 126, "default": 36},
                 "max_pitch": {"type": "integer", "minimum": 1, "maximum": 127, "default": 96},
                 "min_note_ms": {"type": "integer", "minimum": 10, "default": 60},
@@ -304,14 +326,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "arrange",
         "description": (
-            "Arrange a song (from MIDI source or latest transcription) for a Genshin Impact "
-            "instrument profile and persist the arrangement version."
+            "Arrange a song (from MIDI source or chosen transcription) for a Genshin Impact "
+            "instrument profile using classic or vocal_lead strategy."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "song_id": {"type": "string"},
                 "profile_id": {"type": "string", "default": DEFAULT_PROFILE_ID},
+                "transcription_id": {"type": "string"},
+                "arranger_strategy": {
+                    "type": "string",
+                    "enum": ["classic", "vocal_lead"],
+                    "default": "classic",
+                },
+                "melody_track": {"type": "integer", "minimum": 0},
+                "include_tracks": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+                "vocal_ducking": {"type": "boolean", "default": True},
+                "melody_ceiling": {"type": "boolean", "default": True},
+                "anti_clash_semitones": {"type": "boolean", "default": True},
                 "style": {
                     "type": "string",
                     "enum": [s.value for s in Style],
@@ -880,7 +913,16 @@ class MCPToolExecutor:
         song_id = str(args.get("song_id") or "").strip()
         if not song_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "song_id is required")
+        pipeline_id = str(args.get("pipeline_id") or "direct")
         engine_id = str(args.get("engine_id") or DEFAULT_TRANSCRIBER_ID)
+        vocal_engine_id = (
+            str(args["vocal_engine_id"]).strip() if args.get("vocal_engine_id") else None
+        )
+        accomp_engine_id = (
+            str(args["accomp_engine_id"]).strip() if args.get("accomp_engine_id") else None
+        )
+        vocal_cleanup = str(args.get("vocal_cleanup") or "standard")
+        vocal_range = str(args.get("vocal_range") or "auto")
         opts = TranscribeOptions(
             min_pitch=_bound_int(args, "min_pitch", default=36, lo=0, hi=126),
             max_pitch=_bound_int(args, "max_pitch", default=96, lo=1, hi=127),
@@ -891,6 +933,11 @@ class MCPToolExecutor:
             rec = store.transcribe_song(
                 song_id,
                 engine_id=engine_id,
+                pipeline_id=pipeline_id,
+                vocal_engine_id=vocal_engine_id,
+                accomp_engine_id=accomp_engine_id,
+                vocal_cleanup=vocal_cleanup,
+                vocal_range=vocal_range,
                 options=opts,
                 on_progress=lambda p, msg: self.tasks.log(task.task_id, p, msg),
                 stop_token=task.stop_token,
@@ -914,6 +961,10 @@ class MCPToolExecutor:
         song_id = str(args.get("song_id") or "").strip()
         if not song_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "song_id is required")
+        raw_inc = args.get("include_tracks")
+        include_tracks = (
+            tuple(int(t) for t in raw_inc) if isinstance(raw_inc, list) else None
+        )
         opts = ArrangeOptions(
             style=Style(str(args.get("style") or Style.BALANCED.value)),
             transpose=int(args["transpose"]) if args.get("transpose") is not None else None,
@@ -928,6 +979,17 @@ class MCPToolExecutor:
             ),
             chord_window_ms=_bound_int(args, "chord_window_ms", default=20, lo=0, hi=200),
             arpeggiate_ms=_bound_int(args, "arpeggiate_ms", default=0, lo=0, hi=60),
+            include_tracks=include_tracks,
+            arranger_strategy=str(args.get("arranger_strategy") or "classic"),
+            melody_track=(
+                int(args["melody_track"]) if args.get("melody_track") is not None else None
+            ),
+            vocal_ducking=bool(args.get("vocal_ducking", True)),
+            melody_ceiling=bool(args.get("melody_ceiling", True)),
+            anti_clash_semitones=bool(args.get("anti_clash_semitones", True)),
+        )
+        transcription_id = (
+            str(args["transcription_id"]).strip() if args.get("transcription_id") else None
         )
 
         def _work(task: MCPTaskRecord) -> dict[str, Any]:
@@ -937,6 +999,7 @@ class MCPToolExecutor:
                 profile_id=str(args.get("profile_id") or DEFAULT_PROFILE_ID),
                 options=opts,
                 label=str(args["label"]) if args.get("label") else None,
+                transcription_id=transcription_id,
                 stop_token=task.stop_token,
             )
             report = store.load_arrangement_report(rec.id)
@@ -995,11 +1058,19 @@ class MCPToolExecutor:
                     if not n.is_percussion
                 ]
                 detail = store.get_song(rec.song_id)
-                if detail.transcriptions:
+                matched_tr = None
+                if rec.transcription_id:
+                    matched_tr = next(
+                        (t for t in detail.transcriptions if t.id == rec.transcription_id),
+                        None,
+                    )
+                if matched_tr is None and detail.transcriptions:
+                    matched_tr = detail.transcriptions[0]
+                if matched_tr is not None:
                     if task.stop_token.stopped:
                         raise LyraError(ErrorCode.PLAYBACK_ABORTED, "evaluate cancelled")
                     tr_mid = load_midi_file(
-                        resolve_under(store.data_dir, detail.transcriptions[0].cleaned_midi_path)
+                        resolve_under(store.data_dir, matched_tr.cleaned_midi_path)
                     )
                     out["transcription_fidelity"] = evaluate_transcription_against_reference(
                         ref_pairs, tr_mid.notes, onset_tol_ms=tol, pitch_tol_semitones=1

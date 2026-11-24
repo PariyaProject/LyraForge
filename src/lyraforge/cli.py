@@ -729,6 +729,8 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
                 vocal_engine_id=args.vocal_engine,
                 accomp_engine_id=args.accomp_engine,
                 options=opts,
+                vocal_cleanup=getattr(args, "vocal_cleanup", "standard"),
+                vocal_range=getattr(args, "vocal_range", "auto"),
             ),
         )
 
@@ -763,6 +765,7 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
         "raw_midi_out": args.output,
         "cleaned_midi_out": args.cleaned_out,
         "performance_out": args.arrange_out,
+        "metadata": res.metadata,
     }
     print(pretty_json(summary), end="")
     return EXIT_OK
@@ -951,6 +954,16 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--engine", default="builtin-mono")
     pt.add_argument("--vocal-engine", default=None)
     pt.add_argument("--accomp-engine", default=None)
+    pt.add_argument(
+        "--vocal-cleanup",
+        choices=["off", "light", "standard", "strong"],
+        default="standard",
+    )
+    pt.add_argument(
+        "--vocal-range",
+        choices=["auto", "male", "female"],
+        default="auto",
+    )
     pt.add_argument("-o", "--output", default=None, help="write raw.mid path")
     pt.add_argument("--cleaned-out", default=None, help="write cleaned.mid path")
     pt.add_argument("--arrange-out", default=None, help="also arrange into performance.json")

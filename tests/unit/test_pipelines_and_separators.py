@@ -205,6 +205,7 @@ def test_basic_pitch_passes_vocal_thresholds_when_specified(
     bp.transcribe(
         tmp_path / "a.wav",
         TranscribeOptions(
+            min_note_ms=45,
             onset_threshold=0.58,
             frame_threshold=0.35,
             min_frequency_hz=110.0,
@@ -214,6 +215,7 @@ def test_basic_pitch_passes_vocal_thresholds_when_specified(
     flags_cmd = captured[-1]
     assert "--onset-threshold" in flags_cmd and "0.580" in flags_cmd
     assert "--frame-threshold" in flags_cmd and "0.350" in flags_cmd
+    assert "--minimum-note-length" in flags_cmd and "45.0" in flags_cmd
     assert "--minimum-frequency" in flags_cmd and "110.00" in flags_cmd
     assert "--maximum-frequency" in flags_cmd and "1400.00" in flags_cmd
 
@@ -424,3 +426,185 @@ def test_all_four_pipelines_schema_v4_migration_and_api_roundtrip(
         register_separator(orig_demucs)
         _ = sys.platform
         _ = ArrangeOptions()
+
+
+def test_no_silent_accomp_degradation_range_presets_and_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lyraforge.pipelines.builtin import _pick_vocal_engine, _vocal_options
+
+    wav = tmp_path / "song.wav"
+    _write_pcm_wav(wav)
+
+    class _FakeSep:
+        id = "demucs"
+
+        def probe(self) -> SeparatorInfo:
+            return SeparatorInfo(
+                id="demucs", display_name="Fake", available=True, license="MIT", scope_note="ok"
+            )
+
+        def separate(self, wav_path: Path, out_dir: Path, **_kw: Any) -> SeparatedStems:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            v = out_dir / "vocals.wav"
+            a = out_dir / "no_vocals.wav"
+            v.write_bytes(wav_path.read_bytes())
+            a.write_bytes(wav_path.read_bytes())
+            return SeparatedStems(
+                vocals=v,
+                accompaniment=a,
+                metadata={
+                    "separator": "demucs",
+                    "version": "4.0.1",
+                    "drums_removed": False,
+                    "accompaniment_source": "no_vocals_with_drums",
+                    "warnings": ["Demucs 回退至 no_vocals.wav，当前伴奏轨仍包含鼓声"],
+                },
+            )
+
+    class _FakeTrans:
+        def __init__(self, eid: str) -> None:
+            self.id = eid
+
+        def probe(self) -> Any:
+            from lyraforge.transcribers.base import ModelInfo
+
+            return ModelInfo(
+                id=self.id, display_name=self.id, available=True, license="MIT", scope_note="ok"
+            )
+
+        def transcribe(self, _wav: Path, **_kw: Any) -> TranscriptionResult:
+            return TranscriptionResult(
+                engine_id=self.id,
+                engine_version="0.3.0" if self.id == "swift-f0" else "0.1.0",
+                midi_bytes=_midi_bytes([(0, 250, 62), (250, 250, 64)]),
+                note_count=2,
+                duration_ms=500,
+            )
+
+    from lyraforge.separators import registry as sep_reg
+
+    orig_demucs = sep_reg._SEPARATORS["demucs"]
+    register_separator(_FakeSep())
+    monkeypatch.setattr(
+        "lyraforge.pipelines.builtin._available_engine_ids",
+        lambda: {"builtin-mono", "swift-f0"},
+    )
+    try:
+        assert _pick_vocal_engine(None) == "swift-f0"
+        info_full = get_pipeline("vocal_split_full").probe()
+        assert info_full.available is False
+        assert info_full.low_resource_available is True
+        assert "dettato/basic-pitch" in info_full.missing_tools
+        assert info_full.resolved_vocal_engine_id == "swift-f0"
+        assert info_full.resolved_accomp_engine_id is None
+
+        # Auto accompaniment MUST NOT silently degrade to monophonic builtin-mono
+        with pytest.raises(LyraError) as exc:
+            get_pipeline("vocal_split_full").run(
+                wav,
+                PipelineRequest(transcriber_resolver=lambda eid: _FakeTrans(eid)),
+            )
+        assert exc.value.code == ErrorCode.MODEL_MISSING
+
+        # Explicit user opt-in to builtin-mono accompaniment is allowed & labeled degraded
+        res = get_pipeline("vocal_split_full").run(
+            wav,
+            PipelineRequest(
+                accomp_engine_id="builtin-mono",
+                vocal_cleanup="light",
+                vocal_range="male",
+                transcriber_resolver=lambda eid: _FakeTrans(eid),
+            ),
+        )
+        assert res.engine_id == "swift-f0+builtin-mono"
+        assert res.metadata["degraded_mode"] is True
+        assert res.metadata["drums_removed"] is False
+        assert res.metadata["vocal_cleanup"] == "light"
+        assert res.metadata["vocal_range"] == "male"
+        assert any("单音引擎" in w for w in res.metadata["warnings"])
+
+        # Vocal range presets preserve male bass/baritone < 110Hz and female soprano > 1400Hz
+        male_opts = _vocal_options(
+            TranscribeOptions(), range_preset="male", engine_id="basic-pitch"
+        )
+        female_opts = _vocal_options(
+            TranscribeOptions(), range_preset="female", engine_id="basic-pitch"
+        )
+        auto_opts = _vocal_options(TranscribeOptions(), range_preset="auto", engine_id="swift-f0")
+        assert male_opts.min_frequency_hz == 65.0
+        assert female_opts.max_frequency_hz == 1760.0
+        assert auto_opts.min_pitch <= 38 and auto_opts.max_pitch >= 93
+
+        # Store persists provenance & exposes it on get_song()
+        store_dir = tmp_path / "prov_store"
+        with LibraryStore(store_dir) as store:
+            imp = store.import_audio(wav, title="Provenance Song")
+            monkeypatch.setattr(
+                "lyraforge.library.store.get_transcriber",
+                lambda eid: _FakeTrans(eid),
+            )
+            tr = store.transcribe_song(
+                imp.song.id,
+                pipeline_id="vocal_split_full",
+                accomp_engine_id="builtin-mono",
+                vocal_cleanup="strong",
+                vocal_range="female",
+            )
+            assert tr.metadata["degraded_mode"] is True
+            assert tr.metadata["vocal_cleanup"] == "strong"
+            assert tr.metadata["vocal_range"] == "female"
+            assert "swift-f0 0.3.0" in tr.engine_version
+    finally:
+        register_separator(orig_demucs)
+
+
+def test_demucs_mps_fallback_and_no_vocals_honesty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav_in = tmp_path / "song.wav"
+    _write_pcm_wav(wav_in)
+    fake_py = tmp_path / "demucs_py"
+    fake_py.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LYRAFORGE_DEMUCS_PYTHON", str(fake_py))
+    monkeypatch.delenv("LYRAFORGE_DEMUCS_DEVICE", raising=False)
+    monkeypatch.delenv("LYRAFORGE_DETTATO_DEVICE", raising=False)
+    monkeypatch.setattr("lyraforge.separators.demucs.resolve_device", lambda _r: "mps")
+
+    calls: list[str] = []
+
+    def fake_bounded(cmd: list[str], *, work_dir: Path, **_kw: Any) -> Any:
+        from types import SimpleNamespace
+
+        dev = cmd[-1]
+        calls.append(dev)
+        if dev == "mps":
+            return SimpleNamespace(
+                returncode=1,
+                stdout_tail=b"MPS op unsupported",
+                stderr_tail=b"RuntimeError",
+                stdout_truncated=False,
+                stderr_truncated=False,
+                stdout_bytes=0,
+                stderr_bytes=0,
+            )
+        _write_pcm_wav(work_dir / "vocals.wav")
+        _write_pcm_wav(work_dir / "no_vocals.wav")
+        return SimpleNamespace(
+            returncode=0,
+            stdout_tail=b"",
+            stderr_tail=b"",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            stdout_bytes=0,
+            stderr_bytes=0,
+        )
+
+    monkeypatch.setattr("lyraforge.separators.demucs.run_bounded_subprocess", fake_bounded)
+    stems = DemucsSeparator().separate(wav_in, tmp_path / "out_fb")
+    assert calls == ["mps", "cpu"]
+    assert stems.metadata["device"] == "cpu"
+    assert stems.metadata["fallback_from_device"] == "mps"
+    assert stems.metadata["drums_removed"] is False
+    assert stems.metadata["accompaniment_source"] == "no_vocals_with_drums"
+    assert len(stems.metadata["warnings"]) >= 2

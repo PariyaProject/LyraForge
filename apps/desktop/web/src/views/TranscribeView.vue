@@ -72,13 +72,56 @@ const pipelineNameById = computed(() => {
   return map;
 });
 
+const requiresAccompStage = computed(() => {
+  const id = props.store.selectedPipelineId.value;
+  return id === "vocal_split_full" || id === "vocal_split_accomp";
+});
+
+const hasVocalStage = computed(() => {
+  const id = props.store.selectedPipelineId.value;
+  return id === "vocal_split_full" || id === "vocal_split_lead";
+});
+
+const resolvedVocalEngine = computed(() => {
+  const pipe = props.store.selectedPipelineInfo.value;
+  const sel = props.store.selectedVocalEngineId.value;
+  if (sel && sel !== "auto") return sel;
+  return pipe?.resolved_vocal_engine_id ?? pipe?.default_vocal_engine_id ?? "builtin-mono";
+});
+
+const resolvedAccompEngine = computed(() => {
+  const pipe = props.store.selectedPipelineInfo.value;
+  const sel = props.store.selectedAccompEngineId.value;
+  if (sel && sel !== "auto") return sel;
+  return pipe?.resolved_accomp_engine_id ?? pipe?.default_accomp_engine_id ?? null;
+});
+
+const preflightWarnings = computed<string[]>(() => {
+  const pipe = props.store.selectedPipelineInfo.value;
+  if (!pipe) return [];
+  const items: string[] = [...(pipe.warnings ?? [])];
+  if (
+    requiresAccompStage.value &&
+    (resolvedAccompEngine.value === "builtin-mono" || resolvedAccompEngine.value === "swift-f0")
+  ) {
+    const monMsg = `当前伴奏引擎已设为单音引擎 ${resolvedAccompEngine.value}（低资源/显式降级模式），输出结果仅包含单音线条，不包含多声部和弦。`;
+    if (!items.includes(monMsg)) items.push(monMsg);
+  }
+  return items;
+});
+
 const canStartCurrentPipeline = computed(() => {
   const pipe = props.store.selectedPipelineInfo.value;
-  if (!pipe || !pipe.available) return false;
+  if (!pipe) return false;
   if (pipe.supports_engine_override) {
-    return Boolean(props.store.selectedEngineInfo.value?.available);
+    return pipe.available && Boolean(props.store.selectedEngineInfo.value?.available);
   }
-  return true;
+  if (pipe.missing_tools.includes("demucs")) return false;
+  if (requiresAccompStage.value) {
+    if (resolvedAccompEngine.value === null) return false;
+    return props.store.availableTranscribers.value.some((t) => t.id === resolvedAccompEngine.value);
+  }
+  return pipe.available;
 });
 
 const stageLabel = computed(() => jobStageLabel(currentJob.value));
@@ -222,6 +265,12 @@ function onAgentKeydown(event: KeyboardEvent): void {
             </div>
             <div class="meta-row" style="margin-block-start: var(--space-2xs)">
               <span class="pill">适用：{{ store.selectedPipelineInfo.value.recommended_for }}</span>
+              <span v-if="hasVocalStage" class="pill pill-accent">
+                人声引擎：{{ resolvedVocalEngine }}
+              </span>
+              <span v-if="requiresAccompStage" class="pill" :class="resolvedAccompEngine ? 'pill-accent' : 'pill-warn'">
+                伴奏引擎：{{ resolvedAccompEngine ?? "需安装 dettato / Basic Pitch" }}
+              </span>
               <span
                 v-for="(st, idx) in store.selectedPipelineInfo.value.stages"
                 :key="st"
@@ -234,23 +283,28 @@ function onAgentKeydown(event: KeyboardEvent): void {
         </div>
 
         <div
-          v-if="store.selectedPipelineInfo.value && !store.selectedPipelineInfo.value.available"
+          v-if="preflightWarnings.length > 0 || (store.selectedPipelineInfo.value && !store.selectedPipelineInfo.value.available)"
           class="banner-warn"
         >
           <StudioIcon name="alert" :size="15" />
-          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); flex: 1">
-            <span>
-              该流水线需要安装
+          <div style="display: flex; flex-direction: column; gap: var(--space-2xs); flex: 1; min-inline-size: 0">
+            <span v-if="store.selectedPipelineInfo.value && !store.selectedPipelineInfo.value.available">
+              该流水线缺少必需依赖：
               <strong>{{ store.selectedPipelineInfo.value.missing_tools.join("、") }}</strong>
-              独立工具链（仍可随时使用默认直转流程）。
+              （仍可使用经典直转流程，或在下方显式选择内置单音低资源模式）。
             </span>
-            <button
-              type="button"
-              class="secondary btn-sm"
-              @click="store.setView('settings')"
-            >
-              前往设置一键安装
-            </button>
+            <span v-for="w in preflightWarnings" :key="w" style="font-size: 12px">
+              {{ w }}
+            </span>
+            <div v-if="store.selectedPipelineInfo.value && !store.selectedPipelineInfo.value.available">
+              <button
+                type="button"
+                class="secondary btn-sm"
+                @click="store.setView('settings')"
+              >
+                前往设置安装工具链
+              </button>
+            </div>
           </div>
         </div>
 
@@ -273,14 +327,14 @@ function onAgentKeydown(event: KeyboardEvent): void {
 
         <div v-else class="row">
           <div
-            v-if="store.selectedPipelineInfo.value?.default_vocal_engine_id"
+            v-if="hasVocalStage"
             class="field"
             style="flex: 1 1 200px"
           >
             <label for="transcribe-vocal-engine">人声主旋律引擎</label>
             <select id="transcribe-vocal-engine" v-model="store.selectedVocalEngineId.value">
               <option value="auto">
-                自动推荐（优先 Basic Pitch，未装则内置单音）
+                自动推荐（当前：{{ store.selectedPipelineInfo.value?.resolved_vocal_engine_id ?? "builtin-mono" }}）
               </option>
               <option
                 v-for="eng in store.availableTranscribers.value"
@@ -292,25 +346,48 @@ function onAgentKeydown(event: KeyboardEvent): void {
             </select>
           </div>
           <div
-            v-if="store.selectedPipelineInfo.value?.default_accomp_engine_id"
+            v-if="requiresAccompStage"
             class="field"
             style="flex: 1 1 200px"
           >
             <label for="transcribe-accomp-engine">去鼓伴奏引擎</label>
             <select id="transcribe-accomp-engine" v-model="store.selectedAccompEngineId.value">
               <option value="auto">
-                自动推荐（优先 dettato，其次 Basic Pitch）
+                自动推荐（{{ store.selectedPipelineInfo.value?.resolved_accomp_engine_id ?? "需安装 dettato / Basic Pitch" }}）
               </option>
               <option
                 v-for="eng in store.availableTranscribers.value"
                 :key="eng.id"
                 :value="eng.id"
               >
-                {{ eng.display_name }}
+                {{ eng.display_name }}{{ eng.id === "builtin-mono" || eng.id === "swift-f0" ? "（仅单音低资源模式）" : "" }}
               </option>
             </select>
           </div>
         </div>
+
+        <details v-if="hasVocalStage" class="advanced-box">
+          <summary>人声清理与音域预设（默认已为大多数歌曲调优）</summary>
+          <div class="row" style="margin-block-start: var(--space-xs)">
+            <div class="field" style="flex: 1 1 180px">
+              <label for="transcribe-vocal-cleanup">人声音符清理强度</label>
+              <select id="transcribe-vocal-cleanup" v-model="store.selectedVocalCleanup.value">
+                <option value="light">轻度（保留颤音细节与快速装饰音）</option>
+                <option value="standard">标准（推荐：消除颤音碎音与谐波幽灵，保留重复字吐字）</option>
+                <option value="strong">强力（适合混响较重、残留杂音多的干声）</option>
+                <option value="off">关闭清理（仅做基础过滤）</option>
+              </select>
+            </div>
+            <div class="field" style="flex: 1 1 180px">
+              <label for="transcribe-vocal-range">人声音域先验范围</label>
+              <select id="transcribe-vocal-range" v-model="store.selectedVocalRange.value">
+                <option value="auto">自动宽音域（D2 ~ A6，男女声通用，不裁切原始音高）</option>
+                <option value="male">男声中低音域（C2 ~ F5）</option>
+                <option value="female">女声中高音域（Eb3 ~ A6）</option>
+              </select>
+            </div>
+          </div>
+        </details>
 
         <div
           v-if="
@@ -376,15 +453,21 @@ function onAgentKeydown(event: KeyboardEvent): void {
             <span>引擎：{{ currentJob.engine_id }}</span>
           </div>
           <p class="muted" style="margin: 0; font-size: 12px">
-            切换到其他曲目或页面不会中断本任务。dettato 首次运行需加载模型权重，3 到 4 分钟曲目可能需要数分钟。
+            切换到其他曲目或页面不会中断本任务。SwiftF0 仅需数秒即可完成人声识别；dettato 首次运行需加载权重，完整曲目在 CPU 上可能需要数分钟。
           </p>
+          <div v-if="currentJob.warnings && currentJob.warnings.length > 0" class="banner-warn">
+            <StudioIcon name="alert" :size="15" />
+            <div style="display: flex; flex-direction: column; gap: var(--space-3xs); min-inline-size: 0">
+              <span v-for="w in currentJob.warnings" :key="w" style="font-size: 12px">{{ w }}</span>
+            </div>
+          </div>
           <div v-if="currentJob.transcription || currentJob.status === 'completed'" class="banner-info">
             <StudioIcon name="check" :size="15" />
             <div style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); flex: 1">
               <span>
-                已完成入库，共识别
+                已完成入库，共保留
                 <strong>{{ currentJob.transcription?.note_count ?? 0 }}</strong>
-                个原始音符，可直接前往编曲工作室。
+                个音符（{{ currentJob.transcription?.engine_version ?? currentJob.engine_id }}），可直接前往编曲工作室。
               </span>
               <button
                 type="button"
@@ -447,6 +530,8 @@ function onAgentKeydown(event: KeyboardEvent): void {
                 <span class="pill" :class="tr.status === 'completed' ? 'pill-ok' : ''">
                   {{ tr.engine }}
                 </span>
+                <span v-if="tr.metadata?.degraded_mode" class="pill pill-warn">单音伴奏降级</span>
+                <span v-if="tr.metadata?.drums_removed === false" class="pill pill-warn">伴奏含鼓声</span>
                 <span v-if="tr.tracks && tr.tracks.length > 0">{{ tr.tracks.length }} 音轨</span>
               </div>
               <div class="button-row" style="flex-shrink: 0">

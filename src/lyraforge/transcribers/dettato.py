@@ -9,7 +9,11 @@ from pathlib import Path
 
 from lyraforge.media.subprocess_utils import hidden_subprocess_kwargs
 from lyraforge.playback.guards import StopToken
-from lyraforge.transcribers._subprocess import resolve_runner, run_isolated_transcriber
+from lyraforge.transcribers._subprocess import (
+    probe_installed_version,
+    resolve_runner,
+    run_isolated_transcriber,
+)
 from lyraforge.transcribers.base import (
     ModelInfo,
     ProgressCallback,
@@ -21,12 +25,9 @@ DETTATO_PYTHON_ENV = "LYRAFORGE_DETTATO_PYTHON"
 DETTATO_CLI_ENV = "LYRAFORGE_DETTATO_BIN"
 DETTATO_DEVICE_ENV = "LYRAFORGE_DETTATO_DEVICE"
 
-_DEVICE_PROBE = (
-    "import torch;"
-    "print('cuda' if torch.cuda.is_available() else "
-    "('mps' if getattr(torch.backends, 'mps', None) is not None "
-    "and torch.backends.mps.is_available() else 'cpu'))"
-)
+# dettato 2.0.0 uses float64 tensors internally which crash on Apple Silicon MPS
+# ("Cannot convert a MPS Tensor to float64 dtype"). Auto-selection probes CUDA -> CPU only.
+_DEVICE_PROBE = "import torch;print('cuda' if torch.cuda.is_available() else 'cpu')"
 _DEVICE_CACHE: dict[str, str] = {}
 
 
@@ -40,7 +41,7 @@ def _resolve_runner() -> list[str] | None:
 
 
 def resolve_device(runner: list[str]) -> str:
-    """Pick the inference device: explicit env override, else CUDA/MPS when available."""
+    """Pick inference device: explicit env override, else CUDA or CPU (never auto-MPS)."""
     forced = os.environ.get(DETTATO_DEVICE_ENV, "").strip().lower()
     if forced in {"cpu", "cuda", "mps"}:
         return forced
@@ -61,7 +62,7 @@ def resolve_device(runner: list[str]) -> str:
             **hidden_subprocess_kwargs(),
         )
         candidate = (res.stdout or "").strip()
-        if res.returncode == 0 and candidate in {"cpu", "cuda", "mps"}:
+        if res.returncode == 0 and candidate in {"cpu", "cuda"}:
             device = candidate
     except (OSError, subprocess.TimeoutExpired):
         device = "cpu"
@@ -94,14 +95,16 @@ class DettatoSubprocessTranscriber:
             available=runner is not None,
             license="Apache-2.0 (代码与权重；部分辅助训练数据含非商用条款)",
             scope_note=(
-                "高质量多声部/多乐器分轨模型；在独立环境中运行，自动优先使用 CUDA，"
-                "也可用 LYRAFORGE_DETTATO_DEVICE 指定 cpu/cuda。"
+                "高质量多声部/多乐器分轨模型；自动优先使用 CUDA，macOS 上自动使用 CPU 推理"
+                "（CLI 仅支持 --device，不支持频段/门限参数）。"
             ),
             details={
                 "runner": runner,
                 "python_env": DETTATO_PYTHON_ENV,
                 "cli_env": DETTATO_CLI_ENV,
                 "device_env": DETTATO_DEVICE_ENV,
+                "polyphonic": True,
+                "supported_options": ["device"],
                 "platform": sys.platform,
             },
         )
@@ -113,10 +116,11 @@ class DettatoSubprocessTranscriber:
         on_progress: ProgressCallback | None = None,
         stop_token: StopToken | None = None,
     ) -> TranscriptionResult:
+        runner = _resolve_runner()
         return run_isolated_transcriber(
             engine_id=self.id,
             display_name="dettato",
-            runner=_resolve_runner(),
+            runner=runner,
             missing_hint=(
                 f"dettato is not installed; configure {DETTATO_PYTHON_ENV} "
                 "or install 'dettato' in an isolated environment"
@@ -128,4 +132,5 @@ class DettatoSubprocessTranscriber:
             stop_token=stop_token,
             timeout_per_audio_second=10.0,
             timeout_slack_s=180.0,
+            engine_version=probe_installed_version(runner, "dettato"),
         )

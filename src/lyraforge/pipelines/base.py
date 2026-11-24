@@ -27,6 +27,10 @@ class PipelineInfo:
     default_accomp_engine_id: str | None = None
     default_arranger_strategy: str = "classic"
     supports_engine_override: bool = True
+    resolved_vocal_engine_id: str | None = None
+    resolved_accomp_engine_id: str | None = None
+    low_resource_available: bool = False
+    warnings: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -43,6 +47,10 @@ class PipelineInfo:
             "default_accomp_engine_id": self.default_accomp_engine_id,
             "default_arranger_strategy": self.default_arranger_strategy,
             "supports_engine_override": self.supports_engine_override,
+            "resolved_vocal_engine_id": self.resolved_vocal_engine_id,
+            "resolved_accomp_engine_id": self.resolved_accomp_engine_id,
+            "low_resource_available": self.low_resource_available,
+            "warnings": list(self.warnings),
         }
 
 
@@ -53,6 +61,8 @@ class PipelineRequest:
     accomp_engine_id: str | None = None
     options: TranscribeOptions = field(default_factory=TranscribeOptions)
     transcriber_resolver: Callable[[str], Transcriber] | None = None
+    vocal_cleanup: str = "standard"
+    vocal_range: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)

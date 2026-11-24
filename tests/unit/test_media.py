@@ -156,3 +156,17 @@ def test_ffmpeg_subprocess_mocked_success_failure_and_cancel(
     with pytest.raises(LyraError) as exc_cancel:
         extract_audio_to_wav(mp3, dest, ffmpeg_bin="/usr/bin/ffmpeg", stop_token=stop)
     assert exc_cancel.value.code == ErrorCode.PLAYBACK_ABORTED
+
+
+def test_format_log_tail_preserves_stdout_errors_alongside_stderr_warnings() -> None:
+    from lyraforge.media.subprocess_utils import format_log_tail
+
+    out = format_log_tail(
+        b"UserWarning: HF Hub token missing",
+        b"TypeError: Cannot convert a MPS Tensor to float64 dtype",
+    )
+    assert "HF Hub token missing" in out
+    assert "[stdout]" in out
+    assert "MPS Tensor to float64" in out
+    assert format_log_tail(b"", b"fatal stdout only") == "fatal stdout only"
+    assert format_log_tail(b"", b"") == "non-zero exit"

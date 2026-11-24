@@ -963,6 +963,8 @@ describe("App", () => {
         pipelineId: "vocal_split_full",
         vocalEngineId: "basic-pitch",
         accompEngineId: "dettato",
+        vocalCleanup: "standard",
+        vocalRange: "auto",
       });
 
       await vi.advanceTimersByTimeAsync(1100);
@@ -1011,5 +1013,64 @@ describe("App", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("blocks auto vocal_split_full when only builtin-mono is installed, unless explicitly opted in", async () => {
+    window.history.replaceState(null, "", "/");
+    const stub = makeStubApi("audio");
+    vi.mocked(stub.listPipelines).mockResolvedValue({
+      pipelines: [
+        {
+          id: "direct",
+          display_name: "经典直转（原流程）",
+          description: "直转",
+          recommended_for: "独奏",
+          stages: ["提取", "识别"],
+          required_tools: [],
+          available: true,
+          missing_tools: [],
+          default_engine_id: "builtin-mono",
+          default_vocal_engine_id: null,
+          default_accomp_engine_id: null,
+          default_arranger_strategy: "classic",
+          supports_engine_override: true,
+        },
+        {
+          id: "vocal_split_full",
+          display_name: "人声分离 · 双轨",
+          description: "分轨",
+          recommended_for: "流行歌",
+          stages: ["Demucs", "人声", "伴奏"],
+          required_tools: ["dettato/basic-pitch"],
+          available: false,
+          missing_tools: ["dettato/basic-pitch"],
+          default_engine_id: "builtin-mono",
+          default_vocal_engine_id: "builtin-mono",
+          default_accomp_engine_id: null,
+          resolved_vocal_engine_id: "builtin-mono",
+          resolved_accomp_engine_id: null,
+          low_resource_available: true,
+          warnings: ["未安装多音伴奏引擎"],
+          default_arranger_strategy: "vocal_lead",
+          supports_engine_override: false,
+        },
+      ],
+    });
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "音频转谱");
+
+    await wrapper.find("#transcribe-pipeline-select").setValue("vocal_split_full");
+    await flushPromises();
+
+    const startBtn = wrapper.findAll("button").find((b) => b.text().includes("开始音频转谱"))!;
+    expect((startBtn.element as HTMLButtonElement).disabled).toBe(true);
+    expect(wrapper.text()).toContain("未安装多音伴奏引擎");
+
+    // Explicit opt-in to builtin-mono enables submission with explicit monophonic warning
+    await wrapper.find("#transcribe-accomp-engine").setValue("builtin-mono");
+    await flushPromises();
+    expect((startBtn.element as HTMLButtonElement).disabled).toBe(false);
+    expect(wrapper.text()).toContain("低资源/显式降级模式");
   });
 });

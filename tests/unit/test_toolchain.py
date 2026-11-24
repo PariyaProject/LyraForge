@@ -74,13 +74,14 @@ def tools_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("LYRAFORGE_BASIC_PITCH_PYTHON", raising=False)
     monkeypatch.delenv("LYRAFORGE_DETTATO_PYTHON", raising=False)
     monkeypatch.delenv("LYRAFORGE_DEMUCS_PYTHON", raising=False)
+    monkeypatch.delenv("LYRAFORGE_SWIFT_F0_PYTHON", raising=False)
     monkeypatch.setattr("shutil.which", lambda _name: None)
     return root
 
 
 def test_status_without_tools_reports_all_missing(tools_root: Path) -> None:
     status = {item["id"]: item for item in installer.status()}
-    assert set(status) == {"ffmpeg", "basic-pitch", "dettato", "demucs"}
+    assert set(status) == {"ffmpeg", "basic-pitch", "dettato", "demucs", "swift-f0"}
     assert all(item["installed"] is False for item in status.values())
     assert tools_dir() == tools_root
 

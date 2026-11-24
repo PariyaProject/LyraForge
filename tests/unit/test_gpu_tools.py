@@ -19,6 +19,7 @@ def tools_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "tools"
     monkeypatch.setenv("LYRAFORGE_TOOLS_DIR", str(root))
     monkeypatch.delenv("LYRAFORGE_DETTATO_DEVICE", raising=False)
+    monkeypatch.delenv("LYRAFORGE_DEMUCS_DEVICE", raising=False)
     return root
 
 
@@ -74,6 +75,13 @@ def test_device_preference_is_persisted_and_injected(
     assert "LYRAFORGE_DETTATO_DEVICE" not in env_auto
     assert "LYRAFORGE_DEMUCS_DEVICE" not in env_auto
 
+    gpu.set_device("mps")
+    env_mps = runtime.managed_env({"PATH": ""})
+    assert env_mps["LYRAFORGE_DEMUCS_DEVICE"] == "mps"
+    assert env_mps["LYRAFORGE_DETTATO_DEVICE"] == "cpu"
+
+    gpu.set_device("auto")
+
 
 def test_probe_demucs_torch_and_gpu_status(
     tools_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -126,6 +134,20 @@ def test_install_demucs_gpu_reinstalls_torch_and_torchaudio(
     cmd = calls[0]
     assert "torch" in cmd and "torchaudio" in cmd
     assert cmd[cmd.index("--index-url") + 1].endswith("/cu130")
+
+    monkeypatch.setattr(
+        gpu,
+        "probe_demucs_torch",
+        lambda: {
+            "cuda_available": True,
+            "version": "2.6.0+cu130",
+            "torchaudio_ok": False,
+            "torchaudio_error": "Symbol not found in libc10",
+        },
+    )
+    with pytest.raises(installer.LyraError) as exc_ta:
+        installer.install_demucs_gpu()
+    assert "torchaudio" in str(exc_ta.value)
 
 
 def test_install_dettato_gpu_reinstalls_torch_from_cuda_index(

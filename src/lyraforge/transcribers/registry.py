@@ -7,6 +7,7 @@ from lyraforge.transcribers.base import ModelInfo, Transcriber
 from lyraforge.transcribers.basic_pitch import BasicPitchSubprocessTranscriber
 from lyraforge.transcribers.builtin_mono import BuiltinMonoTranscriber
 from lyraforge.transcribers.dettato import DettatoSubprocessTranscriber
+from lyraforge.transcribers.swift_f0 import SwiftF0SubprocessTranscriber
 
 DEFAULT_TRANSCRIBER_ID = "builtin-mono"
 
@@ -16,6 +17,7 @@ def _engines() -> dict[str, Transcriber]:
         BuiltinMonoTranscriber(),
         BasicPitchSubprocessTranscriber(),
         DettatoSubprocessTranscriber(),
+        SwiftF0SubprocessTranscriber(),
     ]
     return {t.id: t for t in items}
 

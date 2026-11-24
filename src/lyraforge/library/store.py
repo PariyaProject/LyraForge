@@ -10,7 +10,7 @@ import sqlite3
 import tempfile
 import threading
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -191,6 +191,7 @@ class TranscriptionRecord:
     created_at: str
     pipeline_id: str = DEFAULT_PIPELINE_ID
     tracks: tuple[dict[str, Any], ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -201,6 +202,7 @@ class TranscriptionRecord:
             "engine_version": self.engine_version,
             "pipeline_id": self.pipeline_id,
             "tracks": list(self.tracks),
+            "metadata": dict(self.metadata),
             "raw_midi_path": self.raw_midi_path,
             "cleaned_midi_path": self.cleaned_midi_path,
             "status": self.status,
@@ -378,6 +380,17 @@ class LibraryStore:
                     raw_tracks = [item for item in parsed if isinstance(item, dict)]
             except (TypeError, ValueError):
                 raw_tracks = []
+        meta: dict[str, Any] = {}
+        if "options_json" in keys and row["options_json"]:
+            try:
+                loaded_opts = json.loads(row["options_json"])
+                if isinstance(loaded_opts, dict):
+                    if isinstance(loaded_opts.get("metadata"), dict):
+                        meta = dict(loaded_opts["metadata"])
+                    else:
+                        meta = {"options": loaded_opts}
+            except (TypeError, ValueError):
+                meta = {}
         return TranscriptionRecord(
             id=row["id"],
             song_id=row["song_id"],
@@ -394,6 +407,7 @@ class LibraryStore:
                 else DEFAULT_PIPELINE_ID
             ),
             tracks=tuple(raw_tracks),
+            metadata=meta,
             created_at=row["created_at"],
         )
 
@@ -685,6 +699,8 @@ class LibraryStore:
         pipeline_id: str = DEFAULT_PIPELINE_ID,
         vocal_engine_id: str | None = None,
         accomp_engine_id: str | None = None,
+        vocal_cleanup: str = "standard",
+        vocal_range: str = "auto",
         options: TranscribeOptions | None = None,
         on_progress: ProgressCallback | None = None,
         stop_token: StopToken | None = None,
@@ -713,6 +729,8 @@ class LibraryStore:
                     accomp_engine_id=accomp_engine_id,
                     options=opts,
                     transcriber_resolver=get_transcriber,
+                    vocal_cleanup=vocal_cleanup,
+                    vocal_range=vocal_range,
                 ),
                 on_progress=on_progress,
                 stop_token=stop_token,
@@ -736,6 +754,12 @@ class LibraryStore:
                 ErrorCode.PLAYBACK_ABORTED, stop_token.reason or "transcription cancelled"
             )
 
+        provenance_payload = {
+            "options": asdict(opts),
+            "vocal_cleanup": vocal_cleanup,
+            "vocal_range": vocal_range,
+            "metadata": res.metadata,
+        }
         now = _utc_now_iso()
         with self._conn:
             self._conn.execute(
@@ -753,7 +777,7 @@ class LibraryStore:
                     source.id,
                     res.engine_id,
                     res.engine_version,
-                    json.dumps(asdict(opts), sort_keys=True),
+                    json.dumps(provenance_payload, sort_keys=True, ensure_ascii=False),
                     rel_raw,
                     rel_cleaned,
                     "completed",

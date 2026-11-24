@@ -489,6 +489,12 @@ def _install_cuda_torch(
             "请确认 NVIDIA 驱动支持该 CUDA 版本（当前默认 cu130），"
             "或设置 LYRAFORGE_PYTORCH_CUDA_INDEX 指向 cu128/cu126/cu124 后重试。",
         )
+    if "torchaudio" in packages and probe.get("torchaudio_ok") is False:
+        err = probe.get("torchaudio_error") or "torchaudio import failed"
+        raise LyraError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            f"Demucs 的 torch 与 torchaudio 版本不匹配，导致加载失败：{err}",
+        )
     set_tool_setting(setting_key, True)
     _emit(progress, 1.0, ready_msg)
     return {"installed": True, "torch": probe}

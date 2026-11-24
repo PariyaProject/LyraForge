@@ -17,11 +17,19 @@ VALID_DEVICES = frozenset({"auto", "cpu", "cuda", "mps"})
 
 _TORCH_PROBE = (
     "import json, torch;"
-    "print(json.dumps({"
+    "mps=bool(getattr(torch.backends,'mps',None) is not None "
+    "and torch.backends.mps.is_available());"
+    "\ntry:\n import torchaudio;ta=torchaudio.__version__;ta_ok=True;ta_err=None"
+    "\nexcept Exception as e:\n ta=None;ta_ok=False;ta_err=str(e)"
+    "\nprint(json.dumps({"
     "'torch': torch.__version__,"
     "'cuda': torch.version.cuda,"
     "'available': bool(torch.cuda.is_available()),"
-    "'devices': torch.cuda.device_count()"
+    "'mps_available': mps,"
+    "'devices': torch.cuda.device_count(),"
+    "'torchaudio': ta,"
+    "'torchaudio_ok': ta_ok,"
+    "'torchaudio_error': ta_err"
     "}))"
 )
 
@@ -77,12 +85,20 @@ def probe_torch_env(tool_id: str) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    return {
+    out: dict[str, Any] = {
         "version": data.get("torch"),
         "cuda_build": data.get("cuda"),
         "cuda_available": bool(data.get("available")),
         "device_count": int(data.get("devices") or 0),
     }
+    if "mps_available" in data:
+        out["mps_available"] = bool(data.get("mps_available"))
+    if "torchaudio" in data or "torchaudio_ok" in data:
+        out["torchaudio_version"] = data.get("torchaudio")
+        out["torchaudio_ok"] = bool(data.get("torchaudio_ok", True))
+        if data.get("torchaudio_error"):
+            out["torchaudio_error"] = data.get("torchaudio_error")
+    return out
 
 
 def probe_dettato_torch() -> dict[str, Any] | None:
@@ -111,11 +127,16 @@ def set_device(device: str) -> dict[str, Any]:
             f"dettato device must be one of {sorted(VALID_DEVICES)}",
         )
     set_tool_setting("dettato_device", value)
-    for env_key in (DEVICE_ENV, "LYRAFORGE_DEMUCS_DEVICE"):
-        if value == "auto":
-            os.environ.pop(env_key, None)
-        else:
-            os.environ[env_key] = value
+    if value == "auto":
+        os.environ.pop(DEVICE_ENV, None)
+        os.environ.pop("LYRAFORGE_DEMUCS_DEVICE", None)
+    elif value == "mps":
+        # dettato crashes on Apple Silicon MPS float64; keep Demucs on MPS and dettato on CPU.
+        os.environ[DEVICE_ENV] = "cpu"
+        os.environ["LYRAFORGE_DEMUCS_DEVICE"] = "mps"
+    else:
+        os.environ[DEVICE_ENV] = value
+        os.environ["LYRAFORGE_DEMUCS_DEVICE"] = value
     return gpu_status()
 
 

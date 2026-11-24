@@ -81,7 +81,23 @@ DEMUCS = ToolSpec(
     dist_name="demucs",
 )
 
-TOOL_SPECS: tuple[ToolSpec, ...] = (FFMPEG, BASIC_PITCH, DETTATO, DEMUCS)
+SWIFT_F0 = ToolSpec(
+    id="swift-f0",
+    display_name="SwiftF0 人声基频转谱 (ONNX)",
+    license="MIT（代码与 0.13 MB 内置 ONNX 模型权重）",
+    description=(
+        "轻量高精度单音人声 F0 提取与动态规划音符切分引擎（CPU 极速推理，跨平台可用；"
+        "专用于分离后的干人声或纯独唱，不支持多音和弦）。"
+    ),
+    kind="python",
+    download_mb=35,
+    env_var="LYRAFORGE_SWIFT_F0_PYTHON",
+    packages=("swift-f0==0.3.0", "mido"),
+    probe_module="swift_f0",
+    dist_name="swift-f0",
+)
+
+TOOL_SPECS: tuple[ToolSpec, ...] = (FFMPEG, BASIC_PITCH, DETTATO, DEMUCS, SWIFT_F0)
 
 
 def tool_spec(tool_id: str) -> ToolSpec | None:
