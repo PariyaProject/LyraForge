@@ -58,7 +58,7 @@ LyraForge 是一款基于 **GNU GPL-3.0** 协议开源的跨平台桌面音乐�
 #### Windows 10/11 x64（`LyraForge-dev-*-windows-x64.zip`）
 
 1. 下载 `LyraForge-dev-*-windows-x64.zip` 并解压（保持 `LyraForge.exe` 与 `_internal\` 位于同一解压目录）。
-2. 双击 `LyraForge.exe` 启动桌面工作台（Windows 11 已内置 Microsoft Edge WebView2 Runtime；Windows 10 如缺少请安装 Evergreen Runtime）。
+2. 双击 `LyraForge.exe` 启动桌面工作台；默认会请求管理员权限（UAC）以匹配游戏权限，且以无控制台窗口模式静默调用后台工具（Windows 11 已内置 Edge WebView2 Runtime；Windows 10 如缺少请安装 Evergreen Runtime）。源码调试如需跳过提权可传 `--no-elevate` 或设置 `LYRAFORGE_NO_ELEVATE=1`。
 3. 若双击后没有出现窗口，启动详情会写入 `%LOCALAPPDATA%\LyraForge\logs\startup.log` 并弹出原生错误对话框，提交 Issue 时请附上该日志。
 
 <details>

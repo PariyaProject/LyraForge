@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lyraforge.media.subprocess_utils import hidden_subprocess_kwargs
 from lyraforge.playback.guards import StopToken
 from lyraforge.transcribers._subprocess import resolve_runner, run_isolated_transcriber
 from lyraforge.transcribers.base import (
@@ -53,9 +54,11 @@ def resolve_device(runner: list[str]) -> str:
     try:
         res = subprocess.run(  # noqa: S603 - fixed argv, no shell
             [python, "-c", _DEVICE_PROBE],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=30,
+            **hidden_subprocess_kwargs(),
         )
         candidate = (res.stdout or "").strip()
         if res.returncode == 0 and candidate in {"cpu", "cuda", "mps"}:

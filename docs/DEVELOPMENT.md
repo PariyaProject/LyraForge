@@ -164,7 +164,7 @@ uv run lyraforge tools install ffmpeg  # 只装 FFmpeg（约 40 MB）
 ## 5. 双平台便携打包（Windows + macOS）与 GitHub Releases 自动发布
 
 ```powershell
-# 在 Windows 10/11（无需管理员权限）生成便携目录 dist/LyraForge/LyraForge.exe
+# 在 Windows 10/11 生成便携目录 dist/LyraForge/LyraForge.exe（打包产物内置 uac_admin=True 与 console=False；源码调试可加 --no-elevate 或 LYRAFORGE_NO_ELEVATE=1 跳过 UAC）
 ./scripts/build_windows.ps1
 ```
 

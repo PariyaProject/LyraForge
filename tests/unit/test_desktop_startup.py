@@ -276,3 +276,11 @@ def test_icon_assets_are_present_and_well_formed() -> None:
     icns_data = (icons_dir / "lyraforge.icns").read_bytes()
     assert icns_data.startswith(b"icns")
     assert len(icns_data) > 1024
+
+
+def test_pyinstaller_spec_disables_console_and_enables_windows_uac_admin() -> None:
+    spec_text = (Path(__file__).resolve().parents[2] / "packaging" / "lyraforge.spec").read_text(
+        encoding="utf-8"
+    )
+    assert "console=False" in spec_text
+    assert "uac_admin=IS_WINDOWS" in spec_text

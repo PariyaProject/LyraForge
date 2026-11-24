@@ -8,6 +8,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -135,6 +136,24 @@ class BoundedSubprocessResult:
     peak_disk_bytes: int
 
 
+def hidden_subprocess_kwargs(*, new_process_group: bool = False) -> dict[str, Any]:
+    """Return Windows kwargs that prevent child CLI tools from flashing a console window."""
+    if sys.platform != "win32":
+        return {}
+    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    if new_process_group:
+        flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    kwargs: dict[str, Any] = {"creationflags": flags}
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    if startupinfo_cls is not None and startf_use_showwindow:
+        si = startupinfo_cls()
+        si.dwFlags |= int(startf_use_showwindow)
+        si.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
+        kwargs["startupinfo"] = si
+    return kwargs
+
+
 def _popen_isolation_kwargs(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
@@ -145,17 +164,15 @@ def _popen_isolation_kwargs(env: Mapping[str, str] | None = None) -> dict[str, A
     }
     if env is not None:
         kwargs["env"] = dict(env)
-    if os.name == "nt":
-        create_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        if create_group:
-            kwargs["creationflags"] = create_group
+    if sys.platform == "win32":
+        kwargs.update(hidden_subprocess_kwargs(new_process_group=True))
     else:
         kwargs["start_new_session"] = True
     return kwargs
 
 
 def _pgid_has_live_processes(pgid: int) -> bool:
-    if os.name == "nt" or pgid <= 0:
+    if sys.platform == "win32" or pgid <= 0:
         return False
     killpg_fn = getattr(os, "killpg", None)
     if not callable(killpg_fn):
@@ -172,7 +189,7 @@ def _pgid_has_live_processes(pgid: int) -> bool:
 
 
 def _kill_windows_descendants(pid: int, *, created_after_epoch: float | None = None) -> None:
-    if os.name != "nt" or pid <= 0:
+    if sys.platform != "win32" or pid <= 0:
         return
     cutoff_unix = int((created_after_epoch or time.time()) - 5.0)
     ps_script = (
@@ -200,6 +217,7 @@ def _kill_windows_descendants(pid: int, *, created_after_epoch: float | None = N
             stdin=subprocess.DEVNULL,
             timeout=6.0,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
 
 
@@ -225,7 +243,7 @@ def _terminate_process_tree(
     pid = getattr(proc, "pid", None)
     is_mock_or_dead = not (isinstance(pid, int) and pid > 0)
 
-    if os.name == "nt":
+    if sys.platform == "win32":
         tk_res: subprocess.CompletedProcess[bytes] | None = None
         if not is_mock_or_dead:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -236,6 +254,7 @@ def _terminate_process_tree(
                     stdin=subprocess.DEVNULL,
                     timeout=5.0,
                     check=False,
+                    **hidden_subprocess_kwargs(),
                 )
         if callable(poll_fn) and poll_fn() is None:
             if callable(term_fn):
@@ -301,7 +320,7 @@ def _safe_terminate_process_tree(
         )
     except Exception:  # noqa: BLE001
         killpg_fn = getattr(os, "killpg", None)
-        if os.name != "nt" and pgid is not None and callable(killpg_fn):
+        if sys.platform != "win32" and pgid is not None and callable(killpg_fn):
             with contextlib.suppress(OSError):
                 killpg_fn(pgid, signal.SIGKILL)
         kill_fn = getattr(proc, "kill", None)
@@ -315,7 +334,7 @@ def _safe_terminate_process_tree(
 
 
 def _pipe_selectable_fd(pipe: IO[bytes]) -> int | None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         return None
     fileno_fn = getattr(pipe, "fileno", None)
     if not callable(fileno_fn):
@@ -430,7 +449,7 @@ def run_bounded_subprocess(
             **_popen_isolation_kwargs(env),
         )
         raw_pid = getattr(proc, "pid", None)
-        if os.name != "nt" and isinstance(raw_pid, int) and raw_pid > 0:
+        if sys.platform != "win32" and isinstance(raw_pid, int) and raw_pid > 0:
             pgid = raw_pid
         stdout_pipe = getattr(proc, "stdout", None)
         stderr_pipe = getattr(proc, "stderr", None)

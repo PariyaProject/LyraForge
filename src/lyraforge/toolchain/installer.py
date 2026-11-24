@@ -32,6 +32,7 @@ from urllib.request import Request, urlopen
 
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.fs import atomic_write_text
+from lyraforge.media.subprocess_utils import hidden_subprocess_kwargs
 from lyraforge.toolchain.paths import (
     downloads_dir,
     ffmpeg_executable,
@@ -72,11 +73,13 @@ def _run(
     try:
         return subprocess.run(  # noqa: S603 - fixed argv, no shell
             list(cmd),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
             env=env,
             timeout=timeout,
+            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise LyraError(
