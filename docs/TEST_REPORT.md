@@ -480,3 +480,25 @@
 4. **环境边界（如实标注）**：
    - 本机 `PATH` 未安装 `sloplint` CLI，前端按 [DESIGN.md](../DESIGN.md) token、无嵌套卡片与无冲突 CTA 规则人工核对通过；真实桌面交互视觉未在本轮额外做无头 Chrome 截屏或 Windows GUI 实机点击复核，已由 `vitest` jsdom 全流程单测与双端 PyInstaller `--self-check --check-gui` 门禁验证。
 
+## 26. Round 24：Windows 默认管理员提权与隐藏子进程 CMD 窗口验证记录
+
+1. **核心改动核查**：
+   - 默认管理员提权：
+     - 打包二进制：[packaging/lyraforge.spec](../packaging/lyraforge.spec) 为 `EXE(...)` 启用 `uac_admin=IS_WINDOWS` 并保持 `console=False`；
+     - 源码启动：[src/lyraforge/elevation.py](../src/lyraforge/elevation.py) 新增 `NO_ELEVATE_ENV = "LYRAFORGE_NO_ELEVATE"`、`is_current_process_elevated()`、`_source_gui_python()`（优先使用 `pythonw.exe`）、`maybe_elevate_for_desktop()`，[src/lyraforge/cli.py](../src/lyraforge/cli.py) 为 `desktop` 子命令新增 `--no-elevate` 开关，并在常规 GUI 启动时默认申请管理员提权，若用户在源码模式下取消 UAC 则回退至非提权 GUI，同时保持 `--self-check`、`--check-gui` 与 `mcp` 非提权不阻塞。
+   - 隐藏子进程 CMD 窗口：
+     - [src/lyraforge/media/subprocess_utils.py](../src/lyraforge/media/subprocess_utils.py) 新增纯标准库 `hidden_subprocess_kwargs()`（在 `sys.platform == "win32"` 下注入 `CREATE_NO_WINDOW`、`STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`），并将其接入 `_popen_isolation_kwargs()`、`_kill_windows_descendants()`（`powershell`）与 `_terminate_process_tree()`（`taskkill`）；
+     - [src/lyraforge/toolchain/gpu.py](../src/lyraforge/toolchain/gpu.py)（`detect_nvidia()`、`probe_dettato_torch()`）、[src/lyraforge/toolchain/installer.py](../src/lyraforge/toolchain/installer.py)（`_run()`）与 [src/lyraforge/transcribers/dettato.py](../src/lyraforge/transcribers/dettato.py)（`resolve_device()`）统一补充 `stdin=subprocess.DEVNULL` 与 `**hidden_subprocess_kwargs()`。
+2. **本地自动化校验（`aa3516d`）**：
+   - `make check` 全项通过：
+     - `uv run ruff check .`：`All checks passed!`
+     - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80`：`229 passed, 2 warnings`（Total coverage `84.59%`，含新增 `tests/unit/test_windows_console_hiding.py` 与更新后的 `test_elevation.py`、`test_desktop_startup.py`、`test_layering.py`）
+     - `pnpm --dir apps/desktop/web test`：`Test Files 5 passed (5), Tests 11 passed (11)`
+     - `pnpm --dir apps/desktop/web build`：`built in 944ms`
+     - `make smoke`：退出码 `0`（`actions_sent: 48`、`keys_still_pressed: []`、`state: "completed"`）
+3. **GitHub PR 与合并后 CI**：
+   - [PR #25](https://github.com/PariyaProject/LyraForge/pull/25)（`aa3516d`）→ PR CI [Run #45319544386](https://github.com/PariyaProject/LyraForge/actions/runs/45319544386) 4 项活动作业全部 `success`（`Publish Desktop Releases` 按 PR 条件跳过）；
+   - Squash 合入 `main`（`ed0dd13f`）→ 合并后 CI [Run #45320114882](https://github.com/PariyaProject/LyraForge/actions/runs/45320114882) 初次运行在 `Test (windows-latest, Python 3.11)` 上触发 `test_subprocess_derived_process_tree_timeout_cancel_orphan_pipes_and_stress` 计时上限波动（`10.281s < 10.0s`），重跑失败作业后全部 5 作业（含 `Build Windows/macOS Bundle (PyInstaller)` 与 `Publish Desktop Releases`）均为 `success`，已更新 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物。
+4. **环境边界（如实标注）**：
+   - 本机为 macOS，GitHub `windows-latest` Runner 处于非交互 `runneradmin` 会话，且仅以 `--self-check --check-gui` 验证打包启动门禁；真实 Windows 10/11 桌面双击 `LyraForge.exe` 触发 UAC 提示以及在 `ffmpeg` / `basic-pitch` / `dettato` / `uv` / `nvidia-smi` 执行期间全程无 CMD 黑框闪现，仍待用户在物理 Windows 设备上下载 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 实测确认。
+
