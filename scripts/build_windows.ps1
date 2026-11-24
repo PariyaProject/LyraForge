@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-# Windows 10/11 portable bundle build script (requires NO administrator privileges)
+# Windows 10/11 portable bundle build script (LyraForge.exe embeds uac_admin=True, so step 4 runs cleanly in an elevated shell and prompts UAC otherwise)
 Write-Host "[1/3] Building Vue 3 frontend..."
 pnpm --dir apps/desktop/web install --frozen-lockfile
 pnpm --dir apps/desktop/web build

@@ -607,6 +607,20 @@ def _desktop_self_check(args: argparse.Namespace) -> int:
 def cmd_desktop(args: argparse.Namespace) -> int:
     if getattr(args, "self_check", False) or getattr(args, "check_gui", False):
         return _desktop_self_check(args)
+    from lyraforge.elevation import maybe_elevate_for_desktop
+
+    forwarded: list[str] = []
+    if args.data_dir:
+        forwarded.extend(["--data-dir", str(args.data_dir)])
+    if args.static_dir:
+        forwarded.extend(["--static-dir", str(args.static_dir)])
+    if args.dev_url:
+        forwarded.extend(["--dev-url", str(args.dev_url)])
+    if maybe_elevate_for_desktop(
+        forwarded, disabled=bool(getattr(args, "no_elevate", False))
+    ):
+        return EXIT_OK
+
     from lyraforge.desktop import launch_desktop
 
     return launch_desktop(
@@ -872,6 +886,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-gui",
         action="store_true",
         help="with --self-check, also import the PyWebView GUI host and its Windows backend",
+    )
+    pd.add_argument(
+        "--no-elevate",
+        action="store_true",
+        help="on Windows, stay at the current user privilege level instead of requesting UAC admin",
     )
     pd.set_defaults(func=cmd_desktop)
 

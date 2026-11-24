@@ -702,7 +702,9 @@ sha256sum -c {plan.checksums_name}
             f"""## Runtime Requirements & Quick Start (Windows 10/11 x64)
 
 1. **System Requirements**:
-   - Windows 10 or Windows 11 (64-bit), no Python or Node.js required, no admin needed.
+   - Windows 10 or Windows 11 (64-bit), no Python or Node.js required. `LyraForge.exe` requests
+     UAC Administrator elevation by default so synthetic free-play input matches elevated games
+     (`--no-elevate` / `LYRAFORGE_NO_ELEVATE=1` opts out from CLI/source).
    - Microsoft Edge **WebView2 Runtime** (pre-installed on modern Windows 10/11) for UI.
    - Optional external tools (`ffmpeg`, `basic-pitch`, `dettato`) are **not bundled** due
      to size/license boundaries and can be configured separately or via **Settings**.

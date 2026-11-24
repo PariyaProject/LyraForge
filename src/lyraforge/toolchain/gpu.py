@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from lyraforge.media.subprocess_utils import hidden_subprocess_kwargs
 from lyraforge.toolchain.installer import get_tool_setting, set_tool_setting
 from lyraforge.toolchain.paths import venv_python
 
@@ -33,9 +34,11 @@ def detect_nvidia() -> dict[str, Any]:
     try:
         res = subprocess.run(  # noqa: S603 - fixed argv, no shell
             [exe, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=10,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return {"present": False, "name": None, "driver": None}
@@ -58,9 +61,11 @@ def probe_dettato_torch() -> dict[str, Any] | None:
     try:
         res = subprocess.run(  # noqa: S603 - fixed argv, no shell
             [str(python), "-c", _TORCH_PROBE],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=60,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
