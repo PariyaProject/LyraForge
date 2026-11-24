@@ -577,4 +577,7 @@
    - `pnpm --dir apps/desktop/web build` → `49 modules transformed`（`vue-tsc --noEmit && vite build` `982ms`）；
    - `make smoke` → 退出码 `0`（DryRun `actions_sent = 48`、`keys_still_pressed = []`）；
    - CSS 规范扫描：确认 `apps/desktop/web/src` 除 `tokens.css` 外零硬编码色彩字面量（`NO_LITERAL_COLORS`）。
+4. **GitHub PR 与合并后 CI**：
+   - [PR #28](https://github.com/PariyaProject/LyraForge/pull/28)（`71b3aba`）→ PR CI [Run #45383657674](https://github.com/PariyaProject/LyraForge/actions/runs/45383657674) 全部 4 项活动作业 `success`（`Test (windows-latest)`、`Test (macos-latest)`、`Build macOS Bundle (PyInstaller)`、`Build Windows Bundle (PyInstaller)`）；
+   - Squash 合入 `main`（`be4f0da`）→ 合并后 CI [Run #45385270232](https://github.com/PariyaProject/LyraForge/actions/runs/45385270232) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已发布双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`LyraForge-dev-20261124-be4f0da-windows-x64.zip`、`LyraForge-dev-20261124-be4f0da-macos-arm64.zip`、`SHA256SUMS.txt`）。
 
