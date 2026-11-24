@@ -1,19 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PerformanceEventItem, ProfileKeyDef } from "../api";
+import StudioIcon from "./StudioIcon.vue";
 
 const props = defineProps<{
   keys: ProfileKeyDef[];
   events: PerformanceEventItem[];
   saving?: boolean;
+  playheadMs?: number;
+  isPlaying?: boolean;
 }>();
 
 const emit = defineEmits<{
   save: [payload: { events: PerformanceEventItem[]; label: string }];
+  seek: [ms: number];
 }>();
 
-const ROW_HEIGHT_PX = 28;
+const ROW_HEIGHT_PX = 26;
 const BASE_PX_PER_MS = 0.08;
+const KEY_COLUMN_PX = 112;
 
 function cloneEvents(items: PerformanceEventItem[]): PerformanceEventItem[] {
   return items
@@ -28,6 +33,7 @@ const orderedKeys = computed(() =>
   [...props.keys].sort((a, b) => b.pitch - a.pitch),
 );
 
+const scrollEl = ref<HTMLElement | null>(null);
 const workingEvents = ref<PerformanceEventItem[]>(cloneEvents(props.events));
 const history = ref<PerformanceEventItem[][]>([cloneEvents(props.events)]);
 const historyIndex = ref(0);
@@ -41,6 +47,9 @@ const zoomPct = ref(100);
 const snapMs = ref(50);
 const editorMode = ref<"select" | "add">("select");
 
+// Context menu state
+const contextMenu = ref<{ idx: number; x: number; y: number } | null>(null);
+
 // Live drag preview state
 const dragState = ref<{
   idx: number;
@@ -53,6 +62,21 @@ const dragState = ref<{
   moved: boolean;
 } | null>(null);
 
+function scrollToMedianPitch(): void {
+  const el = scrollEl.value;
+  if (!el || orderedKeys.value.length === 0 || workingEvents.value.length === 0) return;
+  const rowMap = new Map<string, number>();
+  orderedKeys.value.forEach((k, i) => rowMap.set(k.key_id, i));
+  const rowIndices = workingEvents.value
+    .map((e) => rowMap.get(e.key_id))
+    .filter((idx): idx is number => idx !== undefined)
+    .sort((a, b) => a - b);
+  if (rowIndices.length === 0) return;
+  const medianRow = rowIndices[Math.floor(rowIndices.length / 2)];
+  const targetTop = Math.max(0, medianRow * ROW_HEIGHT_PX - el.clientHeight / 2 + ROW_HEIGHT_PX);
+  el.scrollTop = targetTop;
+}
+
 watch(
   () => props.events,
   (next) => {
@@ -61,6 +85,8 @@ watch(
     history.value = [cloneEvents(initial)];
     historyIndex.value = 0;
     selectedIndex.value = initial.length > 0 ? 0 : null;
+    contextMenu.value = null;
+    void nextTick(scrollToMedianPitch);
   },
 );
 
@@ -91,15 +117,30 @@ const timelineWidthPx = computed(() =>
   Math.max(540, Math.min(4800, Math.ceil(totalDurationMs.value * pxPerMs.value) + 80)),
 );
 
+const playheadLeftPx = computed(() => {
+  const ms = Math.max(0, props.playheadMs ?? 0);
+  return Math.round(ms * pxPerMs.value);
+});
+
+const showPlayhead = computed(() => Boolean(props.isPlaying) || (props.playheadMs ?? 0) > 0);
+
 const rulerTicks = computed(() => {
-  const stepMs = zoomPct.value >= 160 ? 250 : zoomPct.value <= 75 ? 1000 : 500;
+  const stepMs = zoomPct.value >= 160 ? 250 : 500;
   const maxMs = Math.ceil(totalDurationMs.value / stepMs) * stepMs;
-  const ticks: Array<{ ms: number; label: string; leftPx: number }> = [];
+  const ticks: Array<{ ms: number; label: string; leftPx: number; major: boolean }> = [];
   for (let ms = 0; ms <= maxMs; ms += stepMs) {
+    const major = ms % 1000 === 0;
+    let label = "";
+    if (major) {
+      label = `${ms / 1000}s`;
+    } else if (zoomPct.value >= 125) {
+      label = `${Number((ms / 1000).toFixed(2))}s`;
+    }
     ticks.push({
       ms,
-      label: `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 2)}s`,
+      label,
       leftPx: Math.round(ms * pxPerMs.value),
+      major,
     });
   }
   return ticks;
@@ -114,6 +155,12 @@ function snapTime(ms: number): number {
   const clamped = Math.max(0, ms);
   if (snapMs.value <= 0) return Math.round(clamped);
   return Math.max(0, Math.round(clamped / snapMs.value) * snapMs.value);
+}
+
+function isOctaveBreak(idx: number): boolean {
+  const cur = orderedKeys.value[idx];
+  const nxt = orderedKeys.value[idx + 1];
+  return Boolean(cur && nxt && cur.row !== nxt.row);
 }
 
 const eventsByKey = computed(() => {
@@ -171,6 +218,7 @@ function undo() {
   historyIndex.value -= 1;
   workingEvents.value = cloneEvents(history.value[historyIndex.value]);
   selectedIndex.value = workingEvents.value.length > 0 ? 0 : null;
+  contextMenu.value = null;
 }
 
 function redo() {
@@ -178,11 +226,11 @@ function redo() {
   historyIndex.value += 1;
   workingEvents.value = cloneEvents(history.value[historyIndex.value]);
   selectedIndex.value = workingEvents.value.length > 0 ? 0 : null;
+  contextMenu.value = null;
 }
 
-function shiftSelectedPitch(step: -1 | 1) {
-  if (selectedIndex.value === null) return;
-  const ev = workingEvents.value[selectedIndex.value];
+function shiftNotePitch(idx: number, step: -1 | 1) {
+  const ev = workingEvents.value[idx];
   if (!ev) return;
   const asc = [...props.keys].sort((a, b) => a.pitch - b.pitch);
   const pos = asc.findIndex((k) => k.key_id === ev.key_id);
@@ -194,10 +242,13 @@ function shiftSelectedPitch(step: -1 | 1) {
     key_id: targetKey.key_id,
     mapped_pitch: targetKey.pitch,
   };
-  const next = workingEvents.value.map((item, idx) =>
-    idx === selectedIndex.value ? updated : item,
-  );
+  const next = workingEvents.value.map((item, i) => (i === idx ? updated : item));
   commitChange(next, updated);
+}
+
+function shiftSelectedPitch(step: -1 | 1) {
+  if (selectedIndex.value === null) return;
+  shiftNotePitch(selectedIndex.value, step);
 }
 
 function nudgeSelectedTime(deltaMs: number) {
@@ -214,10 +265,26 @@ function nudgeSelectedTime(deltaMs: number) {
   commitChange(next, updated);
 }
 
+function duplicateNote(idx: number, offsetMs = 250) {
+  const ev = workingEvents.value[idx];
+  if (!ev) return;
+  const copy: PerformanceEventItem = {
+    ...ev,
+    at_ms: Math.max(0, ev.at_ms + offsetMs),
+    adjustments: ev.adjustments ? [...ev.adjustments] : [],
+  };
+  commitChange([...workingEvents.value, copy], copy);
+}
+
+function deleteAtIndex(idx: number) {
+  if (workingEvents.value.length <= 1) return;
+  const next = workingEvents.value.filter((_, i) => i !== idx);
+  commitChange(next, null);
+}
+
 function deleteSelected() {
   if (selectedIndex.value === null || workingEvents.value.length <= 1) return;
-  const next = workingEvents.value.filter((_, idx) => idx !== selectedIndex.value);
-  commitChange(next, null);
+  deleteAtIndex(selectedIndex.value);
 }
 
 function createNoteFor(key: ProfileKeyDef, atMs: number) {
@@ -243,6 +310,7 @@ function addNote() {
 }
 
 function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false) {
+  contextMenu.value = null;
   if (!forceAdd && editorMode.value !== "add") return;
   const target = event.target as HTMLElement;
   if (target.closest(".pr-note")) return;
@@ -251,6 +319,36 @@ function onLaneClick(key: ProfileKeyDef, event: MouseEvent, forceAdd = false) {
   const relX = Math.max(0, event.clientX - rect.left);
   const rawMs = relX / pxPerMs.value;
   createNoteFor(key, snapTime(rawMs));
+}
+
+function onRulerClick(event: MouseEvent) {
+  const track = event.currentTarget as HTMLElement;
+  const rect = track.getBoundingClientRect();
+  const relX = Math.max(0, event.clientX - rect.left);
+  const ms = Math.max(0, Math.round(relX / pxPerMs.value));
+  emit("seek", ms);
+}
+
+function onNoteContextMenu(idx: number, event: MouseEvent) {
+  event.preventDefault();
+  selectedIndex.value = idx;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 720;
+  contextMenu.value = {
+    idx,
+    x: Math.min(event.clientX, vw - 180),
+    y: Math.min(event.clientY, vh - 160),
+  };
+}
+
+function runContextAction(action: "up" | "down" | "dup" | "del") {
+  const menu = contextMenu.value;
+  contextMenu.value = null;
+  if (!menu) return;
+  if (action === "up") shiftNotePitch(menu.idx, 1);
+  else if (action === "down") shiftNotePitch(menu.idx, -1);
+  else if (action === "dup") duplicateNote(menu.idx, 250);
+  else if (action === "del") deleteAtIndex(menu.idx);
 }
 
 function onWindowPointerMove(ev: PointerEvent) {
@@ -295,6 +393,7 @@ function onWindowPointerUp() {
 }
 
 function onNotePointerDown(idx: number, keyId: string, evItem: PerformanceEventItem, event: PointerEvent) {
+  contextMenu.value = null;
   selectedIndex.value = idx;
   if (event.button !== 0) return;
   const rowIdx = Math.max(
@@ -320,6 +419,10 @@ function onNotePointerDown(idx: number, keyId: string, evItem: PerformanceEventI
 function onEditorKeydown(event: KeyboardEvent) {
   const tag = (event.target as HTMLElement | null)?.tagName;
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (event.key === "Escape" && contextMenu.value) {
+    contextMenu.value = null;
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) redo();
@@ -344,6 +447,13 @@ function onEditorKeydown(event: KeyboardEvent) {
   }
 }
 
+function onGlobalClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (contextMenu.value && !target?.closest(".pr-context-menu")) {
+    contextMenu.value = null;
+  }
+}
+
 function emitSave() {
   if (workingEvents.value.length === 0) return;
   emit("save", {
@@ -352,25 +462,41 @@ function emitSave() {
   });
 }
 
+onMounted(() => {
+  void nextTick(scrollToMedianPitch);
+  if (typeof window !== "undefined") {
+    window.addEventListener("mousedown", onGlobalClick);
+  }
+});
+
 onBeforeUnmount(() => {
   stopDragListeners();
+  if (typeof window !== "undefined") {
+    window.removeEventListener("mousedown", onGlobalClick);
+  }
 });
 </script>
 
 <template>
   <div class="piano-roll-editor" tabindex="0" @keydown="onEditorKeydown">
     <div class="pr-toolbar">
-      <div class="button-row">
-        <button type="button" class="btn-secondary" :disabled="!canUndo" @click="undo">
+      <div class="pr-toolbar-group">
+        <strong style="font-size: 13px">MIDI Piano Roll 可视化编辑器</strong>
+        <button type="button" class="secondary btn-sm" :disabled="!canUndo" @click="undo">
+          <StudioIcon name="undo" :size="13" />
           撤销
         </button>
-        <button type="button" class="btn-secondary" :disabled="!canRedo" @click="redo">
+        <button type="button" class="secondary btn-sm" :disabled="!canRedo" @click="redo">
+          <StudioIcon name="redo" :size="13" />
           重做
         </button>
         <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
-          {{ isDirty ? "有未保存修改" : "已同步" }} · {{ workingEvents.length }} 音符
+          {{ isDirty ? "有未保存修改" : "已同步" }}
         </span>
+        <span class="badge tabular">{{ workingEvents.length }} 音符</span>
+      </div>
 
+      <div class="pr-toolbar-group">
         <div class="segmented" role="group" aria-label="画布操作模式">
           <button
             type="button"
@@ -388,27 +514,27 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="button-row" aria-label="缩放与吸附">
+        <div class="pr-toolbar-group" aria-label="缩放与吸附">
           <button
             type="button"
-            class="ghost"
+            class="ghost btn-sm"
             aria-label="缩小时间轴"
             @click="zoomPct = Math.max(50, zoomPct - 25)"
           >
-            -
+            <StudioIcon name="minus" :size="13" />
           </button>
           <span class="badge tabular">{{ zoomPct }}%</span>
           <button
             type="button"
-            class="ghost"
+            class="ghost btn-sm"
             aria-label="放大时间轴"
             @click="zoomPct = Math.min(250, zoomPct + 25)"
           >
-            +
+            <StudioIcon name="plus" :size="13" />
           </button>
-          <label for="pr-snap-select" class="muted">吸附</label>
-          <select id="pr-snap-select" v-model.number="snapMs" style="inline-size: auto">
-            <option :value="0">关闭</option>
+          <label for="pr-snap-select" class="muted" style="font-size: 12px">吸附</label>
+          <select id="pr-snap-select" v-model.number="snapMs" class="pr-inline-select">
+            <option :value="0">无吸附</option>
             <option :value="25">25ms</option>
             <option :value="50">50ms</option>
             <option :value="100">100ms</option>
@@ -417,101 +543,155 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="button-row" v-if="selectedEvent">
-        <span class="hint-text">
-          选中: {{ selectedEvent.key_id }} @ {{ selectedEvent.at_ms }} ms
-        </span>
-        <button type="button" class="btn-secondary" @click="shiftSelectedPitch(1)">
-          高1音
-        </button>
-        <button type="button" class="btn-secondary" @click="shiftSelectedPitch(-1)">
-          低1音
-        </button>
-        <button type="button" class="btn-secondary" @click="nudgeSelectedTime(-50)">
-          -50ms
-        </button>
-        <button type="button" class="btn-secondary" @click="nudgeSelectedTime(50)">
-          +50ms
-        </button>
+      <div class="pr-toolbar-group">
+        <label for="pr-version-label" class="muted" style="font-size: 12px">版本</label>
+        <input
+          id="pr-version-label"
+          v-model="versionLabel"
+          type="text"
+          class="pr-inline-label"
+          placeholder="版本名称"
+        />
         <button
           type="button"
-          class="btn-danger"
-          :disabled="workingEvents.length <= 1"
-          @click="deleteSelected"
+          :class="isDirty ? 'primary btn-sm' : 'secondary btn-sm'"
+          :disabled="saving || workingEvents.length === 0"
+          @click="emitSave"
         >
-          删除音符
+          <StudioIcon name="check" :size="13" />
+          保存为新版本
         </button>
       </div>
     </div>
 
     <div class="pr-add-bar">
-      <div class="field-inline">
-        <label for="pr-new-key">键位</label>
-        <select id="pr-new-key" v-model="newKeyId">
-          <option v-for="k in orderedKeys" :key="k.key_id" :value="k.key_id">
-            {{ k.binding }} ({{ k.key_id }})
-          </option>
-        </select>
+      <div class="pr-toolbar-group">
+        <template v-if="selectedEvent">
+          <span class="hint-text">
+            选中: {{ selectedEvent.key_id }} @ {{ selectedEvent.at_ms }} ms
+          </span>
+          <button type="button" class="secondary btn-sm" @click="shiftSelectedPitch(1)">
+            高1音
+          </button>
+          <button type="button" class="secondary btn-sm" @click="shiftSelectedPitch(-1)">
+            低1音
+          </button>
+          <button type="button" class="secondary btn-sm" @click="nudgeSelectedTime(-50)">
+            -50ms
+          </button>
+          <button type="button" class="secondary btn-sm" @click="nudgeSelectedTime(50)">
+            +50ms
+          </button>
+          <button
+            type="button"
+            class="danger btn-sm"
+            :disabled="workingEvents.length <= 1"
+            @click="deleteSelected"
+          >
+            <StudioIcon name="trash" :size="13" />
+            删除音符
+          </button>
+        </template>
+        <span v-else class="muted" style="font-size: 12px">
+          点击音符选中并拖拽，右键打开快捷菜单，双击音轨或切换「点击添加」插入音符
+        </span>
       </div>
-      <div class="field-inline">
-        <label for="pr-new-time">时间 (ms)</label>
-        <input id="pr-new-time" v-model.number="newAtMs" type="number" min="0" step="50" />
+
+      <div class="pr-toolbar-group">
+        <div class="field-inline">
+          <label for="pr-new-key">键位</label>
+          <select id="pr-new-key" v-model="newKeyId" class="pr-inline-select">
+            <option v-for="k in orderedKeys" :key="k.key_id" :value="k.key_id">
+              {{ k.binding }} ({{ k.key_id }})
+            </option>
+          </select>
+        </div>
+        <div class="field-inline">
+          <label for="pr-new-time">时间 ms</label>
+          <input
+            id="pr-new-time"
+            v-model.number="newAtMs"
+            type="number"
+            min="0"
+            step="50"
+            class="pr-inline-number"
+          />
+        </div>
+        <button type="button" class="secondary btn-sm" @click="addNote">
+          <StudioIcon name="plus" :size="13" />
+          添加音符
+        </button>
       </div>
-      <button type="button" class="btn-secondary" @click="addNote">添加音符</button>
-      <div class="field-inline pr-label-field">
-        <label for="pr-version-label">版本名称</label>
-        <input id="pr-version-label" v-model="versionLabel" type="text" maxlength="60" />
-      </div>
-      <button
-        type="button"
-        class="btn-primary"
-        :disabled="saving || workingEvents.length === 0"
-        @click="emitSave"
-      >
-        {{ saving ? "保存中..." : "保存为新版本" }}
-      </button>
     </div>
 
-    <div class="pr-scroll" role="region" aria-label="MIDI Piano Roll 可视化编辑器">
-      <div class="pr-canvas" :style="{ width: `${timelineWidthPx + 104}px` }">
-        <div class="pr-ruler" aria-hidden="true">
-          <div class="pr-ruler-corner">键位 \ 时间</div>
-          <div class="pr-ruler-track">
-            <div
+    <div
+      ref="scrollEl"
+      class="pr-scroll"
+      role="region"
+      aria-label="MIDI Piano Roll 可视化编辑器"
+    >
+      <div class="pr-canvas" :style="{ width: `${timelineWidthPx + KEY_COLUMN_PX}px` }">
+        <div class="pr-ruler" title="点击时间标尺定位试听播放头">
+          <div class="pr-ruler-corner">键位 / 时间</div>
+          <div class="pr-ruler-track" @click="onRulerClick">
+            <span
               v-for="tick in rulerTicks"
               :key="tick.ms"
               class="pr-tick"
+              :class="{ 'is-minor': !tick.major }"
               :style="{ left: `${tick.leftPx}px` }"
             >
               {{ tick.label }}
-            </div>
+            </span>
+            <div
+              v-if="showPlayhead"
+              class="pr-playhead"
+              :style="{ left: `${playheadLeftPx}px` }"
+            />
           </div>
         </div>
 
-        <div v-for="k in orderedKeys" :key="k.key_id" class="pr-row">
-          <span class="pr-key-label">{{ k.binding }} · {{ k.key_id }}</span>
+        <div
+          v-for="(k, rowIdx) in orderedKeys"
+          :key="k.key_id"
+          class="pr-row"
+          :class="{ 'octave-break': isOctaveBreak(rowIdx) }"
+        >
+          <div
+            class="pr-key-label"
+            :class="`zone-${k.row}`"
+          >
+            <span class="pr-key-bind">{{ k.binding }}</span>
+            <span class="pr-key-id">{{ k.key_id }}</span>
+          </div>
           <div
             class="pr-lane"
             :style="{ backgroundSize: snapBackgroundSize }"
             @click="onLaneClick(k, $event, false)"
             @dblclick="onLaneClick(k, $event, true)"
           >
+            <div
+              v-if="showPlayhead"
+              class="pr-playhead"
+              :style="{ left: `${playheadLeftPx}px` }"
+            />
             <button
               v-for="item in eventsByKey[k.key_id] ?? []"
-              :key="`${item.idx}-${item.ev.key_id}`"
+              :key="`${item.idx}-${item.ev.key_id}-${item.ev.at_ms}`"
               type="button"
               class="pr-note"
               :class="{
                 selected: selectedIndex === item.idx,
                 dragging: dragState?.idx === item.idx && dragState?.moved,
+                'is-adjusted': (item.ev.adjustments?.length ?? 0) > 0,
               }"
               :style="{
                 left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
-                width: `${Math.max(18, Math.round(item.ev.hold_ms * pxPerMs))}px`,
+                width: `${Math.max(24, Math.round(Math.max(80, item.ev.hold_ms) * pxPerMs))}px`,
               }"
-              :aria-label="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms}ms`"
+              :title="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms} ms`"
               @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
-              @click="selectedIndex = item.idx"
+              @contextmenu="onNoteContextMenu(item.idx, $event)"
             >
               {{ k.binding }}
             </button>
@@ -519,8 +699,31 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
-    <p class="muted" style="margin: 0">
-      提示：按住音符可直接拖拽改音高与时间；双击音轨或切换“点击添加”即可插入；支持键盘方向键、Delete、Ctrl/Cmd+Z 撤销。
-    </p>
+
+    <div
+      v-if="contextMenu"
+      class="pr-context-menu"
+      role="menu"
+      aria-label="音符快捷操作"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+    >
+      <button type="button" role="menuitem" @click="runContextAction('up')">
+        上移一个琴键
+      </button>
+      <button type="button" role="menuitem" @click="runContextAction('down')">
+        下移一个琴键
+      </button>
+      <button type="button" role="menuitem" @click="runContextAction('dup')">
+        向后复制 (+250ms)
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        :disabled="workingEvents.length <= 1"
+        @click="runContextAction('del')"
+      >
+        删除该音符
+      </button>
+    </div>
   </div>
 </template>

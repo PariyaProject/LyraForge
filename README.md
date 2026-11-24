@@ -104,6 +104,7 @@ uv run lyraforge mcp
 | [产品路线图](docs/ROADMAP.md) | 里程碑完成情况与下一阶段产品演进方向（转谱、Windows 真机、交付体验） |
 | [变更记录](CHANGELOG.md) | 面向用户的版本与功能更新记录 |
 | [系统架构设计](docs/ARCHITECTURE.md) | 跨平台核心分层、桌面宿主及 Windows 驱动隔离原则 |
+| [UI 设计规范](DESIGN.md) | Studio Obsidian 视觉系统、Token、布局网格与桌面可访问性约束 |
 | [项目维护工作流](docs/MAINTAINER_WORKFLOW.md) | 开发分支、PR、GitHub CI 检查与发布门禁规范 |
 
 ---

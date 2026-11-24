@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from "vue";
 import StudioIcon from "./StudioIcon.vue";
 import type { LyraStore } from "../composables/useLyraStore";
 
@@ -9,50 +10,96 @@ async function selectItem(arrangementId: string): Promise<void> {
   await props.store.selectArrangement(arrangementId);
   emit("update:open", false);
 }
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (props.open && event.key === "Escape") {
+    emit("update:open", false);
+  }
+}
+
+onMounted(() => {
+  if (typeof window !== "undefined") {
+    window.addEventListener("keydown", onWindowKeydown);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("keydown", onWindowKeydown);
+  }
+});
 </script>
 
 <template>
   <div v-if="open" class="queue-backdrop" @click="emit('update:open', false)"></div>
-  <aside v-if="open" class="queue-drawer" aria-label="播放队列">
+  <aside
+    v-if="open"
+    class="queue-drawer"
+    role="dialog"
+    aria-modal="true"
+    aria-label="播放队列"
+  >
     <header class="queue-drawer-header">
-      <h2>播放队列</h2>
-      <button class="ghost" type="button" @click="emit('update:open', false)">
-        <StudioIcon name="check" :size="14" />
+      <div>
+        <h2>播放队列</h2>
+        <div class="meta-row">
+          <span>{{ store.queue.value.items.length }} 首曲目</span>
+          <span v-if="store.queue.value.items.length > 0">
+            第 {{ store.queue.value.index + 1 }} 首
+          </span>
+        </div>
+      </div>
+      <button
+        class="ghost btn-sm"
+        type="button"
+        aria-label="关闭队列"
+        @click="emit('update:open', false)"
+      >
+        <StudioIcon name="x" :size="15" />
         关闭
       </button>
     </header>
-
-    <p class="muted" style="margin: 0">
-      {{ store.queue.value.items.length }} 首
-      <template v-if="store.queue.value.items.length > 0">
-        · 当前第 {{ store.queue.value.index + 1 }} 首
-      </template>
-    </p>
 
     <ol v-if="store.queue.value.items.length > 0" class="queue-list">
       <li
         v-for="(item, index) in store.queue.value.items"
         :key="item.arrangement_id"
-        :class="{ current: index === store.queue.value.index }"
-        @click="selectItem(item.arrangement_id)"
       >
-        <span class="queue-index">{{ index + 1 }}</span>
-        <span class="queue-label">{{ item.label }}</span>
-        <span v-if="index === store.queue.value.index" class="pill pill-ok">当前</span>
+        <button
+          type="button"
+          class="queue-row-btn"
+          :class="{ current: index === store.queue.value.index }"
+          @click="selectItem(item.arrangement_id)"
+        >
+          <span class="queue-index">{{ index + 1 }}</span>
+          <span class="queue-label">{{ item.label }}</span>
+          <span v-if="index === store.queue.value.index" class="pill pill-accent">当前</span>
+        </button>
       </li>
     </ol>
-    <p v-else class="muted" style="margin: 0">
-      队列为空：在编曲工作室点击「加入播放队列」。
-    </p>
+    <div v-else class="empty-state">
+      <StudioIcon name="list-music" :size="20" />
+      <p style="margin: 0">
+        队列为空，可在编曲工作室点击「加入播放队列」。
+      </p>
+    </div>
 
     <div class="queue-actions">
       <button class="secondary" type="button" @click="store.handleQueueStep(-1)">
+        <StudioIcon name="skip-back" :size="14" />
         上一首
       </button>
       <button class="secondary" type="button" @click="store.handleQueueStep(1)">
         下一首
+        <StudioIcon name="skip-forward" :size="14" />
       </button>
-      <button class="ghost" type="button" @click="store.handleClearQueue">
+      <button
+        class="ghost"
+        type="button"
+        style="margin-inline-start: auto"
+        @click="store.handleClearQueue"
+      >
+        <StudioIcon name="trash" :size="14" />
         清空
       </button>
     </div>
@@ -63,79 +110,100 @@ async function selectItem(arrangementId: string): Promise<void> {
 .queue-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
-  background: rgb(0 0 0 / 0.35);
+  z-index: var(--z-drawer);
+  background: var(--color-backdrop);
 }
 
 .queue-drawer {
   position: fixed;
   inset-block: 0;
   inset-inline-end: 0;
-  z-index: 41;
+  z-index: calc(var(--z-drawer) + 1);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-md);
   inline-size: min(360px, 92vw);
-  padding: 16px;
+  padding: var(--space-md);
   overflow-y: auto;
-  background: var(--bg-panel);
-  border-inline-start: 1px solid var(--border-subtle);
-  box-shadow: -8px 0 24px rgb(0 0 0 / 0.25);
+  background: var(--color-paper-2);
+  border-inline-start: var(--rule-hair) solid var(--color-rule-strong);
+  box-shadow: var(--shadow-overlay);
 }
 
 .queue-drawer-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-xs);
+  padding-block-end: var(--space-sm);
+  border-block-end: var(--rule-hair) solid var(--color-rule);
 }
 
 .queue-drawer-header h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 16px;
 }
 
 .queue-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
+  border-block-start: var(--rule-hair) solid var(--color-rule);
 }
 
 .queue-list li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-block-end: var(--rule-hair) solid var(--color-rule);
 }
 
-.queue-list li.current {
-  border-color: var(--accent-primary);
+.queue-row-btn {
+  inline-size: 100%;
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-xs);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: start;
+}
+
+@media (hover: hover) {
+  .queue-row-btn:hover:not(:disabled) {
+    background: var(--color-paper-3);
+  }
+}
+
+.queue-row-btn.current {
+  background: var(--color-accent-deep);
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 
 .queue-index {
-  inline-size: 18px;
+  inline-size: 20px;
   text-align: end;
-  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .queue-label {
   flex: 1;
   min-inline-size: 0;
   overflow-wrap: anywhere;
+  white-space: normal;
+  font-weight: var(--weight-medium);
 }
 
 .queue-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-xs);
   margin-block-start: auto;
+  padding-block-start: var(--space-sm);
+  border-block-start: var(--rule-hair) solid var(--color-rule);
 }
 </style>

@@ -122,6 +122,10 @@ export function createLyraStore(api: LyraForgeApi) {
 
   // Preview audio
   const previewUrl = ref<string | null>(null);
+  const previewCurrentMs = ref(0);
+  const previewDurationMs = ref(0);
+  const previewPlaying = ref(false);
+  const previewSeekTargetMs = ref<number | null>(null);
 
   // Playback
   const playbackMode = ref<"dry-run" | "windows">("dry-run");
@@ -175,6 +179,19 @@ export function createLyraStore(api: LyraForgeApi) {
     return counts;
   });
 
+  const soundingKeyIds = computed<string[]>(() => {
+    if (!previewPlaying.value && previewCurrentMs.value <= 0) return [];
+    const pos = previewCurrentMs.value;
+    const active = new Set<string>();
+    for (const ev of arrDetail.value?.performance.events ?? []) {
+      const span = Math.max(140, ev.hold_ms);
+      if (ev.at_ms <= pos && pos <= ev.at_ms + span) {
+        active.add(ev.key_id);
+      }
+    }
+    return [...active];
+  });
+
   function pushToast(kind: ToastItem["kind"], text: string): void {
     const id = toastSeq++;
     toasts.value = [...toasts.value.slice(-3), { id, kind, text }];
@@ -216,6 +233,23 @@ export function createLyraStore(api: LyraForgeApi) {
       URL.revokeObjectURL(previewUrl.value);
     }
     previewUrl.value = null;
+    previewCurrentMs.value = 0;
+    previewDurationMs.value = 0;
+    previewPlaying.value = false;
+    previewSeekTargetMs.value = null;
+  }
+
+  function updatePreviewPlayback(currentMs: number, durationMs: number, playing: boolean): void {
+    previewCurrentMs.value = Math.max(0, Math.round(currentMs));
+    if (Number.isFinite(durationMs) && durationMs > 0) {
+      previewDurationMs.value = Math.round(durationMs);
+    }
+    previewPlaying.value = playing;
+  }
+
+  function requestPreviewSeek(ms: number): void {
+    previewSeekTargetMs.value = Math.max(0, Math.round(ms));
+    previewCurrentMs.value = Math.max(0, Math.round(ms));
   }
 
   function stopPolling(): void {
@@ -1113,6 +1147,13 @@ export function createLyraStore(api: LyraForgeApi) {
     transposeInput,
     arpeggiateMs,
     previewUrl,
+    previewCurrentMs,
+    previewDurationMs,
+    previewPlaying,
+    previewSeekTargetMs,
+    updatePreviewPlayback,
+    requestPreviewSeek,
+    soundingKeyIds,
     playbackMode,
     realtime,
     prepared,

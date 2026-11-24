@@ -25,15 +25,15 @@ const emit = defineEmits<{
       :class="t.kind"
       :role="t.kind === 'error' ? 'alert' : 'status'"
     >
-      <StudioIcon :name="t.kind === 'error' ? 'alert' : 'check'" :size="16" />
+      <StudioIcon :name="t.kind === 'error' ? 'alert' : t.kind === 'ok' ? 'check' : 'info'" :size="15" />
       <span>{{ t.text }}</span>
       <button
         type="button"
-        class="toast-close"
+        class="ghost toast-close"
         aria-label="关闭通知"
         @click="emit('dismiss', t.id)"
       >
-        ×
+        <StudioIcon name="x" :size="14" />
       </button>
     </div>
   </div>
