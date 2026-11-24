@@ -437,6 +437,24 @@
    - 上述跨分辨率与 E2E 验证运行于 macOS Headless Google Chrome + 真实本地 FastAPI 服务（`DryRun` 模拟模式）；Windows 10/11 PyWebView2 真实窗口渲染与 125%/150% DPI、以及《原神》真机 21 键校准与 `SendInput` 演奏仍未在 Windows 实体游戏机完成实测。
    - 外置工具（`ffmpeg` / `basic-pitch` / `dettato`）当前测试机未安装，转谱 E2E 验证基于内置 `builtin-mono` (YIN) 完成。
 
+---
+
+## 24. Round 22 极简应用图标与 Windows + macOS 双平台打包（2026-11-24）
+
+1. **图标资产与校验**：
+   - 由 SVG 矢量母版（`packaging/icons/lyraforge.svg`、`lyraforge-win.svg`、`docs/assets/lyraforge-icon.svg`）经 `scripts/generate_icons.py` 生成：
+     - `packaging/icons/lyraforge.png`（`512×512` RGBA，15,460 B）；
+     - `packaging/icons/lyraforge.ico`（7 层 PNG-in-ICO：`16, 24, 32, 48, 64, 128, 256` RGBA，18,172 B）；
+     - `packaging/icons/lyraforge.icns`（Apple IconImage `icns`，经 `iconutil -c iconset` 逆向解包验证含完整 10 个标准+Retina 槽位，147,073 B）。
+2. **macOS Apple Silicon 原生打包实测**：
+   - 执行 `bash scripts/build_macos.sh`：Vue 3 前端构建 + PyInstaller `BUNDLE` 生成 `dist/LyraForge.app`（`Contents/Resources/lyraforge.icns` + `CFBundleIconFile` 正确嵌入）；
+   - 执行 `dist/LyraForge.app/Contents/MacOS/LyraForge --self-check --check-gui`：退出码 `0`，输出 `gui_host: {"available": true, "backend": "cocoa", "backend_ok": true, "version": "6.2.1"}`；
+   - 执行 `scripts/release_helper.py package --platform macos --arch macos-arm64` 生成 `17,845,938` bytes 压缩包，`unzip -q` 解压后确认 `.app` 内部符号链接完整（如 `Contents/Resources/AppKit -> ../Frameworks/AppKit`），且解压出的可执行文件二次 `--self-check --check-gui` 返回 `ok: true`。
+3. **本地全量门禁（最终编辑后实测）**：
+   - `uv run ruff check .` 通过；`uv run pytest` **222 passed, 2 warnings**（含 macOS `cocoa` 门禁、图标头部检验、`.app` ZIP 符号链接/防逃逸与双平台合流发布用例），总覆盖率 **84.12%**；`vitest` **5/5 文件 10/10 通过**；`vue-tsc + vite build` 通过；`make smoke` 退出码 `0`。
+4. **跨平台运行时边界（如实标注）**：
+   - Windows `.exe` 图标资源与 WinForms `Form.Icon` 注入逻辑将随本轮 GitHub Actions `windows-latest` CI 构建验证打包，真实 Windows 11 资源管理器与任务栏视觉渲染待实体 Windows 机器打开 `.exe` 后直观确认。
+
 
 
 

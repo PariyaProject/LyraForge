@@ -531,6 +531,20 @@ def _gui_host_status(*, required: bool) -> dict[str, Any]:
             status["reason"] = f"{type(exc).__name__}: {exc}"
         else:
             status.update({"backend": "edgechromium", "backend_ok": True})
+    elif sys.platform == "darwin":
+        try:
+            importlib.import_module("webview.platforms.cocoa")
+        except Exception as exc:
+            status.update({"backend": "cocoa", "backend_ok": False})
+            if required:
+                raise LyraError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    "Cocoa/WKWebView GUI backend failed to load in this build",
+                    {"problems": [f"{type(exc).__name__}: {exc}"]},
+                ) from exc
+            status["reason"] = f"{type(exc).__name__}: {exc}"
+        else:
+            status.update({"backend": "cocoa", "backend_ok": True})
     return status
 
 

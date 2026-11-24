@@ -117,10 +117,15 @@ onMounted(() => {
     <aside class="studio-rail" aria-label="工作台侧边栏">
       <div class="rail-brand">
         <div class="brand-mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="8" width="2" height="6" fill="currentColor" />
-            <rect x="7" y="3" width="2" height="11" fill="currentColor" />
-            <rect x="12" y="5" width="2" height="9" fill="currentColor" />
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M4.5 4v10.8c0 3 2.1 4.7 5.4 4.7H20v-2.8H10.2c-1.8 0-2.8-.9-2.8-2.6V4Z"
+              fill="currentColor"
+            />
+            <path d="M9.6 6.8 19.6 4v2.3L9.6 9.1Z" fill="currentColor" opacity="0.9" />
+            <rect x="10.2" y="10.8" width="2.2" height="5.2" rx="0.8" fill="currentColor" opacity="0.58" />
+            <rect x="13.8" y="8.8" width="2.2" height="7.2" rx="0.8" fill="currentColor" />
+            <rect x="17.4" y="7.2" width="2.2" height="8.8" rx="0.8" fill="currentColor" />
           </svg>
         </div>
         <div class="brand-copy">

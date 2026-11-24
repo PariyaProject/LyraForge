@@ -8,8 +8,10 @@ playback stop + server shutdown when the window closes.
 from __future__ import annotations
 
 import importlib
+import inspect
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -56,6 +58,76 @@ def _import_webview() -> Any:
             ErrorCode.SOURCE_UNAVAILABLE,
             "pywebview is not installed; install desktop extra with 'uv sync --extra desktop'",
         ) from exc
+
+
+def default_icon_path(ext: str = "png") -> Path | None:
+    """Resolve packaged or repository LyraForge desktop icon by extension (ico/icns/png)."""
+    filename = f"lyraforge.{ext.lstrip('.')}"
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "packaging" / "icons" / filename)
+    candidates.extend([
+        Path(__file__).resolve().parents[3] / "packaging" / "icons" / filename,
+        Path.cwd() / "packaging" / "icons" / filename,
+    ])
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _apply_macos_dock_icon() -> None:
+    """Best-effort Cocoa Dock icon override (useful when launched from source via python)."""
+    if sys.platform != "darwin":
+        return
+    icon_path = default_icon_path("icns") or default_icon_path("png")
+    if icon_path is None:
+        return
+    try:
+        appkit = importlib.import_module("AppKit")
+        ns_image = appkit.NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+        if ns_image is not None:
+            appkit.NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
+    except Exception:
+        pass
+
+
+def _winforms_startup_callback() -> Any | None:
+    """Return a pywebview startup callback that sets the WinForms Form icon cleanly."""
+    if sys.platform != "win32":
+        return None
+    ico_path = default_icon_path("ico")
+    if ico_path is None:
+        return None
+
+    def _set_winforms_icon(*_args: Any) -> None:
+        try:
+            clr = importlib.import_module("clr")
+            clr.AddReference("System.Drawing")
+            clr.AddReference("System.Windows.Forms")
+            drawing = importlib.import_module("System.Drawing")
+            forms = importlib.import_module("System.Windows.Forms")
+            win_icon = drawing.Icon(str(ico_path))
+            for form in forms.Application.OpenForms:
+                form.Icon = win_icon
+        except Exception:
+            pass
+
+    return _set_winforms_icon
+
+
+def _start_webview(webview: Any) -> None:
+    _apply_macos_dock_icon()
+    callback = _winforms_startup_callback()
+    if callback is not None:
+        try:
+            if len(inspect.signature(webview.start).parameters) >= 1:
+                webview.start(callback)
+                return
+        except (TypeError, ValueError):
+            pass
+    webview.start()
 
 
 def launch_desktop(
@@ -129,7 +201,7 @@ def launch_desktop(
             height=height,
             min_size=(900, 640),
         )
-        webview.start()
+        _start_webview(webview)
         return 0
     finally:
         app.state.playback_manager.stop("window_closed")
