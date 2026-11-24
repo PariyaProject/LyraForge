@@ -494,6 +494,10 @@ export class LyraForgeApi {
     return this.request(`/v1/jobs/${encodeURIComponent(jobId)}`);
   }
 
+  listJobs(): Promise<{ jobs: TranscriptionJob[] }> {
+    return this.request<{ jobs: TranscriptionJob[] }>("/v1/jobs");
+  }
+
   cancelJob(jobId: string): Promise<{ job: TranscriptionJob }> {
     return this.request(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
   }

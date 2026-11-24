@@ -159,17 +159,33 @@ async function onArrangementChange(event: Event): Promise<void> {
           />
           <div v-else class="empty-state" style="margin: var(--space-lg); flex: 1">
             <StudioIcon name="sliders" :size="24" />
-            <p style="margin: 0">
-              当前曲目尚无改编版本。请点击上方「生成改编版本」或「生成 A/B 对比版本」。
-            </p>
-            <button
-              class="primary"
-              type="button"
-              :disabled="!store.canArrange.value || store.busy.value"
-              @click="store.handleArrange"
-            >
-              立即生成改编版本
-            </button>
+            <template v-if="!store.selectedSong.value">
+              <p style="margin: 0">尚未选择曲目，请先从顶部切换曲目或前往本地曲库选择。</p>
+              <button class="primary" type="button" @click="store.setView('library')">
+                浏览本地曲库
+              </button>
+            </template>
+            <template v-else-if="!store.canArrange.value">
+              <p style="margin: 0">
+                当前曲目「{{ store.selectedSong.value.title }}」尚未完成音频转谱，请先转谱生成 MIDI 后再编曲。
+              </p>
+              <button class="primary" type="button" @click="store.setView('transcribe')">
+                前往音频转谱
+              </button>
+            </template>
+            <template v-else>
+              <p style="margin: 0">
+                当前曲目「{{ store.selectedSong.value.title }}」尚无改编版本。请点击上方「生成改编版本」或「生成 A/B 对比版本」。
+              </p>
+              <button
+                class="primary"
+                type="button"
+                :disabled="store.busy.value"
+                @click="store.handleArrange"
+              >
+                立即生成改编版本
+              </button>
+            </template>
           </div>
         </div>
 

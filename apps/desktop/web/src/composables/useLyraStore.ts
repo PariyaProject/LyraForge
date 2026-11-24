@@ -85,16 +85,14 @@ export function createLyraStore(api: LyraForgeApi) {
   const toolsDir = ref("");
   const toolBusy = ref<string | null>(null);
   const songs = ref<SongSummary[]>([]);
+  const allSongs = ref<SongSummary[]>([]);
   const searchQuery = ref("");
   const filterTag = ref("");
   const filterFavoritesOnly = ref(false);
   const selectedSongId = ref<string | null>(null);
+  const selectedSongSnapshot = ref<SongSummary | null>(null);
   const songSources = ref<SourceRecord[]>([]);
   const songTranscriptions = ref<TranscriptionRecord[]>([]);
-  const transcribeSongId = ref<string | null>(null);
-  const transcribeSongTitle = ref("");
-  const transcribeSources = ref<SourceRecord[]>([]);
-  const transcribeTranscriptions = ref<TranscriptionRecord[]>([]);
   const arrangements = ref<ArrangementRecord[]>([]);
   const selectedArrId = ref<string>("");
   const arrDetail = ref<ArrangementDetailResponse | null>(null);
@@ -112,7 +110,7 @@ export function createLyraStore(api: LyraForgeApi) {
 
   // Transcription state
   const selectedEngineId = ref("builtin-mono");
-  const activeJob = ref<TranscriptionJob | null>(null);
+  const transcriptionJobs = ref<TranscriptionJob[]>([]);
 
   // Arrangement state
   const style = ref<"melody" | "balanced" | "rich">("balanced");
@@ -157,6 +155,14 @@ export function createLyraStore(api: LyraForgeApi) {
   let toastSeq = 1;
   let pollTimer: number | null = null;
   let jobPollTimer: number | null = null;
+  let jobPollInFlight = false;
+  let jobPollFailures = 0;
+  let selectSongSeq = 0;
+  let selectArrSeq = 0;
+
+  function isJobRunning(job: TranscriptionJob): boolean {
+    return job.status === "queued" || job.status === "running";
+  }
 
   const hasMidiSource = computed(() => songSources.value.some((s) => s.kind === "midi"));
   const hasAudioSource = computed(() => songSources.value.some((s) => s.kind === "audio"));
@@ -166,10 +172,63 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedEngineInfo = computed(
     () => transcribers.value.find((t) => t.id === selectedEngineId.value) ?? null,
   );
-  const selectedSong = computed(
-    () => songs.value.find((s) => s.id === selectedSongId.value) ?? null,
+  const selectedSong = computed(() => {
+    const id = selectedSongId.value;
+    if (!id) return null;
+    return (
+      allSongs.value.find((s) => s.id === id) ??
+      songs.value.find((s) => s.id === id) ??
+      (selectedSongSnapshot.value?.id === id ? selectedSongSnapshot.value : null)
+    );
+  });
+  const recentSongs = computed(() =>
+    (allSongs.value.length > 0 ? allSongs.value : songs.value).slice(0, 6),
   );
-  const recentSongs = computed(() => songs.value.slice(0, 6));
+
+  function songTitleById(songId: string): string {
+    return (
+      allSongs.value.find((s) => s.id === songId)?.title ??
+      songs.value.find((s) => s.id === songId)?.title ??
+      (selectedSongSnapshot.value?.id === songId ? selectedSongSnapshot.value.title : undefined) ??
+      songId
+    );
+  }
+
+  const runningTranscriptionJobs = computed(() => transcriptionJobs.value.filter(isJobRunning));
+
+  const currentSongJob = computed<TranscriptionJob | null>(() => {
+    const id = selectedSongId.value;
+    if (!id) return null;
+    const forSong = transcriptionJobs.value.filter((j) => j.song_id === id);
+    return forSong.find(isJobRunning) ?? forSong[0] ?? null;
+  });
+
+  const activeJob = computed<TranscriptionJob | null>(() => currentSongJob.value);
+
+  const otherSongJobs = computed<TranscriptionJob[]>(() => {
+    const curId = selectedSongId.value;
+    const running = transcriptionJobs.value.filter((j) => j.song_id !== curId && isJobRunning(j));
+    const seenSongs = new Set<string>(running.map((j) => j.song_id));
+    const recentTerminal: TranscriptionJob[] = [];
+    for (const job of transcriptionJobs.value) {
+      if (job.song_id === curId || isJobRunning(job) || seenSongs.has(job.song_id)) {
+        continue;
+      }
+      seenSongs.add(job.song_id);
+      recentTerminal.push(job);
+    }
+    return [...running, ...recentTerminal].slice(0, 6);
+  });
+
+  function isSongTranscribing(songId: string): boolean {
+    return runningTranscriptionJobs.value.some((j) => j.song_id === songId);
+  }
+
+  const transcribeSongId = computed(() => selectedSongId.value);
+  const transcribeSongTitle = computed(() => selectedSong.value?.title ?? "");
+  const transcribeSources = songSources;
+  const transcribeTranscriptions = songTranscriptions;
+  const transcribeHasAudio = hasAudioSource;
 
   const eventCounts = computed<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
@@ -264,9 +323,150 @@ export function createLyraStore(api: LyraForgeApi) {
       window.clearInterval(jobPollTimer);
       jobPollTimer = null;
     }
+    jobPollInFlight = false;
+    jobPollFailures = 0;
   }
 
-  async function refreshSongs(): Promise<void> {
+  function upsertTranscriptionJob(job: TranscriptionJob): void {
+    const idx = transcriptionJobs.value.findIndex((item) => item.id === job.id);
+    if (idx >= 0) {
+      const next = [...transcriptionJobs.value];
+      next[idx] = job;
+      transcriptionJobs.value = next;
+      return;
+    }
+    transcriptionJobs.value = [job, ...transcriptionJobs.value].slice(0, 20);
+  }
+
+  function mergeSongSummary(
+    rawSong: SongSummary,
+    arrangementCount: number,
+    cached?: SongSummary | null,
+  ): SongSummary {
+    const partial = rawSong as Partial<SongSummary>;
+    return {
+      id: rawSong.id,
+      title: rawSong.title,
+      artist: partial.artist ?? cached?.artist ?? "",
+      tags: partial.tags ?? cached?.tags ?? [],
+      arrangement_count: partial.arrangement_count ?? arrangementCount,
+      created_at: partial.created_at ?? cached?.created_at ?? "",
+      updated_at: partial.updated_at ?? cached?.updated_at ?? "",
+    };
+  }
+
+  function applySongDetail(
+    songId: string,
+    detail: {
+      song: SongSummary;
+      sources?: SourceRecord[];
+      transcriptions?: TranscriptionRecord[];
+      arrangements: ArrangementRecord[];
+    },
+  ): void {
+    const cached =
+      allSongs.value.find((s) => s.id === songId) ??
+      songs.value.find((s) => s.id === songId) ??
+      null;
+    const resolvedSong = mergeSongSummary(detail.song, detail.arrangements.length, cached);
+    selectedSongSnapshot.value = resolvedSong;
+    const idx = allSongs.value.findIndex((s) => s.id === songId);
+    if (idx < 0) {
+      allSongs.value = [resolvedSong, ...allSongs.value];
+    } else {
+      const next = [...allSongs.value];
+      next[idx] = resolvedSong;
+      allSongs.value = next;
+    }
+    songSources.value = detail.sources ?? [];
+    songTranscriptions.value = detail.transcriptions ?? [];
+    arrangements.value = detail.arrangements;
+  }
+
+  async function reloadSelectedSongDetail(expectedSongId?: string): Promise<void> {
+    const targetId = expectedSongId ?? selectedSongId.value;
+    if (!targetId || selectedSongId.value !== targetId) return;
+    const seq = selectSongSeq;
+    const detail = await api.getSong(targetId);
+    if (seq !== selectSongSeq || selectedSongId.value !== targetId) return;
+    applySongDetail(targetId, detail);
+  }
+
+  function ensureJobPolling(): void {
+    if (typeof window === "undefined") return;
+    if (runningTranscriptionJobs.value.length === 0) {
+      stopJobPolling();
+      return;
+    }
+    if (jobPollTimer !== null) return;
+    jobPollTimer = window.setInterval(async () => {
+      if (jobPollInFlight) return;
+      const active = runningTranscriptionJobs.value;
+      if (active.length === 0) {
+        stopJobPolling();
+        return;
+      }
+      jobPollInFlight = true;
+      const prevStatusById = new Map(active.map((j) => [j.id, j.status]));
+      try {
+        const results = await Promise.allSettled(active.map((j) => api.getJob(j.id)));
+        let anySucceeded = false;
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          anySucceeded = true;
+          const nextJob = result.value.job;
+          upsertTranscriptionJob(nextJob);
+          const prevStatus = prevStatusById.get(nextJob.id);
+          if (prevStatus !== "queued" && prevStatus !== "running") continue;
+          const title = songTitleById(nextJob.song_id);
+          if (nextJob.status === "completed") {
+            await reloadSelectedSongDetail(nextJob.song_id);
+            reportOk(`《${title}》音频转谱完成，共保留 ${nextJob.transcription?.note_count ?? 0} 个音符`);
+          } else if (nextJob.status === "cancelled" || nextJob.status === "failed") {
+            await reloadSelectedSongDetail(nextJob.song_id);
+            if (nextJob.error) {
+              reportError(`《${title}》转谱失败：${nextJob.error.message}`);
+            } else {
+              pushToast("info", `《${title}》音频转谱已取消`);
+            }
+          }
+        }
+        if (anySucceeded) {
+          jobPollFailures = 0;
+        } else {
+          jobPollFailures += 1;
+          if (jobPollFailures >= 3) {
+            stopJobPolling();
+          }
+        }
+        if (runningTranscriptionJobs.value.length === 0) {
+          stopJobPolling();
+        }
+      } finally {
+        jobPollInFlight = false;
+      }
+    }, 400);
+  }
+
+  async function refreshJobs(): Promise<void> {
+    if (typeof api.listJobs !== "function") return;
+    try {
+      const res = await api.listJobs();
+      for (const job of [...res.jobs].reverse()) {
+        upsertTranscriptionJob(job);
+      }
+      if (runningTranscriptionJobs.value.length > 0) {
+        ensureJobPolling();
+      }
+    } catch {
+      // ignore transient job listing failures on startup
+    }
+  }
+
+  async function refreshSongs(options?: { alsoRefreshAll?: boolean }): Promise<void> {
+    const hasFilter = Boolean(
+      searchQuery.value.trim() || filterTag.value.trim() || filterFavoritesOnly.value,
+    );
     const opts =
       filterTag.value.trim() || filterFavoritesOnly.value
         ? { tag: filterTag.value.trim(), favoritesOnly: filterFavoritesOnly.value }
@@ -275,44 +475,47 @@ export function createLyraStore(api: LyraForgeApi) {
       ? await api.listSongs(searchQuery.value, opts)
       : await api.listSongs(searchQuery.value);
     songs.value = res.songs;
+    if (!hasFilter) {
+      allSongs.value = res.songs;
+    } else if (options?.alsoRefreshAll || allSongs.value.length === 0) {
+      const fullRes = await api.listSongs("");
+      allSongs.value = fullRes.songs;
+    }
     if (!selectedSongId.value && songs.value.length > 0) {
       await selectSong(songs.value[0].id);
     }
-    if (!transcribeSongId.value && songs.value.length > 0) {
-      await selectTranscribeSong(selectedSongId.value ?? songs.value[0].id);
-    }
-  }
-
-  const transcribeHasAudio = computed(() =>
-    transcribeSources.value.some((s) => s.kind === "audio"),
-  );
-
-  async function selectTranscribeSong(songId: string): Promise<void> {
-    const detail = await api.getSong(songId);
-    transcribeSongId.value = songId;
-    transcribeSongTitle.value = detail.song.title;
-    transcribeSources.value = detail.sources ?? [];
-    transcribeTranscriptions.value = detail.transcriptions ?? [];
   }
 
   async function selectSong(songId: string): Promise<void> {
+    if (!songId) return;
+    const seq = ++selectSongSeq;
+    const arrSeq = ++selectArrSeq;
     selectedSongId.value = songId;
     prepared.value = null;
     comparisonResult.value = null;
     clearPreviewUrl();
+    const cached =
+      allSongs.value.find((s) => s.id === songId) ??
+      songs.value.find((s) => s.id === songId) ??
+      null;
+    if (cached) {
+      selectedSongSnapshot.value = cached;
+    }
     const detail = await api.getSong(songId);
-    songSources.value = detail.sources ?? [];
-    songTranscriptions.value = detail.transcriptions ?? [];
-    arrangements.value = detail.arrangements;
+    if (seq !== selectSongSeq || selectedSongId.value !== songId) return;
+    applySongDetail(songId, detail);
     if (detail.arrangements.length > 0) {
-      await selectArrangement(detail.arrangements[0].id);
-    } else {
+      await selectArrangement(detail.arrangements[0].id, arrSeq);
+    } else if (arrSeq === selectArrSeq) {
       selectedArrId.value = "";
       arrDetail.value = null;
     }
   }
 
-  async function selectArrangement(arrangementId: string): Promise<void> {
+  const selectTranscribeSong = selectSong;
+
+  async function selectArrangement(arrangementId: string, expectedArrSeq?: number): Promise<void> {
+    const arrSeq = expectedArrSeq ?? ++selectArrSeq;
     selectedArrId.value = arrangementId;
     prepared.value = null;
     clearPreviewUrl();
@@ -321,11 +524,29 @@ export function createLyraStore(api: LyraForgeApi) {
       return;
     }
     const detail = await api.getArrangement(arrangementId);
+    if (arrSeq !== selectArrSeq || selectedArrId.value !== arrangementId) return;
     arrDetail.value = detail;
+    const ownerSongId = detail.arrangement.song_id;
+    if (ownerSongId && ownerSongId !== selectedSongId.value) {
+      const songSeq = ++selectSongSeq;
+      selectedSongId.value = ownerSongId;
+      comparisonResult.value = null;
+      const songDetail = await api.getSong(ownerSongId);
+      if (songSeq === selectSongSeq && selectedSongId.value === ownerSongId) {
+        applySongDetail(ownerSongId, songDetail);
+      }
+    }
     if (detail.arrangement.profile_id && profile.value?.id !== detail.arrangement.profile_id) {
       selectedProfileId.value = detail.arrangement.profile_id;
       profile.value = await api.getProfile(detail.arrangement.profile_id);
     }
+  }
+
+  async function openSongInView(songId: string, view: StudioViewId): Promise<void> {
+    if (songId && songId !== selectedSongId.value) {
+      await selectSong(songId);
+    }
+    setView(view);
   }
 
   async function handleProfileChange(): Promise<void> {
@@ -347,7 +568,7 @@ export function createLyraStore(api: LyraForgeApi) {
       const lower = file.name.toLowerCase();
       if (lower.endsWith(".lyrapack") || lower.endsWith(".zip")) {
         const res = await api.importLyrapack(file);
-        await refreshSongs();
+        await refreshSongs({ alsoRefreshAll: true });
         await selectSong(res.song.id);
         await selectArrangement(res.arrangement.id);
         reportOk(`已导入分享包：${res.song.title}`);
@@ -364,9 +585,8 @@ export function createLyraStore(api: LyraForgeApi) {
       importArtist.value = "";
       importTags.value = "";
       uploadFile.value = null;
-      await refreshSongs();
+      await refreshSongs({ alsoRefreshAll: true });
       await selectSong(res.song.id);
-      await selectTranscribeSong(res.song.id);
       reportOk(`已导入曲目：${res.song.title}`);
       const isMidi = lower.endsWith(".mid") || lower.endsWith(".midi");
       setView(isMidi ? "studio" : "transcribe");
@@ -386,47 +606,22 @@ export function createLyraStore(api: LyraForgeApi) {
   }
 
   async function handleStartTranscribe(): Promise<void> {
-    const songId = transcribeSongId.value ?? selectedSongId.value;
+    const songId = selectedSongId.value;
     if (!songId) return;
-    if (!transcribeHasAudio.value) {
+    if (!hasAudioSource.value) {
       reportError("当前曲目没有音频/视频来源，无法转谱；请先导入音频或视频");
+      return;
+    }
+    if (currentSongJob.value && isJobRunning(currentSongJob.value)) {
       return;
     }
     busy.value = true;
     errorMessage.value = "";
     try {
       const { job } = await api.submitTranscribeJob(songId, selectedEngineId.value);
-      activeJob.value = job;
-      reportOk(`已提交音频转谱任务 (${job.engine_id})`);
-      stopJobPolling();
-      jobPollTimer = window.setInterval(async () => {
-        if (!activeJob.value) {
-          stopJobPolling();
-          return;
-        }
-        try {
-          const res = await api.getJob(activeJob.value.id);
-          activeJob.value = res.job;
-          if (res.job.status === "completed") {
-            stopJobPolling();
-            await selectTranscribeSong(res.job.song_id);
-            if (selectedSongId.value === res.job.song_id) {
-              await selectSong(res.job.song_id);
-            }
-            reportOk(`音频转谱完成，共保留 ${res.job.transcription?.note_count ?? 0} 个音符`);
-          } else if (res.job.status === "cancelled" || res.job.status === "failed") {
-            stopJobPolling();
-            await selectTranscribeSong(res.job.song_id);
-            if (res.job.error) {
-              reportError(res.job.error.message);
-            } else {
-              pushToast("info", "音频转谱已取消");
-            }
-          }
-        } catch {
-          stopJobPolling();
-        }
-      }, 400);
+      upsertTranscriptionJob(job);
+      reportOk(`已提交音频转谱任务：${songTitleById(songId)} (${job.engine_id})`);
+      ensureJobPolling();
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -434,14 +629,18 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
-  async function handleCancelTranscribe(): Promise<void> {
-    if (!activeJob.value) return;
+  async function handleCancelTranscribe(jobId?: unknown): Promise<void> {
+    const targetId = typeof jobId === "string" ? jobId : currentSongJob.value?.id;
+    if (!targetId) return;
     try {
-      const res = await api.cancelJob(activeJob.value.id);
-      activeJob.value = res.job;
-      stopJobPolling();
-      pushToast("info", "已请求取消音频转谱");
-      statusMessage.value = "已请求取消音频转谱";
+      const res = await api.cancelJob(targetId);
+      upsertTranscriptionJob(res.job);
+      if (runningTranscriptionJobs.value.length === 0) {
+        stopJobPolling();
+      }
+      const msg = `已请求取消音频转谱：${songTitleById(res.job.song_id)}`;
+      pushToast("info", msg);
+      statusMessage.value = msg;
     } catch (err) {
       reportError((err as Error).message);
     }
@@ -474,7 +673,7 @@ export function createLyraStore(api: LyraForgeApi) {
         prefer_melody_track: true,
       });
       comparisonResult.value = null;
-      await refreshSongs();
+      await refreshSongs({ alsoRefreshAll: true });
       await selectSong(selectedSongId.value);
       await selectArrangement(res.arrangement.id);
       reportOk(`已生成 ${res.arrangement.style} 版本（${res.arrangement.event_count} 个音符）`);
@@ -513,7 +712,7 @@ export function createLyraStore(api: LyraForgeApi) {
           label: "B · 丰满琶音",
         },
       });
-      await refreshSongs();
+      await refreshSongs({ alsoRefreshAll: true });
       await selectSong(selectedSongId.value);
       comparisonResult.value = res.comparison;
       const pickId =
@@ -538,7 +737,7 @@ export function createLyraStore(api: LyraForgeApi) {
     errorMessage.value = "";
     try {
       const res = await api.editArrangement(selectedArrId.value, payload.events, payload.label);
-      await refreshSongs();
+      await refreshSongs({ alsoRefreshAll: true });
       await selectSong(selectedSongId.value);
       await selectArrangement(res.arrangement.id);
       reportOk(`已保存新版本：${res.arrangement.label ?? "手动编辑"}`);
@@ -660,9 +859,8 @@ export function createLyraStore(api: LyraForgeApi) {
     try {
       const res = await api.importLyrapack(packFile.value);
       packFile.value = null;
-      await refreshSongs();
+      await refreshSongs({ alsoRefreshAll: true });
       await selectSong(res.song.id);
-      await selectTranscribeSong(res.song.id);
       await selectArrangement(res.arrangement.id);
       reportOk(`已导入分享包曲目：${res.song.title}`);
     } catch (err) {
@@ -698,8 +896,17 @@ export function createLyraStore(api: LyraForgeApi) {
       const res = await api.restoreBackupZip(restoreFile.value);
       restoreFile.value = null;
       restoreConfirmed.value = false;
+      stopJobPolling();
+      transcriptionJobs.value = [];
       selectedSongId.value = null;
-      await refreshSongs();
+      selectedSongSnapshot.value = null;
+      allSongs.value = [];
+      songSources.value = [];
+      songTranscriptions.value = [];
+      arrangements.value = [];
+      selectedArrId.value = "";
+      arrDetail.value = null;
+      await refreshSongs({ alsoRefreshAll: true });
       reportOk(`已安全恢复曲库备份，共载入 ${res.restored.song_count} 首曲目`);
     } catch (err) {
       reportError((err as Error).message);
@@ -749,7 +956,7 @@ export function createLyraStore(api: LyraForgeApi) {
       });
       agentResult.value = res;
       if (res.status === "completed") {
-        await refreshSongs();
+        await refreshSongs({ alsoRefreshAll: true });
         if (res.selected_song?.id) {
           await selectSong(res.selected_song.id);
         }
@@ -1085,9 +1292,10 @@ export function createLyraStore(api: LyraForgeApi) {
       }
       llmApiKeyConfigured.value = Boolean(settings.llm_api_key_configured);
       await refreshSongs();
+      await refreshJobs();
       if (typeof window !== "undefined") {
         const songParam = new URLSearchParams(window.location.search).get("song");
-        if (songParam && songs.value.some((s) => s.id === songParam)) {
+        if (songParam && allSongs.value.some((s) => s.id === songParam)) {
           await selectSong(songParam);
         }
       }
@@ -1114,6 +1322,7 @@ export function createLyraStore(api: LyraForgeApi) {
     profile,
     transcribers,
     songs,
+    allSongs,
     recentSongs,
     searchQuery,
     filterTag,
@@ -1122,6 +1331,7 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedSong,
     songSources,
     songTranscriptions,
+    songTitleById,
     transcribeSongId,
     transcribeSongTitle,
     transcribeSources,
@@ -1141,6 +1351,11 @@ export function createLyraStore(api: LyraForgeApi) {
     restoreFile,
     restoreConfirmed,
     selectedEngineId,
+    transcriptionJobs,
+    runningTranscriptionJobs,
+    currentSongJob,
+    otherSongJobs,
+    isSongTranscribing,
     activeJob,
     style,
     speed,
@@ -1208,6 +1423,9 @@ export function createLyraStore(api: LyraForgeApi) {
     handleClearQueue,
     selectSong,
     selectArrangement,
+    openSongInView,
+    reloadSelectedSongDetail,
+    refreshJobs,
     handleProfileChange,
     importDroppedOrPickedFile,
     handleImport,

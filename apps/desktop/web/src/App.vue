@@ -53,10 +53,34 @@ const isPlaybackActive = computed(() => {
   return st === "running" || st === "paused" || st === "waiting_focus";
 });
 
-const jobRunning = computed(() => {
-  const st = store.activeJob.value?.status;
-  return st === "running" || st === "queued";
+const runningJobs = computed(() => store.runningTranscriptionJobs.value);
+
+const runningJobsLabel = computed(() => {
+  if (runningJobs.value.length === 1) {
+    const job = runningJobs.value[0];
+    const pct = Math.round((job.progress ?? 0) * 100);
+    return `转谱中：${store.songTitleById(job.song_id)} ${pct}%`;
+  }
+  if (runningJobs.value.length > 1) {
+    return `${runningJobs.value.length} 个转谱进行中`;
+  }
+  return "";
 });
+
+function onTopbarSongChange(event: Event): void {
+  const songId = (event.target as HTMLSelectElement).value;
+  if (songId) {
+    void store.selectSong(songId);
+  }
+}
+
+function onTopbarJobClick(): void {
+  if (runningJobs.value.length === 1) {
+    void store.openSongInView(runningJobs.value[0].song_id, "transcribe");
+  } else {
+    store.setView("transcribe");
+  }
+}
 
 function formatMs(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -185,10 +209,23 @@ onMounted(() => {
 
     <header class="studio-topbar">
       <div class="topbar-context">
-        <span class="ctx-crumb truncate" :title="store.selectedSong.value?.title ?? '未选择曲目'">
+        <div class="topbar-song-picker">
           <StudioIcon name="music" :size="14" />
-          <span class="truncate">{{ store.selectedSong.value?.title ?? "未选择曲目" }}</span>
-        </span>
+          <select
+            id="topbar-song-select"
+            class="topbar-song-select"
+            aria-label="切换当前工作曲目"
+            :value="store.selectedSongId.value ?? ''"
+            :disabled="store.allSongs.value.length === 0"
+            :title="store.selectedSong.value?.title ?? '未选择曲目'"
+            @change="onTopbarSongChange"
+          >
+            <option v-if="store.allSongs.value.length === 0" value="">未选择曲目</option>
+            <option v-for="s in store.allSongs.value" :key="s.id" :value="s.id">
+              {{ s.title }}{{ store.isSongTranscribing(s.id) ? "（转谱中）" : "" }}
+            </option>
+          </select>
+        </div>
         <template v-if="store.profile.value">
           <span class="ctx-sep" aria-hidden="true">/</span>
           <span class="ctx-crumb-muted truncate" :title="store.profile.value.display_name">
@@ -208,13 +245,14 @@ onMounted(() => {
 
       <div class="topbar-status">
         <button
-          v-if="jobRunning"
+          v-if="runningJobs.length > 0"
           type="button"
-          class="pill pill-accent btn-sm"
-          @click="store.setView('transcribe')"
+          class="pill pill-accent btn-sm topbar-job-pill"
+          :title="runningJobsLabel"
+          @click="onTopbarJobClick"
         >
           <StudioIcon name="sparkles" :size="13" />
-          转谱中 {{ Math.round((store.activeJob.value?.progress ?? 0) * 100) }}%
+          <span class="truncate">{{ runningJobsLabel }}</span>
         </button>
         <span
           class="pill"
