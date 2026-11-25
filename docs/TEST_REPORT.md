@@ -689,7 +689,7 @@
 
 1. **声学诊断与音色彻底清理优化**：
    - 对原 VCSL 实录包执行全量基频/包络扫描并发现显著客观缺陷：`zither` 实录高出整整一个八度（`H2 >> H1`）且存在 `-50..+46` 音分走音，`lyre` 全键偏低约 `-12` 音分且相邻键均方根音量差达 `11.6 dB`，`piano` 中高音 `72_C5.wav` 呈断奏快速衰减且 `G#3/E4/G#4` 存在近 `40 ms` 起音前空隙；同时 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts) 的 `createRoomImpulse()` 向每颗音符叠加未经滤波的白噪声卷积混响导致背景沙哑刺耳。
-   - **修复方案**：彻底删除 `src/lyraforge/preview/samples/`（20 条 WAV + 清单）、[build_cc0_samples.py](../scripts/build_cc0_samples.py)、`/v1/preview/samples/*` 路由及白噪混响器；重做 [preview/synth.py](../src/lyraforge/preview/synth.py)（相位锁定三角递推泛音 + `piano` 最长歌唱余韵 > `lyre` > `zither` > `vintage` + 全 21 键音量平衡 + `same_pitch_caps` 同音防叠加 + Soft-Knee 限幅）与 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)（同音 `18 ms` 干净收尾 + 纯正泛音低通顺滑过滤），彻底消除沙哑噪声与走音。
+   - **修复方案**：彻底删除 `src/lyraforge/preview/samples/`（20 条 WAV + 清单）、`scripts/build_cc0_samples.py`、`/v1/preview/samples/*` 路由及白噪混响器；重做 [preview/synth.py](../src/lyraforge/preview/synth.py)（相位锁定三角递推泛音 + `piano` 最长歌唱余韵 > `lyre` > `zither` > `vintage` + 全 21 键音量平衡 + `same_pitch_caps` 同音防叠加 + Soft-Knee 限幅）与 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)（同音 `18 ms` 干净收尾 + 纯正泛音低通顺滑过滤），彻底消除沙哑噪声与走音。
 2. **Piano Roll 纯横向防误锁与连续平滑跟随**：
    - 修复 [PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue) 垂直滚轮 / 拖拽右侧竖向滚动条触发 `onTimelineScroll()` / `onScrollPointerDown()` 而意外定格播放跟随的问题（仅当横向 `scrollLeft` 真实变化、拖按底部横向滚动条或横向滚轮 / `Shift+滚轮` 时才脱离）；将原先「撞击右边缘后瞬间大幅跳屏」的切换式跟随替换为围绕视口 30% 锚点连续推进与三次缓动动画（`animateScrollLeftTo`）。
 3. **编曲工作室表单统一、模板不自动生成与历史版本设置完整展示**：
@@ -704,5 +704,8 @@
    - `pnpm --dir apps/desktop/web build` → `50 modules transformed`，`built in 1.06s`（CSS `61.43 kB` / JS `295.26 kB`）；
    - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
    - **纯 Python 音色实测**：150 音富和弦钢琴合成 `1.762s`（`941,580` 字节）；`dense_chords` 四音色峰值均锁定 `0.920` 零削波、RMS `0.153–0.155`；CSS 字面量色值扫描 0 违规。
+   - **GitHub PR、双平台 CI 与 `dev-latest` 发布验证**：
+     - [PR #33](https://github.com/PariyaProject/LyraForge/pull/33)（`b325a3d`）→ PR CI [Run #45590387558](https://github.com/PariyaProject/LyraForge/actions/runs/45590387558) 全部 4 项活动作业（`Test (windows-latest, Python 3.11)`、`Test (macos-latest, Python 3.11)`、`Build Windows Bundle (PyInstaller)`、`Build macOS Bundle (PyInstaller)`）均为 `success`；
+     - Squash 合入 `main`（`9811baa`）→ 合并后 `main` CI [Run #45591168649](https://github.com/PariyaProject/LyraForge/actions/runs/45591168649) 全部 5 项作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`2026-11-25T10:08:06Z`）：`LyraForge-dev-20261125-9811baa-windows-x64.zip`、`LyraForge-dev-20261125-9811baa-macos-arm64.zip`、`SHA256SUMS.txt`。
 5. **验证边界说明**：
-   - 物理 Windows 10/11 桌面窗下浏览器真机音色听感、垂直/水平滚轮及滚动条平滑跟随手感，以及《原神》实机演奏表现，仍待维护者下载并试听新发布的 `dev-latest` 双平台包最终确认（待 CI 完成后补充 PR 与合入链接）。
+   - 物理 Windows 10/11 桌面窗下浏览器真机音色听感、垂直/水平滚轮及滚动条平滑跟随手感，以及《原神》实机演奏表现，仍待维护者下载并试听新发布的 `dev-latest` 双平台包最终确认。
