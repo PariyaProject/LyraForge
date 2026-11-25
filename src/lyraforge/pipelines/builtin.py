@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+import struct
 import tempfile
+import wave
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -40,6 +43,50 @@ VOCAL_RANGE_PRESETS: dict[str, tuple[int, int, float, float]] = {
     "female": (51, 93, 155.0, 1760.0), # Eb3..A6
 }
 _MONOPHONIC_ENGINE_IDS = frozenset({"builtin-mono", "swift-f0"})
+
+
+def _extract_wav_db_envelope(wav_path: Path | None, hop_ms: int = 500) -> list[float]:
+    """Compute per-frame dBFS envelope (clamped to [-60.0, 0.0]) from a local PCM WAV."""
+    if wav_path is None or not wav_path.is_file():
+        return []
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            sr = wf.getframerate()
+            nframes = wf.getnframes()
+            if channels <= 0 or sr <= 0 or nframes <= 0 or sampwidth not in {1, 2, 3, 4}:
+                return []
+            hop_frames = max(1, int(round(sr * hop_ms / 1000.0)))
+            out_db: list[float] = []
+            while True:
+                raw = wf.readframes(hop_frames)
+                if not raw:
+                    break
+                if sampwidth == 1:
+                    vals = [(b - 128) / 128.0 for b in raw]
+                elif sampwidth == 2:
+                    cnt = len(raw) // 2
+                    vals = [v / 32768.0 for v in struct.unpack(f"<{cnt}h", raw)]
+                elif sampwidth == 3:
+                    vals = []
+                    for idx in range(0, len(raw) - 2, 3):
+                        v = raw[idx] | (raw[idx + 1] << 8) | (raw[idx + 2] << 16)
+                        if v & 0x800000:
+                            v -= 0x1000000
+                        vals.append(v / 8388608.0)
+                else:
+                    cnt = len(raw) // 4
+                    vals = [v / 2147483648.0 for v in struct.unpack(f"<{cnt}i", raw)]
+                if not vals:
+                    continue
+                mean_sq = sum(x * x for x in vals) / len(vals)
+                rms = math.sqrt(mean_sq)
+                db = -60.0 if rms <= 1e-3 else max(-60.0, min(0.0, 20.0 * math.log10(rms)))
+                out_db.append(round(db, 1))
+            return out_db
+    except Exception:
+        return []
 
 
 def _check_stop(stop_token: StopToken | None) -> None:
@@ -482,6 +529,17 @@ class VocalSplitPipeline:
             else:
                 raw_midi_bytes = direct_raw_bytes
 
+            stem_dynamics: dict[str, Any] | None = None
+            vocal_db = _extract_wav_db_envelope(stems.vocals, hop_ms=500)
+            accomp_wav_ref = stems.accompaniment or stems.other
+            accomp_db = _extract_wav_db_envelope(accomp_wav_ref, hop_ms=500)
+            if vocal_db or accomp_db:
+                stem_dynamics = {
+                    "hop_ms": 500,
+                    "vocal_db": vocal_db,
+                    "accomp_db": accomp_db,
+                }
+
             engine_label = "+".join(dict.fromkeys(used_engines))
             sep_ver = str(stems.metadata.get("version") or "unknown")
             ver_parts = [f"demucs {sep_ver}"]
@@ -492,6 +550,21 @@ class VocalSplitPipeline:
 
             if on_progress is not None:
                 on_progress(1.0, "completed")
+            meta_out: dict[str, Any] = {
+                "mode": self.mode,
+                "separator": stems.metadata,
+                "drums_removed": drums_removed,
+                "accompaniment_source": stems.metadata.get("accompaniment_source"),
+                "engines": engine_meta,
+                "vocal_cleanup": request.vocal_cleanup if self.mode != "accomp" else None,
+                "vocal_range": request.vocal_range if self.mode != "accomp" else None,
+                "cleanup_stats": cleanup_stats,
+                "degraded_mode": degraded_mode,
+                "degraded_reasons": degraded_reasons,
+                "warnings": list(dict.fromkeys(warnings)),
+            }
+            if stem_dynamics is not None:
+                meta_out["stem_dynamics"] = stem_dynamics
             return PipelineResult(
                 pipeline_id=self.id,
                 engine_id=engine_label,
@@ -499,17 +572,5 @@ class VocalSplitPipeline:
                 raw_midi_bytes=raw_midi_bytes,
                 cleaned_score=cleaned_score,
                 cleaned_midi_bytes=cleaned_midi_bytes,
-                metadata={
-                    "mode": self.mode,
-                    "separator": stems.metadata,
-                    "drums_removed": drums_removed,
-                    "accompaniment_source": stems.metadata.get("accompaniment_source"),
-                    "engines": engine_meta,
-                    "vocal_cleanup": request.vocal_cleanup if self.mode != "accomp" else None,
-                    "vocal_range": request.vocal_range if self.mode != "accomp" else None,
-                    "cleanup_stats": cleanup_stats,
-                    "degraded_mode": degraded_mode,
-                    "degraded_reasons": degraded_reasons,
-                    "warnings": list(dict.fromkeys(warnings)),
-                },
+                metadata=meta_out,
             )

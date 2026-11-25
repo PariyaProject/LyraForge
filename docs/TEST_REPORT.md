@@ -616,3 +616,20 @@
    - 上述测试在 macOS `DryRunDriver`、虚拟时间膨胀/暂停时钟、Win32 API/winmm Mock 及合成 WAV 夹具上完成；`min_same_key_interval_ms=50`、`min_key_hold_ms=20`、`min_key_release_gap_ms=20`、`trigger_mode="one_shot"` 均明确标注 `provisional: true`。在物理 Windows 10/11 运行《原神》游戏客户端时不同琴种的真实最小发声保持时间、同键连击帧上限与多键同步上限，仍待维护者使用本轮 `lyraforge calibrate prepare` / 桌面校准面板实机录制 WAV 完成实测校准。
 
 
+## 31. Round 29：人声伴奏动态层次编曲（Plan A）与工作室交互控制（Plan B）
+
+1. **核心功能与架构范围**：
+   - **Plan A（无头动态编曲与分句八度平滑引擎）**：新建纯标准库模块 [src/lyraforge/music_core/dynamics.py](../src/lyraforge/music_core/dynamics.py)（`AccompDensity`、`PhraseOctaveMode`、`StemDynamics`、`segment_melody_phrases`、`optimize_phrase_octaves`、`align_accompaniment_onsets`、`VocalSectionProfile`）；在 [arranger.py](../src/lyraforge/music_core/arranger.py) 注册 `vocal_dynamic` 策略，实现分句级 Viterbi DP（低音换气句智能抬升 `+12`、抵抗句内突跳）、跨轨微起音对齐（保护 `5–45 ms` 伴奏琶音不被压平）及高潮伴奏按拍门控稀疏化（`DropReason.ACCOMP_THINNED`，间奏自动放开）；`classic` 与 `vocal_lead` 在未传入覆写参数时保持 100% 原行为不变。[pipelines/builtin.py](../src/lyraforge/pipelines/builtin.py) 在分轨转录阶段按 `500 ms` 窗提取 `vocal_db` / `accomp_db` 写入转录 `metadata["stem_dynamics"]`，由 [library/store.py](../src/lyraforge/library/store.py) 透传至 `arrange()`。
+   - **Plan B（游戏固定力度试听与工作室手工控制）**：[preview/synth.py](../src/lyraforge/preview/synth.py) 与 [api/app.py](../src/lyraforge/api/app.py)、[cli.py](../src/lyraforge/cli.py)、[mcp/tools.py](../src/lyraforge/mcp/tools.py) 新增 `fixed_velocity` 开关（缓存 `.fixed.wav` 并在 `DELETE` 时清理）；前端新增全局底栏 `#transport-fixed-vel-toggle`（联动 WAV 与 Piano Roll Web Audio 草稿试听）、`PianoRollEditor.vue` 选区 `+1八度` / `-1八度`（含 `Shift+↑/↓` 与右键菜单）、`伴奏瘦身`（每 `380 ms` 保留一个骨架锚点）与 `清伴奏`（全可撤销/重做），以及 `StudioView.vue` 动态密度/分句八度/微对齐选择器与 `伴奏节奏让路` / `低音句抬升八度` / `跨轨微对齐` 报告徽章。
+2. **`scripts/eval_dynamics.py` 三场景对比实测结果（`genshin.windsong_lyre.v1`）**：
+   | 场景 | 策略 | 主旋律 | 伴奏总数 | 高潮伴奏 | 间奏伴奏 | 主歌中位音高 | 伴奏让路 | 微对齐 | 抬升句数 | 总评分 |
+   |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+   | `1_climax_plus_offset` | `classic` / `vocal_lead` | 12 | 33 | 17 | 0 | 80.0 | 0 | 0 | 0 | 96.7 |
+   | `1_climax_plus_offset` | `vocal_dynamic` | 12 | 13 | 8 | 0 | 80.0 | 20 | 8 | 0 | 69.2 |
+   | `2_muddy_verse_high_chorus` | `classic` | 16 | 16 | 6 | 4 | 52.0 (E3) | 0 | 0 | 0 | 99.2 |
+   | `2_muddy_verse_high_chorus` | `vocal_lead` | 16 | 12 | 4 | 4 | 52.0 (E3) | 0 | 0 | 0 | 89.4 |
+   | `2_muddy_verse_high_chorus` | `vocal_dynamic` | 16 | 16 | 6 | 4 | **64.0 (E4)** | 0 | 0 | **1** | **99.1** |
+   | `3_verse_climax_interlude` | `classic` / `vocal_lead` | 10 | 26 | 10 | 8 | 74.0 | 0 | 0 | 0 | 100.0 |
+   | `3_verse_climax_interlude` | `vocal_dynamic` | 10 | 17 | **5** | **8** | 74.0 | 9 | 0 | 0 | 84.7 |
+3. **本地全量验证与 CSS 规范检查**：
+   - 待 PR 合并与 post-merge CI 完成后于收尾提交中补充完整 `make check`、`eval_transcribers.py`、PR/CI Run 与 `dev-latest` 链接。

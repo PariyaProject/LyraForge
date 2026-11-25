@@ -286,6 +286,9 @@ export interface ComparisonResult {
   b?: ArrangementRecord;
 }
 
+export type AccompDensity = "auto" | "minimal" | "balanced" | "full";
+export type PhraseOctaveMode = "original" | "smooth_lift" | "centered";
+
 export interface ArrangementDetailResponse {
   arrangement: ArrangementRecord;
   performance: {
@@ -310,6 +313,7 @@ export interface ArrangementDetailResponse {
         duplicate_key?: number;
         polyphony_limit?: number;
         repeat_too_fast?: number;
+        accomp_thinned?: number;
         [reason: string]: number | undefined;
       };
       playable_ratio: number;
@@ -328,6 +332,18 @@ export interface ArrangementDetailResponse {
         min_inter_key_interval_ms?: number;
         trigger_mode?: string;
         timing_provisional?: boolean;
+      };
+      dynamics_adjustments?: {
+        accomp_density?: string;
+        phrase_octave_mode?: string;
+        cross_stem_align_ms?: number;
+        cross_stem_aligned?: number;
+        accomp_thinned?: number;
+        used_stem_dynamics?: boolean;
+        phrase_count?: number;
+        phrases_shifted_up?: number;
+        phrases_shifted_down?: number;
+        phrase_shifted_notes?: number;
       };
     };
     quality?: QualityBreakdown;
@@ -722,6 +738,9 @@ export class LyraForgeApi {
     melody_ceiling?: boolean;
     anti_clash_semitones?: boolean;
     timing_mode?: TimingMode;
+    accomp_density?: AccompDensity | null;
+    phrase_octave_mode?: PhraseOctaveMode | null;
+    cross_stem_align_ms?: number | null;
     label?: string | null;
   }): Promise<{ arrangement: ArrangementRecord }> {
     return this.request("/v1/jobs/arrange", {
@@ -744,6 +763,9 @@ export class LyraForgeApi {
       include_tracks?: number[] | null;
       melody_track?: number | null;
       timing_mode?: TimingMode;
+      accomp_density?: AccompDensity | null;
+      phrase_octave_mode?: PhraseOctaveMode | null;
+      cross_stem_align_ms?: number | null;
       label?: string;
     };
     variant_b?: {
@@ -755,6 +777,9 @@ export class LyraForgeApi {
       include_tracks?: number[] | null;
       melody_track?: number | null;
       timing_mode?: TimingMode;
+      accomp_density?: AccompDensity | null;
+      phrase_octave_mode?: PhraseOctaveMode | null;
+      cross_stem_align_ms?: number | null;
       label?: string;
     };
   }): Promise<{
@@ -817,7 +842,7 @@ export class LyraForgeApi {
     });
   }
 
-  async fetchPreviewAudioUrl(arrangementId: string): Promise<string> {
+  async fetchPreviewAudioUrl(arrangementId: string, fixedVelocity = false): Promise<string> {
     const headers = new Headers();
     if (this.token) {
       headers.set("X-LyraForge-Token", this.token);
@@ -825,15 +850,26 @@ export class LyraForgeApi {
     const resp = await fetch(`${this.base}/v1/preview`, {
       method: "POST",
       headers: { ...Object.fromEntries(headers.entries()), "Content-Type": "application/json" },
-      body: JSON.stringify({ arrangement_id: arrangementId }),
+      body: JSON.stringify({ arrangement_id: arrangementId, fixed_velocity: fixedVelocity }),
     });
     if (!resp.ok) {
       throw new Error(`预览生成失败 (HTTP ${resp.status})`);
     }
-    const wavResp = await fetch(
-      `${this.base}/v1/arrangements/${encodeURIComponent(arrangementId)}/preview.wav`,
-      { headers },
-    );
+    let previewPath = `/v1/arrangements/${encodeURIComponent(arrangementId)}/preview.wav${
+      fixedVelocity ? "?fixed_velocity=true" : ""
+    }`;
+    if (typeof resp.json === "function") {
+      try {
+        const meta = (await resp.json()) as { preview_url?: string };
+        if (meta && typeof meta.preview_url === "string" && meta.preview_url) {
+          previewPath = meta.preview_url;
+        }
+      } catch {
+        // Fallback for minimal Response stubs without JSON payload.
+      }
+    }
+    const resolvedUrl = previewPath.startsWith("http") ? previewPath : `${this.base}${previewPath}`;
+    const wavResp = await fetch(resolvedUrl, { headers });
     if (!wavResp.ok) {
       throw new Error(`音频加载失败 (HTTP ${wavResp.status})`);
     }

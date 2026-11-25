@@ -18,6 +18,7 @@ const props = defineProps<{
   arrangementId?: string | null;
   tracks?: SongTrackInfo[];
   melodyTrack?: number | null;
+  fixedVelocityPreview?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -131,16 +132,21 @@ function toggleDraftPlayback(): void {
   }
   draftPlaying.value = true;
   draftPlayheadMs.value = startMs;
-  activeSequencer = startDraftSequencer(workingEvents.value, startMs, {
-    onTick: (posMs) => {
-      draftPlayheadMs.value = posMs;
+  activeSequencer = startDraftSequencer(
+    workingEvents.value,
+    startMs,
+    {
+      onTick: (posMs) => {
+        draftPlayheadMs.value = posMs;
+      },
+      onEnded: () => {
+        activeSequencer = null;
+        draftPlaying.value = false;
+        draftPlayheadMs.value = 0;
+      },
     },
-    onEnded: () => {
-      activeSequencer = null;
-      draftPlaying.value = false;
-      draftPlayheadMs.value = 0;
-    },
-  });
+    { fixedVelocity: Boolean(props.fixedVelocityPreview) },
+  );
 }
 
 function scrollToMedianPitch(): void {
@@ -425,7 +431,8 @@ function setSingleSelection(idx: number | null): void {
 }
 
 function auditionEvent(ev: PerformanceEventItem): void {
-  auditionMidiNote(ev.mapped_pitch, ev.velocity ?? 92, ev.hold_ms);
+  const vel = props.fixedVelocityPreview ? 96 : (ev.velocity ?? 92);
+  auditionMidiNote(ev.mapped_pitch, vel, ev.hold_ms);
 }
 
 function auditionKey(key: ProfileKeyDef): void {
@@ -531,6 +538,123 @@ function shiftIndicesPitch(indices: number[], step: -1 | 1): void {
 
 function shiftSelectedPitch(step: -1 | 1): void {
   shiftIndicesPitch([...selectedIndices.value], step);
+}
+
+function shiftIndicesOctave(indices: number[], octDir: -1 | 1): void {
+  if (indices.length === 0) return;
+  const keyByPitch = new Map<number, ProfileKeyDef>();
+  for (const k of props.keys) {
+    keyByPitch.set(k.pitch, k);
+  }
+  const idxSet = new Set(indices);
+  const updatedTargets: PerformanceEventItem[] = [];
+  let changed = false;
+
+  const next = workingEvents.value.map((item, i) => {
+    if (!idxSet.has(i)) return item;
+    const targetKey = keyByPitch.get(item.mapped_pitch + octDir * 12);
+    if (!targetKey) {
+      updatedTargets.push(item);
+      return item;
+    }
+    changed = true;
+    const adj = item.adjustments ? [...item.adjustments] : [];
+    if (!adj.includes("octave_folded")) adj.push("octave_folded");
+    const updated: PerformanceEventItem = {
+      ...item,
+      key_id: targetKey.key_id,
+      mapped_pitch: targetKey.pitch,
+      adjustments: adj,
+    };
+    updatedTargets.push(updated);
+    return updated;
+  });
+
+  if (!changed) return;
+  if (updatedTargets.length > 0) {
+    auditionEvent(updatedTargets[0]);
+  }
+  commitChange(next, updatedTargets);
+}
+
+function shiftSelectedOctave(octDir: -1 | 1): void {
+  shiftIndicesOctave([...selectedIndices.value], octDir);
+}
+
+function isAccompEvent(ev: PerformanceEventItem): boolean {
+  const trackIdx = ev.source_track ?? 0;
+  if (props.melodyTrack !== null && props.melodyTrack !== undefined) {
+    return trackIdx !== props.melodyTrack;
+  }
+  return trackIdx !== 0;
+}
+
+const selectedAccompanimentCount = computed(() => {
+  let count = 0;
+  for (const idx of selectedIndices.value) {
+    const ev = workingEvents.value[idx];
+    if (ev && isAccompEvent(ev)) count += 1;
+  }
+  return count;
+});
+
+function thinSelectedAccompaniment(): void {
+  const accSelected = [...selectedIndices.value]
+    .filter((i) => {
+      const ev = workingEvents.value[i];
+      return ev !== undefined && isAccompEvent(ev);
+    })
+    .sort((a, b) => {
+      const ea = workingEvents.value[a];
+      const eb = workingEvents.value[b];
+      return ea.at_ms - eb.at_ms || ea.mapped_pitch - eb.mapped_pitch;
+    });
+  if (accSelected.length === 0) return;
+
+  const dropSet = new Set<number>();
+  let lastKeptMs = -1000;
+  for (const idx of accSelected) {
+    const ev = workingEvents.value[idx];
+    if (ev.at_ms - lastKeptMs < 380) {
+      dropSet.add(idx);
+    } else {
+      lastKeptMs = ev.at_ms;
+    }
+  }
+  if (dropSet.size === 0 || workingEvents.value.length - dropSet.size < 1) return;
+
+  const keepSelected: PerformanceEventItem[] = [];
+  const next: PerformanceEventItem[] = [];
+  workingEvents.value.forEach((ev, idx) => {
+    if (dropSet.has(idx)) return;
+    next.push(ev);
+    if (selectedIndices.value.has(idx)) {
+      keepSelected.push(ev);
+    }
+  });
+  commitChange(next, keepSelected);
+}
+
+function clearSelectedAccompaniment(): void {
+  const dropSet = new Set<number>();
+  for (const idx of selectedIndices.value) {
+    const ev = workingEvents.value[idx];
+    if (ev && isAccompEvent(ev)) {
+      dropSet.add(idx);
+    }
+  }
+  if (dropSet.size === 0 || workingEvents.value.length - dropSet.size < 1) return;
+
+  const keepSelected: PerformanceEventItem[] = [];
+  const next: PerformanceEventItem[] = [];
+  workingEvents.value.forEach((ev, idx) => {
+    if (dropSet.has(idx)) return;
+    next.push(ev);
+    if (selectedIndices.value.has(idx)) {
+      keepSelected.push(ev);
+    }
+  });
+  commitChange(next, keepSelected);
 }
 
 function nudgeSelectedTime(deltaMs: number): void {
@@ -713,13 +837,15 @@ function onNoteContextMenu(idx: number, event: MouseEvent): void {
   };
 }
 
-function runContextAction(action: "up" | "down" | "dup" | "del"): void {
+function runContextAction(action: "up" | "down" | "oct_up" | "oct_down" | "dup" | "del"): void {
   const menu = contextMenu.value;
   contextMenu.value = null;
   if (!menu) return;
   const targets = selectedIndices.value.has(menu.idx) ? [...selectedIndices.value] : [menu.idx];
   if (action === "up") shiftIndicesPitch(targets, 1);
   else if (action === "down") shiftIndicesPitch(targets, -1);
+  else if (action === "oct_up") shiftIndicesOctave(targets, 1);
+  else if (action === "oct_down") shiftIndicesOctave(targets, -1);
   else if (action === "dup") duplicateIndices(targets, 250);
   else if (action === "del") deleteIndices(targets);
 }
@@ -997,10 +1123,12 @@ function onEditorKeydown(event: KeyboardEvent): void {
   }
   if (event.key === "ArrowUp") {
     event.preventDefault();
-    shiftSelectedPitch(1);
+    if (event.shiftKey) shiftSelectedOctave(1);
+    else shiftSelectedPitch(1);
   } else if (event.key === "ArrowDown") {
     event.preventDefault();
-    shiftSelectedPitch(-1);
+    if (event.shiftKey) shiftSelectedOctave(-1);
+    else shiftSelectedPitch(-1);
   } else if (event.key === "ArrowLeft") {
     event.preventDefault();
     nudgeSelectedTime(-(event.shiftKey ? 10 : snapMs.value || 50));
@@ -1213,6 +1341,30 @@ onBeforeUnmount(() => {
           <button type="button" class="secondary btn-sm" @click="shiftSelectedPitch(-1)">
             低1音
           </button>
+          <button type="button" class="secondary btn-sm" @click="shiftSelectedOctave(1)">
+            +1八度
+          </button>
+          <button type="button" class="secondary btn-sm" @click="shiftSelectedOctave(-1)">
+            -1八度
+          </button>
+          <button
+            v-if="selectedAccompanimentCount > 0"
+            type="button"
+            class="secondary btn-sm"
+            title="在选区内每 380 ms 仅保留一个伴奏锚点，减少碎片抢戏"
+            @click="thinSelectedAccompaniment"
+          >
+            伴奏瘦身
+          </button>
+          <button
+            v-if="selectedAccompanimentCount > 0"
+            type="button"
+            class="secondary btn-sm"
+            title="清除选区内的非主旋律伴奏音符"
+            @click="clearSelectedAccompaniment"
+          >
+            清伴奏
+          </button>
           <button type="button" class="secondary btn-sm" @click="nudgeSelectedTime(-50)">
             -50ms
           </button>
@@ -1374,6 +1526,12 @@ onBeforeUnmount(() => {
       </button>
       <button type="button" role="menuitem" @click="runContextAction('down')">
         下移一个琴键
+      </button>
+      <button type="button" role="menuitem" @click="runContextAction('oct_up')">
+        移高一个八度 (+12)
+      </button>
+      <button type="button" role="menuitem" @click="runContextAction('oct_down')">
+        移低一个八度 (-12)
       </button>
       <button type="button" role="menuitem" @click="runContextAction('dup')">
         向后复制 (+250ms)

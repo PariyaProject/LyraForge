@@ -350,6 +350,7 @@ def test_all_four_pipelines_schema_v4_migration_and_api_roundtrip(
         assert strat_ids == {
             "classic",
             "vocal_lead",
+            "vocal_dynamic",
         }
 
         with wav_src.open("rb") as fh:

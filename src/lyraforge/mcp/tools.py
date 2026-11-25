@@ -337,7 +337,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "transcription_id": {"type": "string"},
                 "arranger_strategy": {
                     "type": "string",
-                    "enum": ["classic", "vocal_lead"],
+                    "enum": ["classic", "vocal_lead", "vocal_dynamic"],
                     "default": "classic",
                 },
                 "melody_track": {"type": "integer", "minimum": 0},
@@ -345,6 +345,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "vocal_ducking": {"type": "boolean", "default": True},
                 "melody_ceiling": {"type": "boolean", "default": True},
                 "anti_clash_semitones": {"type": "boolean", "default": True},
+                "accomp_density": {
+                    "type": "string",
+                    "enum": ["auto", "minimal", "balanced", "full"],
+                },
+                "phrase_octave_mode": {
+                    "type": "string",
+                    "enum": ["original", "smooth_lift", "centered"],
+                },
+                "cross_stem_align_ms": {"type": "integer", "minimum": 0, "maximum": 60},
                 "style": {
                     "type": "string",
                     "enum": [s.value for s in Style],
@@ -406,6 +415,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "maximum": 48000,
                     "default": 22050,
                 },
+                "fixed_velocity": {"type": "boolean", "default": False},
                 "task_id": {"type": "string"},
             },
             "required": ["arrangement_id"],
@@ -993,6 +1003,19 @@ class MCPToolExecutor:
             melody_ceiling=bool(args.get("melody_ceiling", True)),
             anti_clash_semitones=bool(args.get("anti_clash_semitones", True)),
             timing_mode=str(args.get("timing_mode") or "adapted"),
+            accomp_density=(
+                str(args["accomp_density"]).strip() if args.get("accomp_density") else None
+            ),
+            phrase_octave_mode=(
+                str(args["phrase_octave_mode"]).strip()
+                if args.get("phrase_octave_mode")
+                else None
+            ),
+            cross_stem_align_ms=(
+                _bound_int(args, "cross_stem_align_ms", lo=0, hi=60)
+                if args.get("cross_stem_align_ms") is not None
+                else None
+            ),
         )
         transcription_id = (
             str(args["transcription_id"]).strip() if args.get("transcription_id") else None
@@ -1106,11 +1129,12 @@ class MCPToolExecutor:
         if not arr_id:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "arrangement_id is required")
         sr = _bound_int(args, "sample_rate", default=22050, lo=8000, hi=48000)
+        fixed_vel = bool(args.get("fixed_velocity", False))
 
         def _work(task: MCPTaskRecord) -> dict[str, Any]:
             self.tasks.log(task.task_id, 0.2, "rendering preview WAV")
             wav_path = store.render_preview(
-                arr_id, sample_rate=sr, stop_token=task.stop_token
+                arr_id, sample_rate=sr, fixed_velocity=fixed_vel, stop_token=task.stop_token
             )
             out_raw = args.get("output_path")
             if out_raw:
@@ -1130,6 +1154,7 @@ class MCPToolExecutor:
                 "wav_path": str(wav_path),
                 "size_bytes": wav_path.stat().st_size,
                 "duration_ms": rec.duration_ms,
+                "fixed_velocity": fixed_vel,
             }
 
         return self._run_tracked("preview", args, req_id, stop_token, _work)
