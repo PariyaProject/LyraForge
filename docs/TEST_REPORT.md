@@ -632,4 +632,14 @@
    | `3_verse_climax_interlude` | `classic` / `vocal_lead` | 10 | 26 | 10 | 8 | 74.0 | 0 | 0 | 0 | 100.0 |
    | `3_verse_climax_interlude` | `vocal_dynamic` | 10 | 17 | **5** | **8** | 74.0 | 9 | 0 | 0 | 84.7 |
 3. **本地全量验证与 CSS 规范检查**：
-   - 待 PR 合并与 post-merge CI 完成后于收尾提交中补充完整 `make check`、`eval_transcribers.py`、PR/CI Run 与 `dev-latest` 链接。
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **290 passed, 2 warnings in 54.56s**，总覆盖率 **84.05%**（含 `test_dynamic_arranger.py` 7 例完整覆盖动态包络提取、Viterbi 分句八度平滑、跨轨微对齐与琶音保护、高潮让路/间奏放开、`fixed_velocity` WAV 合成与缓存清理、CLI/API/MCP 链路）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 19 passed (19)**（含 `PianoRollInteractions.spec.ts` `±1八度`/`伴奏瘦身`/`清伴奏` 与 `App.spec.ts` `vocal_dynamic`/固定力度开关回归）；
+   - `pnpm --dir apps/desktop/web build` → `49 modules transformed`，`built in 1.10s`；
+   - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.windsong_lyre.v1 (hash verified)`）；
+   - `uv run python scripts/eval_transcribers.py` → `pipeline_roundtrip` 通过（`transcribed_notes: 8`, `arranged_events: 8`）；
+   - CSS 规范扫描（除 `tokens.css` 外）：无任何字面量色值。
+4. **GitHub PR、合并后 CI 与验证边界**：
+   - [PR #30](https://github.com/PariyaProject/LyraForge/pull/30)（`35d8e46`）→ PR CI [Run #45525242428](https://github.com/PariyaProject/LyraForge/actions/runs/45525242428) 全部 4 项活动作业 `success`；
+   - Squash 合入 `main`（`6b2abaf`）→ 合并后 CI [Run #45525789807](https://github.com/PariyaProject/LyraForge/actions/runs/45525789807) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物：`LyraForge-dev-20261125-6b2abaf-windows-x64.zip`、`LyraForge-dev-20261125-6b2abaf-macos-arm64.zip`、`SHA256SUMS.txt`；
+   - **验证边界**：真实人声流行歌在物理 Windows 安装 Demucs + 真实《原神》游戏客户端下的长曲动态对比听感，仍待维护者在新版 `dev-latest` 客户端中导入真实歌曲试听与实机演奏确认。
