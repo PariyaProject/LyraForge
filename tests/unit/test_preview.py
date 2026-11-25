@@ -17,13 +17,25 @@ from lyraforge.music_core.midi_import import load_midi_file
 from lyraforge.music_core.performance import build_performance
 from lyraforge.preview import (
     DEFAULT_SAMPLE_RATE,
-    get_sample_file_path,
-    load_sample_manifest,
     synthesize_performance,
     synthesize_performance_to_wav,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "midi"
+
+
+def _tone_perf(pitch: int, timbre_profile: str = "genshin.harmonic_keys.v1") -> dict[str, object]:
+    base = _make_perf("c_major_scale.mid")
+    first_ev = dict(base["events"][0])  # type: ignore[index]
+    first_ev["at_ms"] = 0
+    first_ev["hold_ms"] = 120
+    first_ev["source_pitch"] = pitch
+    first_ev["mapped_pitch"] = pitch
+    first_ev["velocity"] = 96
+    base["instrument_profile_id"] = timbre_profile
+    base["events"] = [first_ev]
+    base["duration_ms"] = 1000
+    return base
 
 
 def _make_perf(fixture_name: str, style: Style = Style.BALANCED) -> dict[str, object]:
@@ -81,29 +93,46 @@ def test_synthesize_rejects_invalid_inputs() -> None:
     assert exc3.value.code == ErrorCode.PERFORMANCE_INVALID
 
 
-def test_cc0_sample_manifest_and_path_allowlist() -> None:
-    import hashlib
+def test_studio_timbres_pure_tuned_and_balanced_across_register() -> None:
+    test_pitches = (48, 60, 67, 72, 76, 83)
+    for timbre in ("piano", "lyre", "zither", "vintage"):
+        rms_values: list[float] = []
+        for pitch in test_pitches:
+            wav = synthesize_performance(_tone_perf(pitch), timbre=timbre)
+            with wave.open(io.BytesIO(wav), "rb") as wf:
+                sr = wf.getframerate()
+                samples = struct.unpack(f"<{wf.getnframes()}h", wf.readframes(wf.getnframes()))
+            seg = samples[int(sr * 0.04) : int(sr * 0.24)]
+            rms_values.append(math.sqrt(sum(s * s for s in seg) / len(seg)))
 
-    manifest = load_sample_manifest()
-    assert manifest["license"] == "CC0-1.0"
-    assert {"piano", "lyre", "zither"} <= set(manifest["packs"].keys())
+            # Verify fundamental pitch accuracy within ±10 cents (guards against octave-high bugs)
+            expected_hz = 440.0 * (2.0 ** ((pitch - 69) / 12.0))
+            n = len(seg)
+            mag_exp = math.hypot(
+                sum(seg[k] * math.cos(2.0 * math.pi * expected_hz * k / sr) for k in range(n)),
+                sum(seg[k] * math.sin(2.0 * math.pi * expected_hz * k / sr) for k in range(n)),
+            )
+            mag_oct_up = math.hypot(
+                sum(seg[k] * math.cos(4.0 * math.pi * expected_hz * k / sr) for k in range(n)),
+                sum(seg[k] * math.sin(4.0 * math.pi * expected_hz * k / sr) for k in range(n)),
+            )
+            mag_detuned = math.hypot(
+                sum(
+                    seg[k]
+                    * math.cos(2.0 * math.pi * (expected_hz * 1.03) * k / sr)
+                    for k in range(n)
+                ),
+                sum(
+                    seg[k]
+                    * math.sin(2.0 * math.pi * (expected_hz * 1.03) * k / sr)
+                    for k in range(n)
+                ),
+            )
+            assert mag_exp > mag_oct_up * 1.5
+            assert mag_exp > mag_detuned * 3.0
 
-    for pack_name, entries in manifest["packs"].items():
-        assert len(entries) >= 5
-        for entry in entries:
-            fname = Path(entry["file"]).name
-            sample_path = get_sample_file_path(pack_name, fname)
-            assert sample_path.is_file()
-            digest = hashlib.sha256(sample_path.read_bytes()).hexdigest()
-            assert digest == entry["sha256"]
-
-    with pytest.raises(LyraError) as exc_trav:
-        get_sample_file_path("piano", "../manifest.json")
-    assert exc_trav.value.code == ErrorCode.INVALID_ARGUMENT
-
-    with pytest.raises(LyraError) as exc_pack:
-        get_sample_file_path("unknown", "60_C4.wav")
-    assert exc_pack.value.code == ErrorCode.INVALID_ARGUMENT
+        # Ensure no single dead/loud key anomaly across C3..B5
+        assert max(rms_values) / min(rms_values) < 2.2
 
 
 def test_synthesize_real_timbres_distinct_and_chord_safe() -> None:

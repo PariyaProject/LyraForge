@@ -57,11 +57,7 @@ from lyraforge.playback import (
     run_calibration_benchmark,
 )
 from lyraforge.presets import list_presets
-from lyraforge.preview import (
-    DEFAULT_SAMPLE_RATE,
-    get_sample_file_path,
-    load_sample_manifest,
-)
+from lyraforge.preview import DEFAULT_SAMPLE_RATE
 from lyraforge.separators import list_separators
 from lyraforge.toolchain import status as toolchain_status
 from lyraforge.toolchain import tools_root as toolchain_tools_root
@@ -931,19 +927,6 @@ def create_app(
             res = store.delete_arrangement(arrangement_id)
         queue_manager.remove_arrangement(arrangement_id)
         return {**res, "queue": queue_manager.snapshot()}
-
-    @app.get("/v1/preview/samples/manifest", dependencies=[Depends(require_token)])
-    def get_preview_samples_manifest() -> dict[str, Any]:
-        return load_sample_manifest()
-
-    @app.get("/v1/preview/samples/{pack}/{filename}", dependencies=[Depends(require_token)])
-    def get_preview_sample_wav(pack: str, filename: str) -> Response:
-        wav_path = get_sample_file_path(pack, filename)
-        return Response(
-            content=wav_path.read_bytes(),
-            media_type="audio/wav",
-            headers={"Cache-Control": "private, max-age=86400"},
-        )
 
     @app.post("/v1/preview", dependencies=[Depends(require_token)])
     def render_preview(req: PreviewRequest) -> dict[str, Any]:

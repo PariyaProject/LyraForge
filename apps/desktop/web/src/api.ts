@@ -289,15 +289,38 @@ export interface ComparisonResult {
 export type AccompDensity = "auto" | "minimal" | "balanced" | "full";
 export type PhraseOctaveMode = "original" | "smooth_lift" | "centered";
 
+export interface ArrangementTransform {
+  strategy?: "melody" | "balanced" | "rich" | string;
+  transpose_semitones?: number;
+  transpose_mode?: "auto" | "fixed" | string;
+  speed?: number;
+  semitone_policy?: string;
+  max_chord_keys?: number;
+  chord_window_ms?: number;
+  include_tracks?: number[] | null;
+  exclude_percussion?: boolean;
+  arpeggiate_ms?: number;
+  prefer_melody_track?: boolean;
+  arranger_strategy?: string;
+  melody_track?: number | null;
+  timing_mode?: "adapted" | "strict_fidelity" | string;
+  accomp_density?: AccompDensity | null;
+  phrase_octave_mode?: PhraseOctaveMode | null;
+  cross_stem_align_ms?: number | null;
+}
+
 export interface ArrangementDetailResponse {
   arrangement: ArrangementRecord;
   performance: {
     arrangement_id: string;
     duration_ms: number;
     events: PerformanceEventItem[];
+    transform?: ArrangementTransform;
   };
   report: {
     calibration_status: string;
+    edited_from?: string;
+    transform?: ArrangementTransform;
     stats: {
       input_notes?: number;
       excluded_percussion?: number;

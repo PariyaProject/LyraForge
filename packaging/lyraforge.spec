@@ -32,7 +32,6 @@ if IS_MACOS and not ICON_ICNS.is_file():
 datas = [
     (str(ROOT / "src" / "lyraforge" / "instruments" / "data"), "lyraforge/instruments/data"),
     (str(ROOT / "src" / "lyraforge" / "music_core" / "schemas"), "lyraforge/music_core/schemas"),
-    (str(ROOT / "src" / "lyraforge" / "preview" / "samples"), "lyraforge/preview/samples"),
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "docs" / "LICENSE_AUDIT.md"), "docs"),
     (str(icons_dir), "packaging/icons"),
@@ -133,8 +132,6 @@ if IS_WINDOWS:
         "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
         "pythonnet/runtime/Python.Runtime.dll",
         "packaging/icons/lyraforge.ico",
-        "lyraforge/preview/samples/manifest.json",
-        "lyraforge/preview/samples/piano/60_C4.wav",
     )
     missing = [name for name in required_payload if name not in collected]
     if missing:
@@ -144,11 +141,7 @@ if IS_WINDOWS:
             + ". Install the desktop extra (uv sync --frozen --extra desktop) and rebuild."
         )
 elif IS_MACOS:
-    required_macos_payload = (
-        "packaging/icons/lyraforge.icns",
-        "lyraforge/preview/samples/manifest.json",
-        "lyraforge/preview/samples/piano/60_C4.wav",
-    )
+    required_macos_payload = ("packaging/icons/lyraforge.icns",)
     missing_macos = [name for name in required_macos_payload if name not in collected]
     if missing_macos:
         raise RuntimeError(

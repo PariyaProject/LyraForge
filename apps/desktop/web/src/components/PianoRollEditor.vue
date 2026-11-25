@@ -5,7 +5,6 @@ import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
 import { formatAdjustmentLabel, localizeTrackName } from "../utils/trackNames";
 import {
   auditionMidiNote,
-  preloadPreviewSamples,
   resolvePreviewTimbre,
   startDraftSequencer,
   type DraftSequencer,
@@ -117,7 +116,7 @@ const snapMs = ref(50);
 const editorMode = ref<"select" | "add">("select");
 const followPlayhead = ref(true);
 
-// Web Audio draft sequencer & lyric-style smart follow state
+// Web Audio draft sequencer & smooth continuous horizontal follow state
 const internalTimbre = ref<PreviewTimbre>(props.previewTimbre ?? "auto");
 watch(
   () => props.previewTimbre,
@@ -127,9 +126,6 @@ watch(
 );
 const activeTimbre = computed(() => props.previewTimbre ?? internalTimbre.value);
 const resolvedTimbre = computed(() => resolvePreviewTimbre(props.profileId, activeTimbre.value));
-watch(resolvedTimbre, (next) => {
-  void preloadPreviewSamples(next);
-});
 function onTimbreSelectChange(event: Event): void {
   const next = (event.target as HTMLSelectElement).value as PreviewTimbre;
   internalTimbre.value = next;
@@ -141,9 +137,10 @@ const draftPlayheadMs = ref(0);
 const followDetached = ref(false);
 const playheadDirection = ref<"left" | "right" | "visible">("visible");
 let activeSequencer: DraftSequencer | null = null;
-let isProgrammaticScroll = false;
 let lastProgrammaticScrollLeft: number | null = null;
+let lastObservedScrollLeft = 0;
 let programmaticScrollTimer: number | null = null;
+let smoothScrollRaf: number | null = null;
 
 // Context menu state
 const contextMenu = ref<{ idx: number; x: number; y: number } | null>(null);
@@ -215,6 +212,13 @@ function updatePlayheadDirection(): void {
   }
 }
 
+function cancelSmoothScrollAnim(): void {
+  if (smoothScrollRaf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(smoothScrollRaf);
+  }
+  smoothScrollRaf = null;
+}
+
 function setProgrammaticScrollLeft(targetLeft: number): void {
   const el = scrollEl.value;
   if (!el) return;
@@ -222,53 +226,97 @@ function setProgrammaticScrollLeft(targetLeft: number): void {
   if (programmaticScrollTimer !== null && typeof window !== "undefined") {
     window.clearTimeout(programmaticScrollTimer);
   }
-  isProgrammaticScroll = true;
   lastProgrammaticScrollLeft = clampedLeft;
+  lastObservedScrollLeft = clampedLeft;
   el.scrollLeft = clampedLeft;
   updatePlayheadDirection();
   if (typeof window !== "undefined") {
     programmaticScrollTimer = window.setTimeout(() => {
-      isProgrammaticScroll = false;
       lastProgrammaticScrollLeft = null;
       programmaticScrollTimer = null;
-    }, 40);
+    }, 50);
   } else {
-    isProgrammaticScroll = false;
     lastProgrammaticScrollLeft = null;
   }
 }
 
-function scrollPlayheadIntoView(ratio = 0.3): void {
+function animateScrollLeftTo(targetLeft: number, durationMs = 220): void {
   const el = scrollEl.value;
   if (!el) return;
+  const clampedTarget = Math.max(0, Math.round(targetLeft));
+  const startLeft = el.scrollLeft;
+  const delta = clampedTarget - startLeft;
+  cancelSmoothScrollAnim();
+  if (
+    Math.abs(delta) <= 8 ||
+    durationMs <= 0 ||
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function"
+  ) {
+    setProgrammaticScrollLeft(clampedTarget);
+    return;
+  }
+  const startTime = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const step = (now: number) => {
+    const t = Math.min(1, Math.max(0, (now - startTime) / durationMs));
+    const eased = 1 - Math.pow(1 - t, 3);
+    setProgrammaticScrollLeft(startLeft + delta * eased);
+    if (t < 1 && !followDetached.value) {
+      smoothScrollRaf = window.requestAnimationFrame(step);
+    } else {
+      smoothScrollRaf = null;
+    }
+  };
+  smoothScrollRaf = window.requestAnimationFrame(step);
+}
+
+function desiredFollowScrollLeft(ratio = 0.3): number {
+  const el = scrollEl.value;
+  if (!el || el.clientWidth <= 0) return 0;
   const laneViewWidth = Math.max(120, el.clientWidth - KEY_COLUMN_PX);
-  const targetLeft = Math.max(
-    0,
-    Math.round(activePlayheadMs.value * pxPerMs.value - laneViewWidth * ratio),
-  );
-  setProgrammaticScrollLeft(targetLeft);
+  const maxScrollWidth = Math.max(el.scrollWidth || 0, timelineWidthPx.value + KEY_COLUMN_PX);
+  const maxLeft = Math.max(0, maxScrollWidth - el.clientWidth);
+  const raw = Math.round(activePlayheadMs.value * pxPerMs.value - laneViewWidth * ratio);
+  return Math.max(0, Math.min(maxLeft, raw));
+}
+
+function scrollPlayheadIntoView(ratio = 0.3, smooth = false): void {
+  const targetLeft = desiredFollowScrollLeft(ratio);
+  if (smooth) {
+    animateScrollLeftTo(targetLeft, 220);
+  } else {
+    cancelSmoothScrollAnim();
+    setProgrammaticScrollLeft(targetLeft);
+  }
 }
 
 function returnToPlayhead(): void {
   followPlayhead.value = true;
   followDetached.value = false;
-  scrollPlayheadIntoView(0.3);
+  scrollPlayheadIntoView(0.3, true);
 }
 
 function detachFollowIfPlaying(): void {
   if ((draftPlaying.value || props.isPlaying) && followPlayhead.value) {
+    cancelSmoothScrollAnim();
     followDetached.value = true;
   }
 }
 
 function onTimelineScroll(): void {
-  updatePlayheadDirection();
   const el = scrollEl.value;
+  if (!el) return;
+  const currentLeft = el.scrollLeft;
+  const horizontalDelta = Math.abs(currentLeft - lastObservedScrollLeft);
+  lastObservedScrollLeft = currentLeft;
+  updatePlayheadDirection();
+  // Pure vertical scrolling (scrollLeft unchanged) must never lock/detach playhead follow
+  if (horizontalDelta < 0.5) {
+    return;
+  }
   if (
-    isProgrammaticScroll &&
-    el &&
     lastProgrammaticScrollLeft !== null &&
-    Math.abs(el.scrollLeft - lastProgrammaticScrollLeft) <= 2
+    Math.abs(currentLeft - lastProgrammaticScrollLeft) <= 2
   ) {
     return;
   }
@@ -280,11 +328,11 @@ function onScrollPointerDown(event: PointerEvent): void {
   const el = scrollEl.value;
   if (!el || !followPlayhead.value) return;
   const rect = el.getBoundingClientRect();
-  const onScrollbarArea =
-    event.target === el ||
-    event.clientY > rect.top + el.clientHeight ||
-    event.clientX > rect.left + el.clientWidth;
-  if (onScrollbarArea) {
+  // Only detach when grabbing the bottom horizontal scrollbar, never on the right vertical scrollbar
+  const onHorizontalScrollbar =
+    event.clientY >= rect.top + el.clientHeight &&
+    event.clientX <= rect.left + el.clientWidth;
+  if (onHorizontalScrollbar) {
     detachFollowIfPlaying();
   }
 }
@@ -403,7 +451,7 @@ watch(
         scrollToMedianPitch();
       } else {
         const maxLeft = Math.max(0, timelineWidthPx.value + KEY_COLUMN_PX - el.clientWidth);
-        el.scrollLeft = Math.min(prevScrollLeft, maxLeft);
+        setProgrammaticScrollLeft(Math.min(prevScrollLeft, maxLeft));
         el.scrollTop = prevScrollTop;
       }
       updatePlayheadDirection();
@@ -475,17 +523,24 @@ watch(followPlayhead, (on) => {
   }
 });
 
-watch(activePlayheadMs, (ms) => {
+watch(activePlayheadMs, () => {
   updatePlayheadDirection();
   if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value || followDetached.value) {
     return;
   }
   const el = scrollEl.value;
   if (!el || el.clientWidth <= 0) return;
-  const laneViewWidth = Math.max(80, el.clientWidth - KEY_COLUMN_PX);
-  const px = ms * pxPerMs.value;
-  if (px > el.scrollLeft + laneViewWidth - 48 || px < el.scrollLeft + 16) {
-    scrollPlayheadIntoView(0.3);
+  const targetLeft = desiredFollowScrollLeft(0.3);
+  const dist = targetLeft - el.scrollLeft;
+  if (Math.abs(dist) < 1) return;
+  if (Math.abs(dist) <= 72) {
+    // Smoothly glide continuously instead of jumping an entire screen at the right edge
+    if (smoothScrollRaf === null) {
+      const stepPx = Math.abs(dist) <= 2 ? targetLeft : el.scrollLeft + dist * 0.45;
+      setProgrammaticScrollLeft(stepPx);
+    }
+  } else {
+    animateScrollLeftTo(targetLeft, 200);
   }
 });
 
@@ -1159,7 +1214,7 @@ function fitAllTimeline(): void {
   const availablePx = Math.max(320, (el?.clientWidth ?? 900) - KEY_COLUMN_PX - 120);
   const rawPct = Math.round((availablePx / (Math.max(2400, totalDurationMs.value) * BASE_PX_PER_MS)) * 100);
   zoomPct.value = Math.max(MIN_ZOOM_PCT, Math.min(MAX_ZOOM_PCT, rawPct));
-  if (el) el.scrollLeft = 0;
+  setProgrammaticScrollLeft(0);
 }
 
 function onScrollWheel(event: WheelEvent): void {
@@ -1177,7 +1232,7 @@ function onScrollWheel(event: WheelEvent): void {
     void nextTick(() => {
       const nextPxPerMs = BASE_PX_PER_MS * (nextZoom / 100);
       const viewportOffset = Math.max(0, event.clientX - rect.left - KEY_COLUMN_PX);
-      el.scrollLeft = Math.max(0, Math.round(cursorMs * nextPxPerMs - viewportOffset));
+      setProgrammaticScrollLeft(Math.max(0, Math.round(cursorMs * nextPxPerMs - viewportOffset)));
     });
     return;
   }
@@ -1185,7 +1240,10 @@ function onScrollWheel(event: WheelEvent): void {
     event.preventDefault();
     detachFollowIfPlaying();
     el.scrollLeft += event.deltaY || event.deltaX;
-  } else if (Math.abs(event.deltaX) > 0) {
+  } else if (
+    Math.abs(event.deltaX) >= 2 &&
+    Math.abs(event.deltaX) >= Math.abs(event.deltaY) * 0.5
+  ) {
     detachFollowIfPlaying();
   }
 }
@@ -1558,8 +1616,10 @@ function onWindowShortcutKeydown(event: KeyboardEvent): void {
 }
 
 onMounted(() => {
-  void nextTick(scrollToMedianPitch);
-  void preloadPreviewSamples(resolvedTimbre.value);
+  void nextTick(() => {
+    scrollToMedianPitch();
+    lastObservedScrollLeft = scrollEl.value?.scrollLeft ?? 0;
+  });
   if (typeof window !== "undefined") {
     window.addEventListener("mousedown", onGlobalClick);
     window.addEventListener("keydown", onWindowShortcutKeydown);
@@ -1570,11 +1630,11 @@ onBeforeUnmount(() => {
   stopDraftPlayback();
   stopDragListeners();
   stopMarqueeListeners();
+  cancelSmoothScrollAnim();
   if (programmaticScrollTimer !== null && typeof window !== "undefined") {
     window.clearTimeout(programmaticScrollTimer);
     programmaticScrollTimer = null;
   }
-  isProgrammaticScroll = false;
   lastProgrammaticScrollLeft = null;
   if (typeof window !== "undefined") {
     window.removeEventListener("mousedown", onGlobalClick);
@@ -1639,10 +1699,10 @@ onBeforeUnmount(() => {
           @change="onTimbreSelectChange"
         >
           <option value="auto">音色：跟随乐器</option>
-          <option value="piano">真钢琴 · Steinway（谐律键琴）</option>
-          <option value="lyre">真竖琴（风物之诗琴）</option>
-          <option value="zither">真古筝（镜花之琴）</option>
-          <option value="vintage">复古木弦（老旧的诗琴）</option>
+          <option value="piano">清澈钢琴（谐律键琴）</option>
+          <option value="lyre">清亮诗琴（风物之诗琴）</option>
+          <option value="zither">温润古筝（镜花之琴）</option>
+          <option value="vintage">柔暖木弦（老旧的诗琴）</option>
         </select>
         <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
           {{ isDirty ? "有未保存修改" : "已同步" }}

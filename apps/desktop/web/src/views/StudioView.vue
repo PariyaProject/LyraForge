@@ -36,13 +36,100 @@ const DROP_REASON_LABELS: Record<string, string> = {
   accomp_thinned: "伴奏节奏让路",
 };
 
-const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string }> = [
-  { id: "melody", label: "主旋律" },
-  { id: "balanced", label: "均衡" },
-  { id: "rich", label: "丰满" },
+const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string; capLabel: string }> = [
+  { id: "melody", label: "主旋律", capLabel: "≤2 键" },
+  { id: "balanced", label: "均衡", capLabel: "≤3 键" },
+  { id: "rich", label: "丰满", capLabel: "≤6 键" },
 ];
 
+const STRATEGY_SHORT_LABELS: Record<string, string> = {
+  classic: "经典基线",
+  vocal_lead: "主旋律优先",
+  vocal_dynamic: "强弱动态",
+};
+
+const DENSITY_LABELS: Record<string, string> = {
+  auto: "智能强弱让路",
+  minimal: "极简骨架伴奏",
+  balanced: "适度双声部",
+  full: "完整保留伴奏",
+};
+
+const OCTAVE_LABELS: Record<string, string> = {
+  smooth_lift: "低音句抬升 +12",
+  centered: "全曲居中平滑",
+  original: "保持原八度",
+};
+
 const currentArr = computed(() => props.store.arrDetail.value?.arrangement ?? null);
+
+const versionSettingChips = computed<Array<{ label: string; tone?: "accent" | "muted" }>>(() => {
+  const detail = props.store.arrDetail.value;
+  const arr = detail?.arrangement;
+  if (!arr || !detail) return [];
+  const tf = detail.report?.transform ?? detail.performance?.transform;
+  const chips: Array<{ label: string; tone?: "accent" | "muted" }> = [];
+  chips.push({ label: `乐器：${profileDisplayName(arr.profile_id)}` });
+  const thickness = tf?.strategy ?? arr.style;
+  const styleItem = STYLES.find((s) => s.id === thickness);
+  chips.push({
+    label: styleItem ? `声部：${styleItem.label} (${styleItem.capLabel})` : `声部：${thickness}`,
+  });
+  const stratId = tf?.arranger_strategy ?? arr.arranger_strategy ?? "classic";
+  chips.push({
+    label: `策略：${STRATEGY_SHORT_LABELS[stratId] ?? stratId}`,
+    tone: stratId !== "classic" ? "accent" : undefined,
+  });
+
+  if (tf?.accomp_density) {
+    chips.push({ label: `伴奏：${DENSITY_LABELS[tf.accomp_density] ?? tf.accomp_density}` });
+  }
+  if (tf?.phrase_octave_mode) {
+    chips.push({ label: `八度：${OCTAVE_LABELS[tf.phrase_octave_mode] ?? tf.phrase_octave_mode}` });
+  }
+  const trVal = tf?.transpose_semitones ?? arr.transpose ?? 0;
+  const trSigned = trVal === 0 ? "原调 0" : `${trVal > 0 ? "+" : ""}${trVal}`;
+  if (tf?.transpose_mode === "fixed") {
+    chips.push({ label: `固定移调 ${trSigned}` });
+  } else {
+    chips.push({ label: `自动移调 (${trSigned})` });
+  }
+  const spd = Number(tf?.speed ?? arr.speed ?? 1);
+  if (Math.abs(spd - 1) >= 0.01) {
+    chips.push({ label: `速度 ${spd}x` });
+  }
+  const arp = Number(tf?.arpeggiate_ms ?? 0);
+  if (arp > 0) {
+    chips.push({ label: `错峰 ${arp}ms` });
+  }
+  if (tf?.cross_stem_align_ms !== undefined && tf?.cross_stem_align_ms !== null) {
+    chips.push({ label: `微对齐 ${tf.cross_stem_align_ms}ms` });
+  }
+  if (tf?.timing_mode === "strict_fidelity") {
+    chips.push({ label: "严格原谱时序" });
+  }
+  if (Array.isArray(tf?.include_tracks)) {
+    chips.push({ label: `启用 ${tf.include_tracks.length} 条分轨` });
+  }
+  if (detail.report?.edited_from || arr.parent_id) {
+    chips.push({ label: "手动编辑版本", tone: "muted" });
+  }
+  return chips;
+});
+
+const fineParamSummary = computed(() => {
+  const tr = props.store.transposeInput.value.trim();
+  const trText = !tr || tr === "auto" ? "自动移调" : `移调 ${tr}`;
+  const spdText = `${props.store.speed.value}x`;
+  const arpText =
+    props.store.arpeggiateMs.value > 0 ? `错峰 ${props.store.arpeggiateMs.value}ms` : "同步敲击";
+  const timingText =
+    props.store.timingMode.value === "strict_fidelity" ? "严格原谱" : "乐器适配";
+  const parts = [trText, spdText, arpText, timingText];
+  const align = String(props.store.crossStemAlignMs.value ?? "").trim();
+  if (align) parts.push(`微对齐 ${align}ms`);
+  return parts.join(" · ");
+});
 
 const activeStrategyInfo = computed(
   () =>
@@ -188,10 +275,10 @@ function presetShortTitle(preset: ArrangePresetInfo): string {
 }
 
 function presetParamBadge(preset: ArrangePresetInfo): string {
-  const styleLabel =
-    STYLES.find((s) => s.id === preset.style)?.label ?? preset.style;
+  const styleItem = STYLES.find((s) => s.id === preset.style);
+  const styleLabel = styleItem ? `${styleItem.label}${styleItem.capLabel}` : preset.style;
   const parts = [styleLabel];
-  if (preset.speed !== 1) parts.push(`${preset.speed}x`);
+  parts.push(preset.speed === 1 ? "原速" : `${preset.speed}x`);
   if (preset.arpeggiate_ms > 0) parts.push(`错峰${preset.arpeggiate_ms}ms`);
   return parts.join(" · ");
 }
@@ -200,6 +287,9 @@ function presetMatchesCurrent(preset: ArrangePresetInfo): boolean {
   const curTr = props.store.transposeInput.value.trim();
   const expectedTr = preset.transpose === null ? "auto" : String(preset.transpose);
   return (
+    props.store.selectedArrangerStrategy.value === "classic" &&
+    !props.store.accompDensity.value &&
+    !props.store.phraseOctaveMode.value &&
     props.store.style.value === preset.style &&
     Math.abs(props.store.speed.value - preset.speed) < 0.01 &&
     props.store.arpeggiateMs.value === preset.arpeggiate_ms &&
@@ -457,12 +547,39 @@ async function onArrangementChange(event: Event): Promise<void> {
       <aside
         v-show="inspectorOpen"
         class="studio-inspector"
-        aria-label="编曲方案与质量检查器"
+        aria-label="编曲参数配置与版本信息"
       >
-        <div class="inspector-section">
-          <h2 class="subsection-heading">编曲方案（预设与核心设置）</h2>
+        <div
+          v-if="currentArr && versionSettingChips.length > 0"
+          id="studio-version-settings"
+          class="inspector-section"
+        >
+          <div class="pane-header">
+            <h2 class="subsection-heading">当前版本所用设置</h2>
+            <span
+              v-if="store.lastArrangeOutcome.value?.arrangementId === currentArr.id"
+              class="pill"
+              :class="store.lastArrangeOutcome.value.created ? 'pill-ok' : ''"
+            >
+              {{ store.lastArrangeOutcome.value.created ? "本次新建" : "匹配已有版本" }}
+            </span>
+          </div>
+          <div class="version-chips-grid">
+            <span
+              v-for="chip in versionSettingChips"
+              :key="chip.label"
+              class="badge"
+              :class="chip.tone === 'accent' ? 'pill-accent' : ''"
+            >
+              {{ chip.label }}
+            </span>
+          </div>
+        </div>
+
+        <div class="inspector-section studio-config-form">
+          <h2 class="subsection-heading">编曲参数配置（自由组合）</h2>
           <p class="muted" style="margin: 0; font-size: 12px">
-            点击场景预设会填入参数并立即生成；微调任何选项时，左侧谱面会实时预览变化。
+            点击上方模板仅会把一组搭配填入下方设置（不会自动新建版本）；任意改动都会先在左侧实时预览，满意后再点击底部生成按钮。
           </p>
 
           <div
@@ -485,41 +602,50 @@ async function onArrangementChange(event: Event): Promise<void> {
             </select>
           </div>
 
-          <div class="preset-list">
-            <button
-              v-if="!store.hasMidiSource.value || store.songTracks.value.length > 1"
-              class="preset-item-btn"
-              type="button"
-              :disabled="!store.canArrange.value || store.busy.value"
-              @click="store.applyRecommendedVocalSetup"
-            >
-              <span class="preset-title-row">
-                <strong>流行人声护航（推荐）</strong>
-                <span class="badge pill-accent">强弱动态 · 自动抬升</span>
-              </span>
-              <span class="muted" style="font-size: 12px">
-                高潮自动精简伴奏、低音主歌整句抬高八度，适合带人声的多轨流行歌。
-              </span>
-            </button>
-            <button
-              v-for="preset in profilePresets"
-              :key="preset.id"
-              class="preset-item-btn"
-              :class="{ 'is-active': presetMatchesCurrent(preset) }"
-              type="button"
-              :title="preset.description"
-              @click="store.applyPreset(preset.id, { autoArrange: true })"
-            >
-              <span class="preset-title-row">
-                <span>{{ presetShortTitle(preset) }}</span>
-                <span class="badge">{{ presetParamBadge(preset) }}</span>
-              </span>
-              <span class="muted" style="font-size: 12px">{{ preset.description }}</span>
-            </button>
+          <div class="field">
+            <span class="field-label-text">快捷参数模板（仅填充下方选项，可继续自由组合）</span>
+            <div class="preset-list">
+              <button
+                v-if="!store.hasMidiSource.value || store.songTracks.value.length > 1"
+                class="preset-item-btn"
+                :class="{
+                  'is-active':
+                    store.selectedArrangerStrategy.value === 'vocal_dynamic' &&
+                    store.accompDensity.value === 'auto' &&
+                    store.phraseOctaveMode.value === 'smooth_lift',
+                }"
+                type="button"
+                :disabled="!store.canArrange.value"
+                @click="store.applyRecommendedVocalSetup"
+              >
+                <span class="preset-title-row">
+                  <strong>流行人声护航模板（推荐）</strong>
+                  <span class="badge pill-accent">均衡≤3键 · 动态让路 · 错峰12ms</span>
+                </span>
+                <span class="muted" style="font-size: 12px">
+                  自动填入「强弱动态策略 + 高潮伴奏让路 + 低音句抬升八度 + 错峰 12ms」。
+                </span>
+              </button>
+              <button
+                v-for="preset in profilePresets"
+                :key="preset.id"
+                class="preset-item-btn"
+                :class="{ 'is-active': presetMatchesCurrent(preset) }"
+                type="button"
+                :title="preset.description"
+                @click="store.applyPreset(preset.id)"
+              >
+                <span class="preset-title-row">
+                  <span>{{ presetShortTitle(preset) }}模板</span>
+                  <span class="badge">{{ presetParamBadge(preset) }}</span>
+                </span>
+                <span class="muted" style="font-size: 12px">{{ preset.description }}</span>
+              </button>
+            </div>
           </div>
 
           <div class="field">
-            <span id="studio-style-label" class="field-label-text">编曲风格（决定同时按下的键数上限）</span>
+            <span id="studio-style-label" class="field-label-text">声部厚度（同一拍最多同时按几个键，可与模板任意组合）</span>
             <div class="segmented" role="group" aria-labelledby="studio-style-label">
               <button
                 v-for="item in STYLES"
@@ -535,6 +661,7 @@ async function onArrangementChange(event: Event): Promise<void> {
                   <rect v-if="item.id === 'rich'" x="5" y="8" width="11" height="2" rx="1" fill="currentColor" opacity="0.52" />
                 </svg>
                 <span>{{ item.label }}</span>
+                <small class="style-cap-tag">{{ item.capLabel }}</small>
               </button>
             </div>
           </div>
@@ -581,7 +708,10 @@ async function onArrangementChange(event: Event): Promise<void> {
           </div>
 
           <details class="advanced-box">
-            <summary>专业微调（移调 / 倍速 / 和弦错峰 / 时序）</summary>
+            <summary class="fine-summary">
+              <span>移调 / 倍速 / 错峰 / 时序</span>
+              <span class="fine-summary-pill tabular">{{ fineParamSummary }}</span>
+            </summary>
             <div class="advanced-stack">
               <div class="field">
                 <label for="studio-transpose">移调半音（auto 或整数）</label>
@@ -632,81 +762,99 @@ async function onArrangementChange(event: Event): Promise<void> {
               </div>
             </div>
           </details>
-        </div>
 
-        <div v-if="store.songTracks.value.length > 0" class="inspector-section">
-          <div class="pane-header">
-            <h2 class="subsection-heading">MIDI 分轨与主旋律</h2>
+          <div v-if="store.songTracks.value.length > 0" class="config-tracks-block">
+            <div class="pane-header">
+              <span class="field-label-text">MIDI 分轨与主旋律</span>
+              <button
+                v-if="store.selectedMelodyTrack.value !== null"
+                type="button"
+                class="ghost btn-sm"
+                @click="store.selectedMelodyTrack.value = null"
+              >
+                自动识别
+              </button>
+            </div>
+            <ul class="line-list">
+              <li
+                v-for="track in store.songTracks.value"
+                :key="track.index"
+                class="track-row"
+                :title="formatTrackTooltip(track)"
+              >
+                <label class="track-check-label">
+                  <input
+                    type="checkbox"
+                    :disabled="track.is_percussion"
+                    :checked="!track.is_percussion && isTrackIncluded(track.index)"
+                    @change="store.toggleTrackIncluded(track.index)"
+                  />
+                  <span
+                    class="track-dot"
+                    :class="track.is_percussion ? '' : trackColorClass(trackColorMap.get(track.index) ?? 0)"
+                  />
+                  <span class="track-title">{{ displayTrackTitle(track) }}</span>
+                  <span v-if="trackRangeLabel(track)" class="track-range-tag">
+                    {{ trackRangeLabel(track) }}
+                  </span>
+                </label>
+                <div class="track-meta-actions">
+                  <span class="track-count-delta">
+                    <template v-if="currentArr && !track.is_percussion">
+                      {{ track.note_count }} → {{ arrangedCountByTrack.get(track.index) ?? 0 }} 音
+                    </template>
+                    <template v-else>
+                      {{ track.note_count }} 音
+                    </template>
+                  </span>
+                  <button
+                    v-if="!track.is_percussion"
+                    type="button"
+                    class="btn-sm"
+                    :class="effectiveMelodyTrack === track.index ? 'active-pill' : 'ghost'"
+                    @click="toggleMelodyTrack(track.index)"
+                  >
+                    {{ effectiveMelodyTrack === track.index ? "主旋律" : "设为主旋律" }}
+                  </button>
+                  <span v-else class="pill">打击乐</span>
+                </div>
+              </li>
+            </ul>
+            <p class="muted" style="margin: 0; font-size: 12px">
+              勾选或取消音轨时左侧谱面会实时预览；悬停音轨可查看原始英文轨名，21 键映射会合并超音域与极密重复音。
+            </p>
+          </div>
+
+          <div class="studio-apply-footer">
             <button
-              v-if="store.selectedMelodyTrack.value !== null"
+              id="studio-apply-arrange-btn"
+              class="primary"
+              type="button"
+              :disabled="!store.canArrange.value || store.busy.value"
+              @click="store.handleArrange"
+            >
+              <StudioIcon name="sliders" :size="14" />
+              {{
+                store.livePreviewEvents.value
+                  ? "确认按当前配置生成改编版本"
+                  : "生成改编版本"
+              }}
+            </button>
+            <button
+              v-if="store.livePreviewEvents.value"
               type="button"
               class="ghost btn-sm"
-              @click="store.selectedMelodyTrack.value = null"
+              @click="store.syncStudioParamsFromCurrentArrangement()"
             >
-              自动识别
+              还原参数
             </button>
           </div>
-          <ul class="line-list">
-            <li
-              v-for="track in store.songTracks.value"
-              :key="track.index"
-              class="track-row"
-              :title="formatTrackTooltip(track)"
-            >
-              <label class="track-check-label">
-                <input
-                  type="checkbox"
-                  :disabled="track.is_percussion"
-                  :checked="!track.is_percussion && isTrackIncluded(track.index)"
-                  @change="store.toggleTrackIncluded(track.index)"
-                />
-                <span
-                  class="track-dot"
-                  :class="track.is_percussion ? '' : trackColorClass(trackColorMap.get(track.index) ?? 0)"
-                />
-                <span class="track-title">{{ displayTrackTitle(track) }}</span>
-                <span v-if="trackRangeLabel(track)" class="track-range-tag">
-                  {{ trackRangeLabel(track) }}
-                </span>
-              </label>
-              <div class="track-meta-actions">
-                <span class="track-count-delta">
-                  <template v-if="currentArr && !track.is_percussion">
-                    {{ track.note_count }} → {{ arrangedCountByTrack.get(track.index) ?? 0 }} 音
-                  </template>
-                  <template v-else>
-                    {{ track.note_count }} 音
-                  </template>
-                </span>
-                <button
-                  v-if="!track.is_percussion"
-                  type="button"
-                  class="btn-sm"
-                  :class="effectiveMelodyTrack === track.index ? 'active-pill' : 'ghost'"
-                  @click="toggleMelodyTrack(track.index)"
-                >
-                  {{ effectiveMelodyTrack === track.index ? "主旋律" : "设为主旋律" }}
-                </button>
-                <span v-else class="pill">打击乐</span>
-              </div>
-            </li>
-          </ul>
-          <p class="muted" style="margin: 0; font-size: 12px">
-            勾选或取消音轨时左侧谱面会实时预览；悬停音轨可查看原始英文轨名，21 键映射会合并超音域与极密重复音。
-          </p>
         </div>
 
         <div class="inspector-section">
           <div class="pane-header">
             <h2 class="subsection-heading">编曲适配评分</h2>
-            <span
-              v-if="currentArr && store.lastArrangeOutcome.value?.arrangementId === currentArr.id"
-              class="pill"
-              :class="store.lastArrangeOutcome.value.created ? 'pill-ok' : ''"
-            >
-              {{ store.lastArrangeOutcome.value.created ? "本次新建" : "匹配已有版本" }}
-            </span>
-            <span v-else-if="currentArr" class="pill tabular">
+            <span v-if="currentArr" class="pill tabular">
               {{ currentArr.event_count }} 音
             </span>
           </div>
@@ -1125,6 +1273,55 @@ async function onArrangementChange(event: Event): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2xs);
+}
+
+.style-cap-tag {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.style-picto-btn.active .style-cap-tag {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.version-chips-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.fine-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.fine-summary-pill {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.studio-apply-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-block-start: var(--space-xs);
+}
+
+.config-tracks-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-block-start: var(--space-xs);
+  border-block-start: var(--rule-hair) solid var(--color-rule);
+}
+
+.studio-apply-footer .primary {
+  flex: 1 1 auto;
 }
 
 .style-picto {

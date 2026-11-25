@@ -683,3 +683,26 @@
      - Squash 合入 `main`（`451a1d6`）→ 合并后 `main` CI [Run #45553803862](https://github.com/PariyaProject/LyraForge/actions/runs/45553803862) 全部 5 项作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`2026-11-25T05:32:57Z`）：`LyraForge-dev-20261125-451a1d6-windows-x64.zip`、`LyraForge-dev-20261125-451a1d6-macos-arm64.zip`、`SHA256SUMS.txt`。
 3. **验证边界说明**：
    - 物理 Windows 10/11 客户端下 CC0 原声采样音色的实际桌面听感、PyInstaller 窗口启动体验，以及《原神》实机谐律键琴演奏表现，仍待用户在下载最新 `dev-latest` 构建后现场确认（自动化端到端浏览器采样路径已在 `FakeAudioCtx` 与本地 FastAPI/Pytest 环境下验证通过）。
+
+
+## 34. Round 32：纯净美化合成音色、纯横向防误锁平滑滚动与统一不自动生成表单
+
+1. **声学诊断与音色彻底清理优化**：
+   - 对原 VCSL 实录包执行全量基频/包络扫描并发现显著客观缺陷：`zither` 实录高出整整一个八度（`H2 >> H1`）且存在 `-50..+46` 音分走音，`lyre` 全键偏低约 `-12` 音分且相邻键均方根音量差达 `11.6 dB`，`piano` 中高音 `72_C5.wav` 呈断奏快速衰减且 `G#3/E4/G#4` 存在近 `40 ms` 起音前空隙；同时 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts) 的 `createRoomImpulse()` 向每颗音符叠加未经滤波的白噪声卷积混响导致背景沙哑刺耳。
+   - **修复方案**：彻底删除 `src/lyraforge/preview/samples/`（20 条 WAV + 清单）、[build_cc0_samples.py](../scripts/build_cc0_samples.py)、`/v1/preview/samples/*` 路由及白噪混响器；重做 [preview/synth.py](../src/lyraforge/preview/synth.py)（相位锁定三角递推泛音 + `piano` 最长歌唱余韵 > `lyre` > `zither` > `vintage` + 全 21 键音量平衡 + `same_pitch_caps` 同音防叠加 + Soft-Knee 限幅）与 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)（同音 `18 ms` 干净收尾 + 纯正泛音低通顺滑过滤），彻底消除沙哑噪声与走音。
+2. **Piano Roll 纯横向防误锁与连续平滑跟随**：
+   - 修复 [PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue) 垂直滚轮 / 拖拽右侧竖向滚动条触发 `onTimelineScroll()` / `onScrollPointerDown()` 而意外定格播放跟随的问题（仅当横向 `scrollLeft` 真实变化、拖按底部横向滚动条或横向滚轮 / `Shift+滚轮` 时才脱离）；将原先「撞击右边缘后瞬间大幅跳屏」的切换式跟随替换为围绕视口 30% 锚点连续推进与三次缓动动画（`animateScrollLeftTo`）。
+3. **编曲工作室表单统一、模板不自动生成与历史版本设置完整展示**：
+   - `applyPreset()` 与 `applyRecommendedVocalSetup()` 不再触发 `handleArrange()`，改为直接填入表单参数并立即调用 `requestLiveArrangePreview(true, { force: true })` 在谱面预览变化，由底部统一确认按钮 `#studio-apply-arrange-btn`（或顶栏 `生成改编版本`）提交生成；明确将「声部厚度（`主旋律 ≤2 键` / `均衡 ≤3 键` / `丰满 ≤6 键`）」与上方快捷参数模板区隔。
+   - 切换 `#studio-arr-select` 时依据 `report.transform` / `performance.transform`（[api.ts](../apps/desktop/web/src/api.ts)）完整同步所有参数控件及分轨配置，并在检查器顶部 `#studio-version-settings` 展示当前版本全部已保存设置标签。
+4. **本地全量验证与声学回归结果（最终代码定稿后实测）**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile` → 通过（`10ms`）；
+   - `pnpm --dir apps/desktop/web exec vue-tsc --noEmit` → 退出码 `0`；
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **296 passed, 2 warnings in 96.46s**，总覆盖率 **84.17%**（含 `test_studio_timbres_pure_tuned_and_balanced_across_register` 验证四音色 `C3..B5` 全键音准显著高于高八度与 `±3%` 偏音、跨音区 RMS 比 `< 2.2x`、`test_preview.py` 稠密和弦零削波与 `test_api.py` `transform` 字段透传校验）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 6 passed (6), Tests 26 passed (26)**（新增覆盖纯竖向滚动/滚轮/右滚动条不脱离跟随、连续平滑滚动、点击模板不触发 `arrangeSong` 仅实时预览、以及切版本同步控件与展示 `#studio-version-settings`）；
+   - `pnpm --dir apps/desktop/web build` → `50 modules transformed`，`built in 1.06s`（CSS `61.43 kB` / JS `295.26 kB`）；
+   - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
+   - **纯 Python 音色实测**：150 音富和弦钢琴合成 `1.762s`（`941,580` 字节）；`dense_chords` 四音色峰值均锁定 `0.920` 零削波、RMS `0.153–0.155`；CSS 字面量色值扫描 0 违规。
+5. **验证边界说明**：
+   - 物理 Windows 10/11 桌面窗下浏览器真机音色听感、垂直/水平滚轮及滚动条平滑跟随手感，以及《原神》实机演奏表现，仍待维护者下载并试听新发布的 `dev-latest` 双平台包最终确认（待 CI 完成后补充 PR 与合入链接）。
