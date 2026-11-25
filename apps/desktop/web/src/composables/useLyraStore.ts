@@ -1,8 +1,9 @@
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import {
   LyraForgeApi,
   type AccompDensity,
   type AgentRunResult,
+  type ArrangePreviewResponse,
   type ArrangementDetailResponse,
   type ArrangementRecord,
   type ArrangePresetInfo,
@@ -35,6 +36,7 @@ import {
   type ToolStatus,
 } from "../api";
 import type { ToastItem } from "../components/ToastStack.vue";
+import { configurePreviewSampleBase } from "../utils/webAudioPreview";
 
 export type StudioViewId =
   | "home"
@@ -155,6 +157,19 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedArrId = ref<string>("");
   const arrDetail = ref<ArrangementDetailResponse | null>(null);
   const comparisonResult = ref<ComparisonResult | null>(null);
+  const lastArrangeOutcome = ref<{ arrangementId: string; created: boolean } | null>(null);
+  const recentCreatedArrIds = ref<Set<string>>(new Set());
+  const livePreviewEvents = ref<PerformanceEventItem[] | null>(null);
+  const livePreviewMeta = ref<{
+    arrangementId: string;
+    alreadyExists: boolean;
+    existingLabel: string | null;
+    nextScore: number | null;
+    loading: boolean;
+  } | null>(null);
+  const suppressLivePreview = ref(false);
+  let livePreviewTimer: number | null = null;
+  let livePreviewSeq = 0;
 
   // Import state
   const uploadFile = ref<File | null>(null);
@@ -405,6 +420,27 @@ export function createLyraStore(api: LyraForgeApi) {
   function requestPreviewSeek(ms: number): void {
     previewSeekTargetMs.value = Math.max(0, Math.round(ms));
     previewCurrentMs.value = Math.max(0, Math.round(ms));
+  }
+
+  function clearLiveArrangePreview(): void {
+    livePreviewSeq += 1;
+    if (livePreviewTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(livePreviewTimer);
+      livePreviewTimer = null;
+    }
+    livePreviewEvents.value = null;
+    livePreviewMeta.value = null;
+  }
+
+  function withSuppressedLivePreview(fn: () => void): void {
+    suppressLivePreview.value = true;
+    try {
+      fn();
+    } finally {
+      void nextTick(() => {
+        suppressLivePreview.value = false;
+      });
+    }
   }
 
   function stopPolling(): void {
@@ -663,6 +699,8 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedSongId.value = songId;
     prepared.value = null;
     comparisonResult.value = null;
+    lastArrangeOutcome.value = null;
+    clearLiveArrangePreview();
     clearPreviewUrl();
     const cached =
       allSongs.value.find((s) => s.id === songId) ??
@@ -726,6 +764,7 @@ export function createLyraStore(api: LyraForgeApi) {
     const arrSeq = expectedArrSeq ?? ++selectArrSeq;
     selectedArrId.value = arrangementId;
     prepared.value = null;
+    clearLiveArrangePreview();
     clearPreviewUrl();
     if (!arrangementId) {
       arrDetail.value = null;
@@ -745,7 +784,9 @@ export function createLyraStore(api: LyraForgeApi) {
       }
     }
     if (detail.arrangement.profile_id && profile.value?.id !== detail.arrangement.profile_id) {
-      selectedProfileId.value = detail.arrangement.profile_id;
+      withSuppressedLivePreview(() => {
+        selectedProfileId.value = detail.arrangement.profile_id;
+      });
       profile.value = await api.getProfile(detail.arrangement.profile_id);
     }
   }
@@ -879,79 +920,212 @@ export function createLyraStore(api: LyraForgeApi) {
     return [...selectedTrackIndices.value];
   }
 
-  async function handleArrange(): Promise<void> {
-    if (!selectedSongId.value) return;
+  function buildArrangePayload(opts?: { includeLabel?: boolean }): {
+    payload: Parameters<LyraForgeApi["arrangeSong"]>[0] | null;
+    error: string | null;
+    activeTrId: string | null;
+  } {
+    if (!selectedSongId.value) return { payload: null, error: null, activeTrId: null };
     const parsedTranspose = parseTranspose();
     if (parsedTranspose === "invalid") {
-      reportError("移调请输入 auto 或整数半音");
-      return;
+      return { payload: null, error: "移调请输入 auto 或整数半音", activeTrId: null };
     }
     const includeTracks = resolveIncludeTracksPayload();
     if (includeTracks !== null && includeTracks.length === 0) {
-      reportError("请至少勾选一条音轨参与编曲");
-      return;
+      return { payload: null, error: "请至少勾选一条音轨参与编曲", activeTrId: null };
     }
-    busy.value = true;
-    errorMessage.value = "";
-    try {
-      const activeTr = !hasMidiSource.value
-        ? songTranscriptions.value.find((t) => t.id === selectedTranscriptionId.value) ??
-          songTranscriptions.value[0] ??
-          null
-        : null;
+    const activeTr = !hasMidiSource.value
+      ? songTranscriptions.value.find((t) => t.id === selectedTranscriptionId.value) ??
+        songTranscriptions.value[0] ??
+        null
+      : null;
+
+    const payload: Parameters<LyraForgeApi["arrangeSong"]>[0] = {
+      song_id: selectedSongId.value,
+      instrument_profile_id: selectedProfileId.value,
+      style: style.value,
+      speed: speed.value,
+      transpose: parsedTranspose,
+      arpeggiate_ms: Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0))),
+      prefer_melody_track: true,
+      arranger_strategy: selectedArrangerStrategy.value,
+      timing_mode: timingMode.value,
+    };
+    if (accompDensity.value) {
+      payload.accomp_density = accompDensity.value;
+    }
+    if (phraseOctaveMode.value) {
+      payload.phrase_octave_mode = phraseOctaveMode.value;
+    }
+    const rawAlign = String(crossStemAlignMs.value ?? "").trim();
+    if (rawAlign !== "") {
+      const parsedAlign = Number(rawAlign);
+      if (Number.isFinite(parsedAlign)) {
+        payload.cross_stem_align_ms = Math.max(0, Math.min(60, Math.round(parsedAlign)));
+      }
+    }
+    if (activeTr?.id) payload.transcription_id = activeTr.id;
+    if (includeTracks !== null) payload.include_tracks = includeTracks;
+    if (selectedMelodyTrack.value !== null) payload.melody_track = selectedMelodyTrack.value;
+
+    if (opts?.includeLabel !== false) {
+      const styleNames: Record<string, string> = {
+        melody: "主旋律",
+        balanced: "均衡",
+        rich: "丰满",
+      };
       const pipePrefix =
-        activeTr?.pipeline_id && activeTr.pipeline_id !== "direct"
-          ? `${activeTr.pipeline_id} · `
-          : "";
+        activeTr?.pipeline_id === "vocal_split_full"
+          ? "双轨分离 · "
+          : activeTr?.pipeline_id === "vocal_split_lead"
+            ? "人声分离 · "
+            : "";
       const strategyLabel =
         selectedArrangerStrategy.value === "vocal_dynamic"
           ? "强弱动态"
           : selectedArrangerStrategy.value === "vocal_lead"
             ? "主旋律增强"
             : "经典基线";
-      const customLabel =
-        selectedArrangerStrategy.value !== "classic" || pipePrefix
-          ? `${pipePrefix}${strategyLabel} · ${style.value}`
-          : null;
+      if (selectedArrangerStrategy.value !== "classic" || pipePrefix) {
+        payload.label = `${pipePrefix}${strategyLabel} · ${styleNames[style.value] ?? style.value}`;
+      }
+    }
 
-      const payload: Parameters<LyraForgeApi["arrangeSong"]>[0] = {
-        song_id: selectedSongId.value,
-        instrument_profile_id: selectedProfileId.value,
-        style: style.value,
-        speed: speed.value,
-        transpose: parsedTranspose,
-        arpeggiate_ms: Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0))),
-        prefer_melody_track: true,
-        arranger_strategy: selectedArrangerStrategy.value,
-        timing_mode: timingMode.value,
+    return { payload, error: null, activeTrId: activeTr?.id ?? null };
+  }
+
+  function requestLiveArrangePreview(immediate = false): void {
+    if (suppressLivePreview.value || typeof api.previewArrange !== "function") return;
+    if (!selectedSongId.value || !canArrange.value || !arrDetail.value) {
+      clearLiveArrangePreview();
+      return;
+    }
+    const { payload, error } = buildArrangePayload({ includeLabel: false });
+    if (!payload || error) {
+      return;
+    }
+    if (livePreviewTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(livePreviewTimer);
+      livePreviewTimer = null;
+    }
+    const seq = ++livePreviewSeq;
+    const runPreview = async () => {
+      if (seq !== livePreviewSeq) return;
+      livePreviewMeta.value = {
+        arrangementId: livePreviewMeta.value?.arrangementId ?? "",
+        alreadyExists: livePreviewMeta.value?.alreadyExists ?? false,
+        existingLabel: livePreviewMeta.value?.existingLabel ?? null,
+        nextScore: livePreviewMeta.value?.nextScore ?? null,
+        loading: true,
       };
-      if (accompDensity.value) {
-        payload.accomp_density = accompDensity.value;
-      }
-      if (phraseOctaveMode.value) {
-        payload.phrase_octave_mode = phraseOctaveMode.value;
-      }
-      const rawAlign = String(crossStemAlignMs.value ?? "").trim();
-      if (rawAlign !== "") {
-        const parsedAlign = Number(rawAlign);
-        if (Number.isFinite(parsedAlign)) {
-          payload.cross_stem_align_ms = Math.max(0, Math.min(60, Math.round(parsedAlign)));
+      try {
+        const res: ArrangePreviewResponse = await api.previewArrange(payload);
+        if (seq !== livePreviewSeq) return;
+        const currentId = arrDetail.value?.arrangement.id;
+        if (res.arrangement_id && res.arrangement_id === currentId) {
+          livePreviewEvents.value = null;
+          livePreviewMeta.value = null;
+          return;
         }
+        livePreviewEvents.value = res.performance.events ?? [];
+        livePreviewMeta.value = {
+          arrangementId: res.arrangement_id,
+          alreadyExists: res.already_exists,
+          existingLabel: res.existing_label ?? null,
+          nextScore: res.report?.quality?.overall_score ?? null,
+          loading: false,
+        };
+      } catch {
+        if (seq !== livePreviewSeq) return;
+        livePreviewMeta.value = null;
       }
-      if (activeTr?.id) payload.transcription_id = activeTr.id;
-      if (includeTracks !== null) payload.include_tracks = includeTracks;
-      if (selectedMelodyTrack.value !== null) payload.melody_track = selectedMelodyTrack.value;
-      if (customLabel) payload.label = customLabel;
+    };
 
+    if (immediate || typeof window === "undefined") {
+      void runPreview();
+    } else {
+      livePreviewTimer = window.setTimeout(() => {
+        livePreviewTimer = null;
+        void runPreview();
+      }, 220);
+    }
+  }
+
+  function syncStudioParamsFromCurrentArrangement(): void {
+    const arr = arrDetail.value?.arrangement;
+    clearLiveArrangePreview();
+    if (!arr) return;
+    withSuppressedLivePreview(() => {
+      if (arr.style === "melody" || arr.style === "balanced" || arr.style === "rich") {
+        style.value = arr.style;
+      }
+      speed.value = arr.speed || 1.0;
+      transposeInput.value = arr.transpose === 0 ? "auto" : String(arr.transpose);
+      if (arr.arranger_strategy) {
+        selectedArrangerStrategy.value = arr.arranger_strategy;
+      }
+      accompDensity.value = "";
+      phraseOctaveMode.value = "";
+      crossStemAlignMs.value = "";
+      arpeggiateMs.value = 0;
+      timingMode.value = "adapted";
+      if (arr.profile_id) {
+        selectedProfileId.value = arr.profile_id;
+      }
+    });
+    if (arr.profile_id && profile.value?.id !== arr.profile_id) {
+      void handleProfileChange();
+    }
+    pushToast("info", "已还原为当前版本的参数配置");
+  }
+
+  async function applyRecommendedVocalSetup(): Promise<void> {
+    withSuppressedLivePreview(() => {
+      selectedArrangerStrategy.value = "vocal_dynamic";
+      style.value = "balanced";
+      accompDensity.value = "auto";
+      phraseOctaveMode.value = "smooth_lift";
+      arpeggiateMs.value = 12;
+      speed.value = 1.0;
+      transposeInput.value = "auto";
+      timingMode.value = "adapted";
+    });
+    await handleArrange();
+  }
+
+  async function handleArrange(): Promise<void> {
+    if (!selectedSongId.value) return;
+    const { payload, error, activeTrId } = buildArrangePayload({ includeLabel: true });
+    if (error) {
+      reportError(error);
+      return;
+    }
+    if (!payload) return;
+    clearLiveArrangePreview();
+    const prevIds = new Set(arrangements.value.map((a) => a.id));
+    busy.value = true;
+    errorMessage.value = "";
+    try {
       const res = await api.arrangeSong(payload);
+      const created = res.created !== undefined ? res.created : !prevIds.has(res.arrangement.id);
       comparisonResult.value = null;
       await refreshSongs({ alsoRefreshAll: true });
-      if (activeTr?.id) {
-        selectedTranscriptionId.value = activeTr.id;
+      if (activeTrId) {
+        selectedTranscriptionId.value = activeTrId;
       }
       await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
       await selectArrangement(res.arrangement.id);
-      reportOk(`已生成 ${res.arrangement.style} 版本（${res.arrangement.event_count} 个音符）`);
+      lastArrangeOutcome.value = { arrangementId: res.arrangement.id, created };
+      if (created) {
+        recentCreatedArrIds.value = new Set([...recentCreatedArrIds.value, res.arrangement.id]);
+        reportOk(
+          `已新建版本「${arrangementTitle(res.arrangement)}」（${res.arrangement.event_count} 个音符）`,
+        );
+      } else {
+        const msg = `当前参数与已有版本「${arrangementTitle(res.arrangement)}」生成结果完全一致，已直接切换过去（未重复新建）`;
+        statusMessage.value = msg;
+        pushToast("info", msg);
+      }
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -1661,10 +1835,12 @@ export function createLyraStore(api: LyraForgeApi) {
   ): Promise<void> {
     const preset = presets.value.find((item) => item.id === presetId);
     if (!preset) return;
-    style.value = preset.style;
-    transposeInput.value = preset.transpose === null ? "auto" : String(preset.transpose);
-    arpeggiateMs.value = preset.arpeggiate_ms;
-    speed.value = preset.speed;
+    withSuppressedLivePreview(() => {
+      style.value = preset.style;
+      transposeInput.value = preset.transpose === null ? "auto" : String(preset.transpose);
+      arpeggiateMs.value = preset.arpeggiate_ms;
+      speed.value = preset.speed;
+    });
     if (
       opts?.autoArrange &&
       !busy.value &&
@@ -1757,6 +1933,13 @@ export function createLyraStore(api: LyraForgeApi) {
   async function initialize(): Promise<void> {
     initializing.value = true;
     try {
+      const apiConn = api as { base?: unknown; token?: unknown };
+      if (typeof apiConn.base === "string") {
+        configurePreviewSampleBase(
+          apiConn.base,
+          typeof apiConn.token === "string" ? apiConn.token : "",
+        );
+      }
       health.value = await api.health();
       const profList = await api.listProfiles();
       profiles.value = profList.profiles;
@@ -1818,6 +2001,7 @@ export function createLyraStore(api: LyraForgeApi) {
   onBeforeUnmount(() => {
     stopPolling();
     stopJobPolling();
+    clearLiveArrangePreview();
     clearPreviewUrl();
   });
 
@@ -1868,6 +2052,15 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedArrId,
     arrDetail,
     comparisonResult,
+    lastArrangeOutcome,
+    recentCreatedArrIds,
+    livePreviewEvents,
+    livePreviewMeta,
+    requestLiveArrangePreview,
+    clearLiveArrangePreview,
+    syncStudioParamsFromCurrentArrangement,
+    applyRecommendedVocalSetup,
+    suppressLivePreview,
     uploadFile,
     importTitle,
     importArtist,

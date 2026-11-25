@@ -354,6 +354,18 @@ export type TimingMode = "adapted" | "strict_fidelity";
 export type LateEventPolicy = "shift_clock" | "drop_late" | "catch_up";
 export type PreviewTimbre = "auto" | "piano" | "lyre" | "zither" | "vintage";
 
+export interface ArrangePreviewResponse {
+  arrangement_id: string;
+  already_exists: boolean;
+  existing_label?: string | null;
+  performance: {
+    arrangement_id: string;
+    duration_ms: number;
+    events: PerformanceEventItem[];
+  };
+  report: ArrangementDetailResponse["report"];
+}
+
 export interface PlaybackPrepareResponse {
   prepare_token: string;
   expires_in_s: number;
@@ -743,8 +755,18 @@ export class LyraForgeApi {
     phrase_octave_mode?: PhraseOctaveMode | null;
     cross_stem_align_ms?: number | null;
     label?: string | null;
-  }): Promise<{ arrangement: ArrangementRecord }> {
+  }): Promise<{ arrangement: ArrangementRecord; created?: boolean }> {
     return this.request("/v1/jobs/arrange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  previewArrange(
+    payload: Parameters<LyraForgeApi["arrangeSong"]>[0],
+  ): Promise<ArrangePreviewResponse> {
+    return this.request("/v1/studio/preview-arrange", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

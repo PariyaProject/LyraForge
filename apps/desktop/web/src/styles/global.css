@@ -1770,6 +1770,99 @@
     color: var(--color-ink);
   }
 
+  .pr-track-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
+  }
+
+  .pr-check-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: 13px;
+    block-size: 13px;
+    border: var(--rule-hair) solid var(--color-field-edge);
+    border-radius: var(--radius-xs);
+    font-size: 10px;
+    line-height: 1;
+    color: var(--color-accent);
+  }
+
+  .pr-legend-btn.is-active .pr-check-mark {
+    border-color: var(--color-accent);
+    background: var(--color-accent-tint);
+  }
+
+  .pr-solo-btn {
+    min-block-size: 24px;
+    padding: 0 var(--space-xs);
+    border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--color-muted);
+    font-size: 11px;
+  }
+
+  .pr-solo-btn.is-active {
+    background: var(--color-accent-deep);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .pr-preview-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
+    border-block-end: var(--rule-hair) solid var(--color-rule-strong);
+    background: var(--color-paper-3);
+    font-size: 12px;
+  }
+
+  .pr-preview-stats {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .pr-preview-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .pr-note.is-ghost-removed {
+    opacity: 0.45;
+    background: var(--color-danger-surface);
+    color: var(--color-danger);
+    border: var(--rule-hair) dashed var(--color-danger-border);
+    text-decoration: line-through;
+  }
+
+  .pr-note-ghost-added {
+    position: absolute;
+    inset-block: 2px;
+    min-block-size: 21px;
+    padding: 0 var(--space-2xs);
+    border-radius: var(--radius-xs);
+    background: var(--color-ok-surface);
+    color: var(--color-ok);
+    border: var(--rule-hair) dashed var(--color-ok-border);
+    font-size: 12px;
+    font-weight: var(--weight-semi);
+    overflow: hidden;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+  }
+
   .track-dot {
     display: inline-block;
     inline-size: 8px;

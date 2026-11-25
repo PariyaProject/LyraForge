@@ -13,6 +13,7 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -83,6 +84,20 @@ def _escape_like(text: str) -> str:
 def _check_stop(stop_token: StopToken | None, message: str) -> None:
     if stop_token is not None and stop_token.stopped:
         raise LyraError(ErrorCode.PLAYBACK_ABORTED, stop_token.reason or message)
+
+
+@lru_cache(maxsize=6)
+def _load_midi_cached(path_str: str, mtime_ns: int, size: int) -> NormalizedScore:
+    del mtime_ns, size  # cache invalidation key parts only
+    return load_midi_file(Path(path_str))
+
+
+def _load_midi_for_arrange(path: Path) -> NormalizedScore:
+    try:
+        st = path.stat()
+    except OSError:
+        return load_midi_file(path)
+    return _load_midi_cached(str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
 
 
 @dataclass(frozen=True, slots=True)
@@ -900,18 +915,15 @@ class LibraryStore:
             raise LyraError(ErrorCode.PERFORMANCE_INVALID, "stored report is not a JSON object")
         return doc
 
-    def arrange_song(
+    def _compute_arrangement(
         self,
         song_id: str,
         *,
         profile_id: str = DEFAULT_PROFILE_ID,
         options: ArrangeOptions | None = None,
-        parent_id: str | None = None,
-        label: str | None = None,
         transcription_id: str | None = None,
         stop_token: StopToken | None = None,
-    ) -> ArrangementRecord:
-        """Create (or return existing identical) arrangement version for a song."""
+    ) -> tuple[Any, TranscriptionRecord | None, Any, Any, dict[str, Any], dict[str, Any]]:
         _check_stop(stop_token, "arrangement cancelled")
         detail = self.get_song(song_id)
         if not detail.sources:
@@ -951,7 +963,7 @@ class LibraryStore:
                 f"song {song_id} has no MIDI source or completed transcription",
             )
         _check_stop(stop_token, "arrangement cancelled")
-        score = load_midi_file(src_file)
+        score = _load_midi_for_arrange(src_file)
         profile = load_builtin_profile(profile_id)
         stem_dynamics = (
             StemDynamics.from_dict(resolved_tr.metadata.get("stem_dynamics"))
@@ -975,7 +987,54 @@ class LibraryStore:
         perf = build_performance(score, profile, arr, provenance_extra=provenance_extra)
         validate_performance(perf, profile)
         report = build_report(score, profile, arr)
+        return source, resolved_tr, profile, arr, perf, report
 
+    def preview_arrange(
+        self,
+        song_id: str,
+        *,
+        profile_id: str = DEFAULT_PROFILE_ID,
+        options: ArrangeOptions | None = None,
+        transcription_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute non-destructive live preview performance & report without DB/file writes."""
+        _source, _resolved_tr, _profile, _arr, perf, report = self._compute_arrangement(
+            song_id,
+            profile_id=profile_id,
+            options=options,
+            transcription_id=transcription_id,
+        )
+        arr_id = str(perf["arrangement_id"])
+        existing = self._conn.execute(
+            "SELECT id, label FROM arrangements WHERE id = ?", (arr_id,)
+        ).fetchone()
+        return {
+            "arrangement_id": arr_id,
+            "already_exists": existing is not None,
+            "existing_label": existing["label"] if existing is not None else None,
+            "performance": perf,
+            "report": report,
+        }
+
+    def arrange_song_with_status(
+        self,
+        song_id: str,
+        *,
+        profile_id: str = DEFAULT_PROFILE_ID,
+        options: ArrangeOptions | None = None,
+        parent_id: str | None = None,
+        label: str | None = None,
+        transcription_id: str | None = None,
+        stop_token: StopToken | None = None,
+    ) -> tuple[ArrangementRecord, bool]:
+        """Create (or return existing identical) arrangement and report ``(record, created)``."""
+        source, resolved_tr, profile, arr, perf, report = self._compute_arrangement(
+            song_id,
+            profile_id=profile_id,
+            options=options,
+            transcription_id=transcription_id,
+            stop_token=stop_token,
+        )
         arr_id = str(perf["arrangement_id"])
         stripe = _ARRANGE_PERSIST_STRIPES[
             hash((str(self.data_dir.resolve()), arr_id)) % len(_ARRANGE_PERSIST_STRIPES)
@@ -986,7 +1045,7 @@ class LibraryStore:
                 "SELECT * FROM arrangements WHERE id = ?", (arr_id,)
             ).fetchone()
             if existing is not None:
-                return self._row_to_arrangement(existing)
+                return self._row_to_arrangement(existing), False
 
             quality_doc = report.get("quality") or {}
             quality_score = (
@@ -1046,11 +1105,35 @@ class LibraryStore:
                         now,
                     ),
                 )
-                if cur.rowcount > 0:
+                created = cur.rowcount > 0
+                if created:
                     self._conn.execute(
                         "UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id)
                     )
-            return self.get_arrangement(arr_id)
+            return self.get_arrangement(arr_id), created
+
+    def arrange_song(
+        self,
+        song_id: str,
+        *,
+        profile_id: str = DEFAULT_PROFILE_ID,
+        options: ArrangeOptions | None = None,
+        parent_id: str | None = None,
+        label: str | None = None,
+        transcription_id: str | None = None,
+        stop_token: StopToken | None = None,
+    ) -> ArrangementRecord:
+        """Create (or return existing identical) arrangement version for a song."""
+        rec, _created = self.arrange_song_with_status(
+            song_id,
+            profile_id=profile_id,
+            options=options,
+            parent_id=parent_id,
+            label=label,
+            transcription_id=transcription_id,
+            stop_token=stop_token,
+        )
+        return rec
 
     def save_edited_arrangement(
         self,

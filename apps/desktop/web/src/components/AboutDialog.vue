@@ -16,6 +16,11 @@ const THIRD_PARTY: Array<{ name: string; license: string }> = [
   { name: "mido / jsonschema", license: "MIT" },
   { name: "Vue 3 / Vite", license: "MIT" },
   {
+    name: "试听原声乐器采样 (VCSL)",
+    license:
+      "CC0-1.0 (Public Domain, github.com/sgossner/VCSL — Steinway B 钢琴、音乐会竖琴与拨弦采样)",
+  },
+  {
     name: "可选外部引擎与引导工具",
     license:
       "FFmpeg (LGPL/GPL 构建), Basic Pitch (Apache-2.0), dettato (Apache-2.0, 部分辅助训练数据含非商用条款), uv (Apache-2.0 / MIT)",

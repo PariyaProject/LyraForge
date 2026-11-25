@@ -660,3 +660,23 @@
    - [PR #31](https://github.com/PariyaProject/LyraForge/pull/31)（`4ff0089`）→ PR CI [Run #45536932945](https://github.com/PariyaProject/LyraForge/actions/runs/45536932945) 4 项活动作业全部 `success`；
    - Squash 合入 `main`（`7c1d78e`）→ 合并后 `main` CI [Run #45537569869](https://github.com/PariyaProject/LyraForge/actions/runs/45537569869) 全部 5 作业 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物：`LyraForge-dev-20261125-7c1d78e-windows-x64.zip`、`LyraForge-dev-20261125-7c1d78e-macos-arm64.zip`、`SHA256SUMS.txt`；
    - **验证边界**：浏览器 Web Audio / 离线合成的钢琴与风物之诗琴音色均为纯跨平台数学泛音合成（无游戏提取音频样本），与《原神》游戏客户端真实音色听感对比、以及 Windows 物理机长曲工作流体验待用户在 `dev-latest` 上确认。
+
+
+## 33. Round 31：CC0 真实原声钢琴/竖琴采样音源、多轨同步试听、实时参数预览差分与工作室 UX 整合
+
+1. **核心功能与架构升级**：
+   - **合规 CC0-1.0 真实采样音库与丰满和弦混音（严禁提取游戏本体音频）**：新建 [scripts/build_cc0_samples.py](../scripts/build_cc0_samples.py)，从锁定提交的开源 `sgossner/VCSL`（`c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e`，`CC0-1.0` Public Domain）拉取 Steinway Model B 三角钢琴（9 锚点）、音乐会竖琴（6 锚点）与十三弦古筝（5 锚点），经 `afconvert`/Python 降采样与首尾无Click裁剪封装为 `22,050 Hz` 单声道 16-bit WAV（总计 `1.4 MB`，附带 SHA-256 `manifest.json`）并纳入 [packaging/lyraforge.spec](../packaging/lyraforge.spec) 打包校验；升级 [synth.py](../src/lyraforge/preview/synth.py)（真采样线性重采样 + 同音高前音轻阻尼防梳状滤波 + Soft-Knee 和弦压限）、[app.py](../src/lyraforge/api/app.py)（`/v1/preview/samples/manifest` 与路径白名单校验 `/v1/preview/samples/{pack}/{filename}`）及浏览器 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)（样本预加载解码 + `DynamicsCompressorNode` + 微量厅堂混响母线、移除粗糙锯齿音兜底）。
+   - **Piano Roll 多轨同步复选试听与全时长不早退**：将 `focusedTrackIndex` 升级为 `audibleTracks: Set<number> | null` 复选框 + 独立 `独奏` 按钮（可同时勾听任意音轨组合）；`startDraftSequencer()` 新增 `getTotalDurationMs` 回调，切换/独奏短音轨或静音轨时继续推进至全曲结束，不再中途突停归零；重构 `onTimelineScroll()` / `lastProgrammaticScrollLeft` / `onScrollPointerDown()` 与纯手动 `回到播放点` 按钮，彻底取消 400 ms 自动强拉机制。
+   - **中文音轨映射、实时参数谱面差分预览与工作室单流化收口**：新增 [trackNames.ts](../apps/desktop/web/src/utils/trackNames.ts) 将常见英文分轨名及 GM 乐器名译为直观中文（如 `Vocal Lead` → `人声主旋律`、`Accompaniment` → `伴奏`）并标注音域（`C4–E5`）及提示原始轨名与调整详情；新增无落盘 `POST /v1/studio/preview-arrange`（配合 [store.py](../src/lyraforge/library/store.py) 有界 `_load_midi_cached` 解析缓存），调整工作室参数时在 Piano Roll 上叠加「删减（红虚线）/ 新增（绿虚线）」幽灵预览与 `仅看改后谱面` / `应用并生成版本` / `还原当前参数`；整合顶栏与右侧检查器为「一键预设 + 核心编曲设置（含编曲风格微型示意图）+ 折叠专业微调 + 折叠可选 A/B 对比」，并在 `POST /v1/jobs/arrange` 透传 `created` 字段以明确提示「已新建版本」或「匹配已有同参数版本（未重复新建）」。
+2. **本地全量验证与性能实测（最终代码定稿后实测）**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile` → 通过（`39ms`）；
+   - `pnpm --dir apps/desktop/web exec vue-tsc --noEmit` → 退出码 `0`；
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **296 passed, 2 warnings in 67.37s**，总覆盖率 **83.92%**（含 `test_preview.py` CC0 清单 SHA-256 校验 / 路径穿越拦截 / 四音色无削波回归，以及 `test_api.py` `/v1/preview/samples/*` 鉴权、`/v1/studio/preview-arrange` 零落盘与 `/v1/jobs/arrange` `created` 去重状态验证）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 6 passed (6), Tests 25 passed (25)**（含 `trackNames.spec.ts`、`PianoRollInteractions.spec.ts` 多轨复选试听 / 短轨续播不早退 / 手动拖放不自动回正 / 幽灵预览差分、`App.spec.ts` 实时参数预览与新建/去重提示回归）；
+   - `pnpm --dir apps/desktop/web build` → `50 modules transformed`，`built in 1.18s`（CSS `60.59 kB` / JS `290.87 kB`）；
+   - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
+   - **纯 Python 合成基准（`genshin.harmonic_keys.v1`, 150 音富和弦谱）**：`0.829s` 生成 `459,566` 字节 WAV；采样包总占用 `1.4 MB`；
+   - **CSS 设计规范扫描**：`apps/desktop/web/src/` 下除 `tokens.css` 外零字面量色值。
+3. **验证边界说明**：
+   - 浏览器真声样本解码与《原神》实机谐律键琴真机演奏听感仍待维护者在双平台 CI 产物或本地桌面窗中实际试听确认（本轮自动化测试运行在 `FakeAudioCtx` 与本地 FastAPI/Pytest 环境下）。
