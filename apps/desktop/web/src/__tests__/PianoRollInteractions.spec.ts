@@ -1,6 +1,7 @@
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PianoRollEditor from "../components/PianoRollEditor.vue";
+import { auditionMidiNote } from "../utils/webAudioPreview";
 
 const mountedWrappers: VueWrapper[] = [];
 function trackMount<T extends VueWrapper>(w: T): T {
@@ -333,7 +334,7 @@ describe("PianoRollEditor DAW interactions", () => {
       expect(playedHz.some((hz) => Math.abs(hz - 262) <= 2)).toBe(true);
       expect(playedHz.some((hz) => Math.abs(hz - 392) <= 2)).toBe(false);
 
-      // Vertical-only scrolling, vertical wheel, and vertical scrollbar drag must NEVER detach follow!
+      // Vertical-only scrolling, vertical wheel, scrollbar drag & track toggles must NEVER detach follow!
       scrollEl.getBoundingClientRect = () =>
         ({ left: 0, top: 0, width: 480, height: 220, right: 496, bottom: 220, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
       scrollEl.scrollTop = 140;
@@ -341,6 +342,7 @@ describe("PianoRollEditor DAW interactions", () => {
       await wrapper.find(".pr-scroll").trigger("wheel", { deltaY: 120, deltaX: 0 });
       const PointerOrMouse = globalThis.PointerEvent ?? MouseEvent;
       await wrapper.find(".pr-scroll").trigger("pointerdown", { clientX: 490, clientY: 110 });
+      await wrapper.find(".pr-legend > .pr-legend-btn").trigger("click");
       expect(PointerOrMouse).toBeDefined();
       await wrapper.vm.$nextTick();
       expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
@@ -364,10 +366,28 @@ describe("PianoRollEditor DAW interactions", () => {
       expect(wrapper.find("#pr-return-playhead-btn").text()).toContain("回到播放点");
       expect(scrollEl.scrollLeft).toBe(1120);
 
-      // Clicking "回到播放点" returns to playhead & re-attaches follow
+      // Clicking "回到播放点" clears detached state & animates back to the live playhead
       await wrapper.find("#pr-return-playhead-btn").trigger("click");
       await wrapper.vm.$nextTick();
       expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
+      await vi.advanceTimersByTimeAsync(280);
+      expect(scrollEl.scrollLeft).toBeGreaterThan(800);
+
+      // Scroll BEFORE the playhead (to 0 px), focus & edit a note there, then "回到播放点" must still return!
+      scrollEl.scrollLeft = 0;
+      await wrapper.find(".pr-scroll").trigger("scroll");
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(true);
+      expect(wrapper.find("#pr-return-playhead-btn").text()).toContain("回到播放点 (");
+      const firstNote = wrapper.find(".pr-note");
+      (firstNote.element as HTMLButtonElement).focus();
+      await firstNote.trigger("pointerdown", { button: 0, clientX: 0, clientY: 10 });
+      window.dispatchEvent(new PointerOrMouse("pointerup", { clientX: 0, clientY: 10 }));
+      await wrapper.find(".piano-roll-editor").trigger("keydown", { key: "ArrowUp" });
+      await wrapper.find("#pr-return-playhead-btn").trigger("click");
+      await vi.advanceTimersByTimeAsync(280);
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
+      expect(scrollEl.scrollLeft).toBeGreaterThan(800);
 
       // Scroll ahead again, then press F to snap back & reattach
       scrollEl.scrollLeft = 2400;
@@ -506,10 +526,10 @@ describe("PianoRollEditor DAW interactions", () => {
 
       await wrapper.find("#pr-draft-toggle").trigger("click");
 
-      // Render live parameter preview diff overlay (1 removed Bass note + 1 added Piano note)
+      // Render live parameter preview: clean "after" mode by default (zero overlap), plus micro-shift dedup
       const previewEvents = [
         baseEvents[0],
-        baseEvents[1],
+        { ...baseEvents[1], at_ms: 15_092 }, // micro-shifted +12ms on mid_1 / track 1
         { at_ms: 15_200, hold_ms: 80, key_id: "high_1", mapped_pitch: 72, source_track: 1, adjustments: [] },
         baseEvents[3],
       ];
@@ -529,10 +549,21 @@ describe("PianoRollEditor DAW interactions", () => {
       const previewBar = wrapper.find(".pr-preview-bar");
       expect(previewBar.exists()).toBe(true);
       expect(previewBar.text()).toContain("删减 -1");
-      expect(previewBar.text()).toContain("新增/移位 +1");
+      expect(previewBar.text()).toContain("新增 +1");
+      expect(previewBar.text()).toContain("微调 1");
       expect(previewBar.text()).toContain("将新建独立版本");
-      expect(wrapper.find(".pr-note.is-ghost-removed").exists()).toBe(true);
-      expect(wrapper.find(".pr-note-ghost-added").exists()).toBe(true);
+      // Default "after" mode renders aligned preview notes with zero overlaid ghost deletions
+      expect(wrapper.find(".pr-note.is-ghost-removed").exists()).toBe(false);
+      expect(wrapper.find(".pr-note.is-preview-added").exists()).toBe(true);
+      expect(wrapper.find(".pr-note.is-preview-shifted").exists()).toBe(true);
+
+      // Switching to optional "对照原版" displays removed red + shifted accent + added green without 1px overlap
+      const diffBtn = previewBar.findAll("button").find((b) => b.text().trim() === "对照原版")!;
+      await diffBtn.trigger("click");
+      await wrapper.vm.$nextTick();
+      expect(wrapper.findAll(".pr-note.is-ghost-removed")).toHaveLength(1);
+      expect(wrapper.findAll(".pr-note-ghost-shifted")).toHaveLength(1);
+      expect(wrapper.findAll(".pr-note-ghost-added")).toHaveLength(1);
 
       const applyPreviewBtn = previewBar.findAll("button").find((b) => b.text().includes("应用并生成版本"))!;
       await applyPreviewBtn.trigger("click");
@@ -545,5 +576,55 @@ describe("PianoRollEditor DAW interactions", () => {
       (window as unknown as { AudioContext: unknown }).AudioContext = origAudioCtx;
       vi.useRealTimers();
     }
+  });
+
+  it("damps same-pitch retrigger with cancelAndHoldAtTime and zero-cross linear ramp", () => {
+    const cancelAndHoldAtTime = vi.fn();
+    const linearRampToValueAtTime = vi.fn();
+    const setValueAtTime = vi.fn();
+    const exponentialRampToValueAtTime = vi.fn();
+    const oscStops: Array<ReturnType<typeof vi.fn>> = [];
+
+    const mockCtx = {
+      state: "running",
+      currentTime: 1.0,
+      destination: {},
+      createGain: () => ({
+        gain: {
+          setValueAtTime,
+          linearRampToValueAtTime,
+          exponentialRampToValueAtTime,
+          cancelAndHoldAtTime,
+        },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      }),
+      createBiquadFilter: () => ({
+        type: "lowpass",
+        frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      }),
+      createOscillator: () => {
+        const stopFn = vi.fn();
+        oscStops.push(stopFn);
+        return {
+          type: "sine",
+          frequency: { setValueAtTime: vi.fn() },
+          connect: vi.fn(),
+          start: vi.fn(),
+          stop: stopFn,
+        };
+      },
+    } as unknown as AudioContext;
+
+    auditionMidiNote(60, 96, 40, mockCtx, "piano", 1.0);
+    expect(cancelAndHoldAtTime).not.toHaveBeenCalled();
+
+    // Retrigger same pitch at +250 ms while first note's Genshin sustain tail is still ringing
+    auditionMidiNote(60, 96, 40, mockCtx, "piano", 1.25);
+    expect(cancelAndHoldAtTime).toHaveBeenCalledWith(1.25);
+    expect(linearRampToValueAtTime).toHaveBeenCalledWith(0, 1.25 + 0.011);
+    expect(oscStops[0]).toHaveBeenCalledWith(1.25 + 0.011 + 0.004);
   });
 });

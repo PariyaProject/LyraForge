@@ -78,6 +78,64 @@ export function arrangementTitle(arr: ArrangementRecord): string {
   return `${style} · ${transpose} · ${arr.speed}x${stratSuffix}`;
 }
 
+export interface PlaybackTimingPreset {
+  id: string;
+  name: string;
+  summary: string;
+  releaseGapMs: string;
+  keyHoldMs: string;
+  latePolicy: LateEventPolicy;
+}
+
+export const PLAYBACK_TIMING_PRESETS: readonly PlaybackTimingPreset[] = [
+  {
+    id: "standard",
+    name: "标准推荐（60 FPS 默认）",
+    summary: "间隙 20 ms · 按住 25 ms · 平移防堆音",
+    releaseGapMs: "20",
+    keyHoldMs: "25",
+    latePolicy: "shift_clock",
+  },
+  {
+    id: "fast",
+    name: "高速琶音（高帧率快曲）",
+    summary: "间隙 15 ms · 按住 20 ms · 适合密集琶音",
+    releaseGapMs: "15",
+    keyHoldMs: "20",
+    latePolicy: "shift_clock",
+  },
+  {
+    id: "safe",
+    name: "稳健防吞音（掉帧/偶发漏音）",
+    summary: "间隙 35 ms · 按住 30 ms · 留足按键恢复",
+    releaseGapMs: "35",
+    keyHoldMs: "30",
+    latePolicy: "shift_clock",
+  },
+  {
+    id: "strict",
+    name: "严格卡拍（合奏不拖慢）",
+    summary: "间隙 20 ms · 按住 25 ms · 超时丢弃保节拍",
+    releaseGapMs: "20",
+    keyHoldMs: "25",
+    latePolicy: "drop_late",
+  },
+];
+
+export interface PlaybackTimingAdvice {
+  tier: "excellent" | "normal" | "jittery";
+  headline: string;
+  detail: string;
+  p95Ms: number;
+  maxMs: number;
+  driftMs: number;
+  recommendedPresetId: string;
+  recommendedPresetName: string;
+  recommendedGapMs: string;
+  recommendedHoldMs: string;
+  recommendedPolicy: LateEventPolicy;
+}
+
 const DEFAULT_PIPELINES: PipelineInfo[] = [
   {
     id: "direct",
@@ -228,6 +286,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const selectedCalibrationPatternId = ref("same_key_retrigger");
   const calibrationDryResult = ref<CalibrationRunDryResponse | null>(null);
   const calibrationAnalyzeResult = ref<CalibrationAnalyzeResponse | null>(null);
+  const playbackTimingAdvice = ref<PlaybackTimingAdvice | null>(null);
   const prepared = ref<PlaybackPrepareResponse | null>(null);
   const playbackStatus = ref<PlaybackStatusResponse | null>(null);
   const queue = ref<QueueState>({ items: [], index: 0, mode: "dry-run", realtime: false });
@@ -1699,6 +1758,92 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
+  function applyPlaybackTimingPreset(presetId: string): void {
+    const preset = PLAYBACK_TIMING_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    realtime.value = true;
+    minKeyReleaseGapInput.value = preset.releaseGapMs;
+    keyHoldMsInput.value = preset.keyHoldMs;
+    lateEventPolicy.value = preset.latePolicy;
+    reportOk(
+      `已套用「${preset.name}」（释放间隙 ${preset.releaseGapMs} ms / 按住 ${preset.keyHoldMs} ms）`,
+    );
+  }
+
+  async function handleQuickTimingCheck(): Promise<void> {
+    busy.value = true;
+    errorMessage.value = "";
+    try {
+      const res = await api.runDryCalibration({
+        pattern_id: "same_key_retrigger",
+        instrument_profile_id: selectedProfileId.value,
+        realtime: true,
+      });
+      calibrationDryResult.value = res;
+      const p95Ms = Number((res.result.p95_lateness_ms ?? 0).toFixed(2));
+      const maxMs = Number((res.result.max_lateness_ms ?? 0).toFixed(2));
+      const driftMs = Number(Math.abs(res.drift_ms ?? 0).toFixed(2));
+
+      let preset = PLAYBACK_TIMING_PRESETS[0];
+      let tier: PlaybackTimingAdvice["tier"] = "normal";
+      let headline = "本机定时调度正常（轻微系统抖动）";
+      let detail =
+        "建议使用「标准推荐」参数（间隙 20 ms / 按住 25 ms），大多数 60 FPS 《原神》窗口可稳定发声。";
+
+      if (p95Ms <= 1.5 && maxMs <= 3.5 && driftMs <= 10) {
+        tier = "excellent";
+        if (p95Ms <= 0.8 && maxMs <= 2.5) {
+          preset = PLAYBACK_TIMING_PRESETS[1];
+          headline = "本机定时调度极稳（低抖动）";
+          detail =
+            "系统定时器响应极快，可使用「高速琶音」参数（间隙 15 ms / 按住 20 ms）以还原密集快音。";
+        } else {
+          preset = PLAYBACK_TIMING_PRESETS[0];
+          headline = "本机定时调度极稳";
+          detail =
+            "定时器精度良好，推荐保持「标准推荐」参数（间隙 20 ms / 按住 25 ms），兼顾速度与防吞音。";
+        }
+      } else if (p95Ms > 6 || maxMs > 14 || driftMs > 25) {
+        tier = "jittery";
+        preset = PLAYBACK_TIMING_PRESETS[2];
+        headline = "检测到定时抖动偏大（建议放大防吞音余量）";
+        detail =
+          "后台负载或省电调度造成定时波动，强烈建议使用「稳健防吞音」参数（间隙 35 ms / 按住 30 ms）。";
+      }
+
+      playbackTimingAdvice.value = {
+        tier,
+        headline,
+        detail,
+        p95Ms,
+        maxMs,
+        driftMs,
+        recommendedPresetId: preset.id,
+        recommendedPresetName: preset.name,
+        recommendedGapMs: preset.releaseGapMs,
+        recommendedHoldMs: preset.keyHoldMs,
+        recommendedPolicy: preset.latePolicy,
+      };
+      reportOk(`${headline}：推荐「${preset.name}」`);
+    } catch (err) {
+      reportError((err as Error).message);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  function applyRecommendedTimingAdvice(): void {
+    const advice = playbackTimingAdvice.value;
+    if (!advice) return;
+    realtime.value = true;
+    minKeyReleaseGapInput.value = advice.recommendedGapMs;
+    keyHoldMsInput.value = advice.recommendedHoldMs;
+    lateEventPolicy.value = advice.recommendedPolicy;
+    reportOk(
+      `已应用推荐参数（释放间隙 ${advice.recommendedGapMs} ms / 按住 ${advice.recommendedHoldMs} ms）`,
+    );
+  }
+
   async function handleRunDryCalibration(): Promise<void> {
     busy.value = true;
     errorMessage.value = "";
@@ -2163,6 +2308,10 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedCalibrationPatternId,
     calibrationDryResult,
     calibrationAnalyzeResult,
+    playbackTimingAdvice,
+    applyPlaybackTimingPreset,
+    handleQuickTimingCheck,
+    applyRecommendedTimingAdvice,
     prepared,
     playbackStatus,
     allowedTitlesSetting,
