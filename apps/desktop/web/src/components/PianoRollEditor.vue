@@ -1,29 +1,39 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { PerformanceEventItem, ProfileKeyDef, SongTrackInfo } from "../api";
+import type { PerformanceEventItem, PreviewTimbre, ProfileKeyDef, SongTrackInfo } from "../api";
 import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
 import {
   auditionMidiNote,
+  resolvePreviewTimbre,
   startDraftSequencer,
   type DraftSequencer,
 } from "../utils/webAudioPreview";
 import StudioIcon from "./StudioIcon.vue";
 
-const props = defineProps<{
-  keys: ProfileKeyDef[];
-  events: PerformanceEventItem[];
-  saving?: boolean;
-  playheadMs?: number;
-  isPlaying?: boolean;
-  arrangementId?: string | null;
-  tracks?: SongTrackInfo[];
-  melodyTrack?: number | null;
-  fixedVelocityPreview?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    keys: ProfileKeyDef[];
+    events: PerformanceEventItem[];
+    saving?: boolean;
+    playheadMs?: number;
+    isPlaying?: boolean;
+    arrangementId?: string | null;
+    tracks?: SongTrackInfo[];
+    melodyTrack?: number | null;
+    fixedVelocityPreview?: boolean;
+    profileId?: string | null;
+    previewTimbre?: PreviewTimbre;
+    shortcutsActive?: boolean;
+  }>(),
+  {
+    shortcutsActive: true,
+  },
+);
 
 const emit = defineEmits<{
   save: [payload: { events: PerformanceEventItem[]; label: string }];
   seek: [ms: number];
+  "update:previewTimbre": [timbre: PreviewTimbre];
 }>();
 
 const ROW_HEIGHT_PX = 26;
@@ -74,10 +84,30 @@ const snapMs = ref(50);
 const editorMode = ref<"select" | "add">("select");
 const followPlayhead = ref(true);
 
-// Web Audio draft sequencer state
+// Web Audio draft sequencer & lyric-style smart follow state
+const internalTimbre = ref<PreviewTimbre>(props.previewTimbre ?? "auto");
+watch(
+  () => props.previewTimbre,
+  (val) => {
+    if (val !== undefined) internalTimbre.value = val;
+  },
+);
+const activeTimbre = computed(() => props.previewTimbre ?? internalTimbre.value);
+const resolvedTimbre = computed(() => resolvePreviewTimbre(props.profileId, activeTimbre.value));
+function onTimbreSelectChange(event: Event): void {
+  const next = (event.target as HTMLSelectElement).value as PreviewTimbre;
+  internalTimbre.value = next;
+  emit("update:previewTimbre", next);
+}
+
 const draftPlaying = ref(false);
 const draftPlayheadMs = ref(0);
+const followDetached = ref(false);
+const playheadDirection = ref<"left" | "right" | "visible">("visible");
 let activeSequencer: DraftSequencer | null = null;
+let isProgrammaticScroll = false;
+let programmaticScrollTimer: number | null = null;
+let reattachTimer: number | null = null;
 
 // Context menu state
 const contextMenu = ref<{ idx: number; x: number; y: number } | null>(null);
@@ -117,6 +147,123 @@ function stopDraftPlayback(): void {
   draftPlaying.value = false;
 }
 
+function getAudibleDraftEvents(): PerformanceEventItem[] {
+  if (focusedTrackIndex.value === null) {
+    return workingEvents.value;
+  }
+  return workingEvents.value.filter(
+    (ev) => (ev.source_track ?? 0) === focusedTrackIndex.value,
+  );
+}
+
+function formatClockTime(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function updatePlayheadDirection(): void {
+  const el = scrollEl.value;
+  if (!el || el.clientWidth <= 0) {
+    playheadDirection.value = "visible";
+    return;
+  }
+  const laneViewWidth = Math.max(80, el.clientWidth - KEY_COLUMN_PX);
+  const px = activePlayheadMs.value * pxPerMs.value;
+  if (px < el.scrollLeft + 16) {
+    playheadDirection.value = "left";
+  } else if (px > el.scrollLeft + laneViewWidth - 48) {
+    playheadDirection.value = "right";
+  } else {
+    playheadDirection.value = "visible";
+  }
+}
+
+function scrollPlayheadIntoView(ratio = 0.3): void {
+  const el = scrollEl.value;
+  if (!el) return;
+  const laneViewWidth = Math.max(120, el.clientWidth - KEY_COLUMN_PX);
+  const targetLeft = Math.max(
+    0,
+    Math.round(activePlayheadMs.value * pxPerMs.value - laneViewWidth * ratio),
+  );
+  if (programmaticScrollTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(programmaticScrollTimer);
+  }
+  isProgrammaticScroll = true;
+  el.scrollLeft = targetLeft;
+  updatePlayheadDirection();
+  if (typeof window !== "undefined") {
+    programmaticScrollTimer = window.setTimeout(() => {
+      isProgrammaticScroll = false;
+      programmaticScrollTimer = null;
+    }, 60);
+  } else {
+    isProgrammaticScroll = false;
+  }
+}
+
+function returnToPlayhead(): void {
+  if (reattachTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(reattachTimer);
+    reattachTimer = null;
+  }
+  followPlayhead.value = true;
+  followDetached.value = false;
+  scrollPlayheadIntoView(0.3);
+}
+
+function onTimelineScroll(): void {
+  updatePlayheadDirection();
+  if (isProgrammaticScroll) return;
+  if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value) return;
+  followDetached.value = true;
+  if (reattachTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(reattachTimer);
+    reattachTimer = null;
+  }
+  if (playheadDirection.value === "visible" && typeof window !== "undefined") {
+    reattachTimer = window.setTimeout(() => {
+      updatePlayheadDirection();
+      if (playheadDirection.value === "visible") {
+        followDetached.value = false;
+      }
+      reattachTimer = null;
+    }, 400);
+  }
+}
+
+function startDraftFrom(startMs: number): void {
+  if (workingEvents.value.length === 0) return;
+  stopDraftPlayback();
+  const clampedStart = Math.max(0, Math.min(startMs, totalDurationMs.value));
+  draftPlaying.value = true;
+  draftPlayheadMs.value = clampedStart;
+  followDetached.value = false;
+  updatePlayheadDirection();
+  activeSequencer = startDraftSequencer(
+    getAudibleDraftEvents,
+    clampedStart,
+    {
+      onTick: (posMs) => {
+        draftPlayheadMs.value = posMs;
+      },
+      onEnded: () => {
+        activeSequencer = null;
+        draftPlaying.value = false;
+        draftPlayheadMs.value = 0;
+        followDetached.value = false;
+        updatePlayheadDirection();
+      },
+    },
+    {
+      getFixedVelocity: () => Boolean(props.fixedVelocityPreview),
+      getTimbre: () => resolvedTimbre.value,
+    },
+  );
+}
+
 function toggleDraftPlayback(): void {
   if (draftPlaying.value) {
     stopDraftPlayback();
@@ -130,23 +277,37 @@ function toggleDraftPlayback(): void {
   } else if ((props.playheadMs ?? 0) > 0 && (props.playheadMs ?? 0) < maxDur - 200) {
     startMs = props.playheadMs ?? 0;
   }
-  draftPlaying.value = true;
-  draftPlayheadMs.value = startMs;
-  activeSequencer = startDraftSequencer(
-    workingEvents.value,
-    startMs,
-    {
-      onTick: (posMs) => {
-        draftPlayheadMs.value = posMs;
-      },
-      onEnded: () => {
-        activeSequencer = null;
-        draftPlaying.value = false;
-        draftPlayheadMs.value = 0;
-      },
-    },
-    { fixedVelocity: Boolean(props.fixedVelocityPreview) },
-  );
+  startDraftFrom(startMs);
+}
+
+function restartDraftPlayback(): void {
+  if (workingEvents.value.length === 0) return;
+  const el = scrollEl.value;
+  if (el) {
+    if (programmaticScrollTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(programmaticScrollTimer);
+    }
+    isProgrammaticScroll = true;
+    el.scrollLeft = 0;
+    if (typeof window !== "undefined") {
+      programmaticScrollTimer = window.setTimeout(() => {
+        isProgrammaticScroll = false;
+        programmaticScrollTimer = null;
+      }, 60);
+    } else {
+      isProgrammaticScroll = false;
+    }
+  }
+  startDraftFrom(0);
+}
+
+function rewindDraftPlayhead(): void {
+  draftPlayheadMs.value = 0;
+  followDetached.value = false;
+  if (draftPlaying.value && activeSequencer) {
+    activeSequencer.seek(0);
+  }
+  scrollPlayheadIntoView(0);
 }
 
 function scrollToMedianPitch(): void {
@@ -166,9 +327,13 @@ watch(
   () => [props.events, props.arrangementId] as const,
   ([next, arrId]) => {
     stopDraftPlayback();
+    const switchedArrangement = arrId !== undefined && arrId !== lastArrangementId;
+    if (switchedArrangement) {
+      draftPlayheadMs.value = 0;
+      followDetached.value = false;
+    }
     const prevScrollLeft = scrollEl.value?.scrollLeft ?? 0;
     const prevScrollTop = scrollEl.value?.scrollTop ?? 0;
-    const switchedArrangement = arrId !== undefined && arrId !== lastArrangementId;
     lastArrangementId = arrId;
 
     const initial = cloneEvents(next);
@@ -189,13 +354,26 @@ watch(
     void nextTick(() => {
       const el = scrollEl.value;
       if (!el) return;
-      if (!switchedArrangement || (prevScrollLeft === 0 && prevScrollTop === 0)) {
+      if (switchedArrangement) {
+        isProgrammaticScroll = true;
+        el.scrollLeft = 0;
+        scrollToMedianPitch();
+        if (typeof window !== "undefined") {
+          window.setTimeout(() => {
+            isProgrammaticScroll = false;
+            updatePlayheadDirection();
+          }, 60);
+        } else {
+          isProgrammaticScroll = false;
+        }
+      } else if (prevScrollLeft === 0 && prevScrollTop === 0) {
         scrollToMedianPitch();
       } else {
         const maxLeft = Math.max(0, timelineWidthPx.value + KEY_COLUMN_PX - el.clientWidth);
         el.scrollLeft = Math.min(prevScrollLeft, maxLeft);
         el.scrollTop = prevScrollTop;
       }
+      updatePlayheadDirection();
     });
   },
 );
@@ -237,25 +415,43 @@ const timelineWidthPx = computed(() =>
   Math.max(540, Math.ceil(totalDurationMs.value * pxPerMs.value) + 120),
 );
 
-const activePlayheadMs = computed(() =>
-  draftPlaying.value ? draftPlayheadMs.value : Math.max(0, props.playheadMs ?? 0),
-);
+const activePlayheadMs = computed(() => {
+  if (draftPlaying.value || draftPlayheadMs.value > 0) {
+    return draftPlayheadMs.value;
+  }
+  return Math.max(0, props.playheadMs ?? 0);
+});
 
 const playheadLeftPx = computed(() => Math.round(activePlayheadMs.value * pxPerMs.value));
 
 const showPlayhead = computed(
-  () => draftPlaying.value || Boolean(props.isPlaying) || (props.playheadMs ?? 0) > 0,
+  () =>
+    draftPlaying.value ||
+    draftPlayheadMs.value > 0 ||
+    Boolean(props.isPlaying) ||
+    (props.playheadMs ?? 0) > 0,
 );
 
+watch(followPlayhead, (on) => {
+  if (on) {
+    followDetached.value = false;
+    if (draftPlaying.value || props.isPlaying) {
+      scrollPlayheadIntoView(0.3);
+    }
+  }
+});
+
 watch(activePlayheadMs, (ms) => {
-  if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value) return;
+  updatePlayheadDirection();
+  if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value || followDetached.value) {
+    return;
+  }
   const el = scrollEl.value;
   if (!el || el.clientWidth <= 0) return;
-  const playheadCanvasPx = KEY_COLUMN_PX + ms * pxPerMs.value;
-  const visibleLeft = el.scrollLeft + KEY_COLUMN_PX + 24;
-  const visibleRight = el.scrollLeft + el.clientWidth - 72;
-  if (playheadCanvasPx > visibleRight || playheadCanvasPx < visibleLeft) {
-    el.scrollLeft = Math.max(0, playheadCanvasPx - el.clientWidth * 0.3);
+  const laneViewWidth = Math.max(80, el.clientWidth - KEY_COLUMN_PX);
+  const px = ms * pxPerMs.value;
+  if (px > el.scrollLeft + laneViewWidth - 48 || px < el.scrollLeft + 16) {
+    scrollPlayheadIntoView(0.3);
   }
 });
 
@@ -432,11 +628,11 @@ function setSingleSelection(idx: number | null): void {
 
 function auditionEvent(ev: PerformanceEventItem): void {
   const vel = props.fixedVelocityPreview ? 96 : (ev.velocity ?? 92);
-  auditionMidiNote(ev.mapped_pitch, vel, ev.hold_ms);
+  auditionMidiNote(ev.mapped_pitch, vel, ev.hold_ms, undefined, resolvedTimbre.value);
 }
 
 function auditionKey(key: ProfileKeyDef): void {
-  auditionMidiNote(key.pitch, 96, 260);
+  auditionMidiNote(key.pitch, 96, 260, undefined, resolvedTimbre.value);
 }
 
 function commitChange(
@@ -785,8 +981,13 @@ function onRulerClick(event: MouseEvent): void {
   const track = event.currentTarget as HTMLElement;
   const rect = track.getBoundingClientRect();
   const relX = Math.max(0, event.clientX - rect.left);
-  const ms = Math.max(0, Math.round(relX / pxPerMs.value));
+  const ms = Math.max(0, Math.min(totalDurationMs.value, Math.round(relX / pxPerMs.value)));
   draftPlayheadMs.value = ms;
+  followDetached.value = false;
+  if (draftPlaying.value && activeSequencer) {
+    activeSequencer.seek(ms);
+  }
+  updatePlayheadDirection();
   emit("seek", ms);
 }
 
@@ -1116,11 +1317,6 @@ function onEditorKeydown(event: KeyboardEvent): void {
     duplicateSelected();
     return;
   }
-  if (event.code === "Space") {
-    event.preventDefault();
-    toggleDraftPlayback();
-    return;
-  }
   if (event.key === "ArrowUp") {
     event.preventDefault();
     if (event.shiftKey) shiftSelectedOctave(1);
@@ -1156,10 +1352,50 @@ function emitSave(): void {
   });
 }
 
+function onWindowShortcutKeydown(event: KeyboardEvent): void {
+  if (props.shortcutsActive === false || event.defaultPrevented) return;
+  if (typeof document !== "undefined" && document.querySelector("dialog[open]")) return;
+  const target = event.target as HTMLElement | null;
+  const tag = target?.tagName;
+  if (
+    tag === "INPUT" ||
+    tag === "SELECT" ||
+    tag === "TEXTAREA" ||
+    target?.isContentEditable
+  ) {
+    return;
+  }
+  if (event.code === "Space") {
+    event.preventDefault();
+    if (event.shiftKey) {
+      restartDraftPlayback();
+    } else {
+      toggleDraftPlayback();
+    }
+    return;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    rewindDraftPlayhead();
+    return;
+  }
+  if (
+    (event.code === "KeyF" || event.key.toLowerCase() === "f") &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey
+  ) {
+    event.preventDefault();
+    returnToPlayhead();
+  }
+}
+
 onMounted(() => {
   void nextTick(scrollToMedianPitch);
   if (typeof window !== "undefined") {
     window.addEventListener("mousedown", onGlobalClick);
+    window.addEventListener("keydown", onWindowShortcutKeydown);
   }
 });
 
@@ -1167,8 +1403,17 @@ onBeforeUnmount(() => {
   stopDraftPlayback();
   stopDragListeners();
   stopMarqueeListeners();
+  if (programmaticScrollTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(programmaticScrollTimer);
+    programmaticScrollTimer = null;
+  }
+  if (reattachTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(reattachTimer);
+    reattachTimer = null;
+  }
   if (typeof window !== "undefined") {
     window.removeEventListener("mousedown", onGlobalClick);
+    window.removeEventListener("keydown", onWindowShortcutKeydown);
   }
 });
 </script>
@@ -1196,16 +1441,44 @@ onBeforeUnmount(() => {
           放弃修改
         </button>
         <button
+          id="pr-draft-toggle"
           type="button"
           class="secondary btn-sm"
           :class="{ 'active-pill': draftPlaying }"
           :disabled="workingEvents.length === 0"
-          title="快捷键 Space：直接用 Web Audio 试听当前草稿"
+          title="快捷键 Space：在当前位置播放或暂停草稿（支持实时编辑与独奏音轨）"
           @click="toggleDraftPlayback"
         >
           <StudioIcon :name="draftPlaying ? 'stop' : 'play'" :size="13" />
-          {{ draftPlaying ? "停止草稿" : "试听草稿" }}
+          {{ draftPlaying ? "暂停草稿" : draftPlayheadMs > 0 ? "继续草稿" : "试听草稿" }}
         </button>
+        <button
+          id="pr-draft-restart"
+          type="button"
+          class="ghost btn-sm"
+          :disabled="workingEvents.length === 0"
+          title="快捷键 Shift+Space：从 0:00 从头试听草稿"
+          @click="restartDraftPlayback"
+        >
+          从头播
+        </button>
+        <span class="hint-text tabular" aria-label="草稿播放时间">
+          {{ formatClockTime(activePlayheadMs) }} / {{ formatClockTime(totalDurationMs) }}
+        </span>
+        <select
+          id="pr-timbre-select"
+          :value="activeTimbre"
+          aria-label="试听音色"
+          class="pr-inline-select"
+          title="切换草稿与离线 WAV 试听音色"
+          @change="onTimbreSelectChange"
+        >
+          <option value="auto">音色：跟随乐器</option>
+          <option value="piano">钢琴（谐律键琴）</option>
+          <option value="lyre">拨弦（风物之诗琴）</option>
+          <option value="zither">古筝（镜花之琴）</option>
+          <option value="vintage">木弦（老旧的诗琴）</option>
+        </select>
         <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
           {{ isDirty ? "有未保存修改" : "已同步" }}
         </span>
@@ -1417,14 +1690,35 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div
-      ref="scrollEl"
-      class="pr-scroll"
-      role="region"
-      aria-label="MIDI Piano Roll 可视化编辑器"
-      @wheel="onScrollWheel"
-    >
-      <div class="pr-canvas" :style="{ width: `${timelineWidthPx + KEY_COLUMN_PX}px` }">
+    <div class="pr-viewport-wrap">
+      <button
+        v-if="(draftPlaying || isPlaying) && followDetached"
+        id="pr-return-playhead-btn"
+        type="button"
+        class="primary btn-sm pr-return-playhead-btn"
+        title="快捷键 F：回到当前播放头并恢复自动滚动跟随"
+        @click="returnToPlayhead"
+      >
+        <template v-if="playheadDirection === 'left'">
+          ← 回到播放头 ({{ formatClockTime(activePlayheadMs) }})
+        </template>
+        <template v-else-if="playheadDirection === 'right'">
+          回到播放头 ({{ formatClockTime(activePlayheadMs) }}) →
+        </template>
+        <template v-else>
+          恢复自动跟随 ({{ formatClockTime(activePlayheadMs) }})
+        </template>
+      </button>
+
+      <div
+        ref="scrollEl"
+        class="pr-scroll"
+        role="region"
+        aria-label="MIDI Piano Roll 可视化编辑器"
+        @scroll="onTimelineScroll"
+        @wheel="onScrollWheel"
+      >
+        <div class="pr-canvas" :style="{ width: `${timelineWidthPx + KEY_COLUMN_PX}px` }">
         <div class="pr-ruler" title="点击时间标尺定位试听播放头">
           <div class="pr-ruler-corner">键位 / 时间</div>
           <div class="pr-ruler-track" @click="onRulerClick">
@@ -1512,6 +1806,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+    </div>
     </div>
 
     <div

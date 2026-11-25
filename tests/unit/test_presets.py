@@ -22,6 +22,7 @@ def test_presets_cover_every_supported_profile_with_unique_ids() -> None:
     ids = [str(item["id"]) for item in presets]
     assert len(ids) == len(set(ids))
     for profile_id in (
+        "genshin.harmonic_keys.v1",
         "genshin.windsong_lyre.v1",
         "genshin.floral_zither.v1",
         "genshin.vintage_lyre.v1",
@@ -91,7 +92,7 @@ def test_presets_api_endpoint(tmp_path: Path) -> None:
 
     res = client.get("/v1/presets", headers=headers)
     assert res.status_code == 200
-    assert len(res.json()["presets"]) == 15
+    assert len(res.json()["presets"]) == 20
 
     filtered = client.get(
         "/v1/presets", params={"profile_id": "genshin.vintage_lyre.v1"}, headers=headers

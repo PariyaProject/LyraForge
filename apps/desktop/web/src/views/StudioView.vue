@@ -322,6 +322,7 @@ async function onArrangementChange(event: Event): Promise<void> {
         <div class="studio-roll-slot">
           <PianoRollEditor
             v-if="store.arrDetail.value && store.profile.value"
+            v-model:preview-timbre="store.previewTimbre.value"
             :keys="store.profile.value.keys"
             :events="store.arrDetail.value.performance.events"
             :arrangement-id="store.selectedArrId.value"
@@ -331,6 +332,7 @@ async function onArrangementChange(event: Event): Promise<void> {
             :playhead-ms="store.previewCurrentMs.value"
             :is-playing="store.previewPlaying.value"
             :fixed-velocity-preview="store.gameFixedPreview.value"
+            :profile-id="store.selectedProfileId.value"
             @save="store.handleSaveEdited"
             @seek="store.requestPreviewSeek"
           />
@@ -714,6 +716,14 @@ async function onArrangementChange(event: Event): Promise<void> {
         <details class="advanced-box">
           <summary>快捷键说明</summary>
           <dl class="inspector-dl" style="margin-block-start: var(--space-xs)">
+            <div class="inspector-dl-row">
+              <dt>草稿播放 / 从头</dt>
+              <dd><kbd>Space</kbd> / <kbd>Shift+Space</kbd></dd>
+            </div>
+            <div class="inspector-dl-row">
+              <dt>归零 / 回播放头</dt>
+              <dd><kbd>Home</kbd> / <kbd>F</kbd></dd>
+            </div>
             <div class="inspector-dl-row">
               <dt>移动音符</dt>
               <dd><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd></dd>

@@ -416,6 +416,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "default": 22050,
                 },
                 "fixed_velocity": {"type": "boolean", "default": False},
+                "timbre": {
+                    "type": "string",
+                    "enum": ["auto", "piano", "lyre", "zither", "vintage"],
+                    "default": "auto",
+                },
                 "task_id": {"type": "string"},
             },
             "required": ["arrangement_id"],
@@ -1130,11 +1135,16 @@ class MCPToolExecutor:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "arrangement_id is required")
         sr = _bound_int(args, "sample_rate", default=22050, lo=8000, hi=48000)
         fixed_vel = bool(args.get("fixed_velocity", False))
+        timbre = str(args.get("timbre") or "auto").strip().lower()
 
         def _work(task: MCPTaskRecord) -> dict[str, Any]:
             self.tasks.log(task.task_id, 0.2, "rendering preview WAV")
             wav_path = store.render_preview(
-                arr_id, sample_rate=sr, fixed_velocity=fixed_vel, stop_token=task.stop_token
+                arr_id,
+                sample_rate=sr,
+                fixed_velocity=fixed_vel,
+                timbre=timbre,
+                stop_token=task.stop_token,
             )
             out_raw = args.get("output_path")
             if out_raw:
@@ -1155,6 +1165,7 @@ class MCPToolExecutor:
                 "size_bytes": wav_path.stat().st_size,
                 "duration_ms": rec.duration_ms,
                 "fixed_velocity": fixed_vel,
+                "timbre": timbre,
             }
 
         return self._run_tracked("preview", args, req_id, stop_token, _work)

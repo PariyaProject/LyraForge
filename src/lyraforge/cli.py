@@ -454,6 +454,7 @@ def cmd_pack_import(args: argparse.Namespace) -> int:
 
 def cmd_preview(args: argparse.Namespace) -> int:
     target = args.target
+    timbre = str(getattr(args, "timbre", "auto") or "auto")
     if Path(target).is_file():
         if not args.output:
             raise LyraError(
@@ -466,12 +467,14 @@ def cmd_preview(args: argparse.Namespace) -> int:
             args.output,
             sample_rate=args.sample_rate,
             fixed_velocity=bool(getattr(args, "fixed_velocity", False)),
+            timbre=timbre,
         )
         payload: dict[str, Any] = {
             "source": target,
             "wav_path": str(out_path),
             "size_bytes": out_path.stat().st_size,
             "sample_rate": args.sample_rate,
+            "timbre": timbre,
         }
     else:
         with LibraryStore(args.data_dir) as store:
@@ -479,6 +482,7 @@ def cmd_preview(args: argparse.Namespace) -> int:
                 target,
                 sample_rate=args.sample_rate,
                 fixed_velocity=bool(getattr(args, "fixed_velocity", False)),
+                timbre=timbre,
             )
             out_path = wav_path
             if args.output:
@@ -489,6 +493,7 @@ def cmd_preview(args: argparse.Namespace) -> int:
             "wav_path": str(out_path),
             "size_bytes": out_path.stat().st_size,
             "sample_rate": args.sample_rate,
+            "timbre": timbre,
         }
     print(pretty_json(payload), end="")
     return EXIT_OK
@@ -963,6 +968,11 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("-o", "--output", default=None, help="output WAV path")
     pv.add_argument("--sample-rate", type=int, default=DEFAULT_SAMPLE_RATE)
     pv.add_argument("--fixed-velocity", action="store_true")
+    pv.add_argument(
+        "--timbre",
+        choices=["auto", "piano", "lyre", "zither", "vintage"],
+        default="auto",
+    )
     pv.add_argument("--data-dir", default=None)
     pv.set_defaults(func=cmd_preview)
 

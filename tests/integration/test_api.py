@@ -42,9 +42,9 @@ def test_api_auth_library_preview_and_playback_lifecycle(tmp_path: Path) -> None
     # Profiles
     profs = client.get("/v1/profiles", headers=headers)
     assert profs.status_code == 200
-    assert profs.json()["profiles"][0]["id"] == "genshin.windsong_lyre.v1"
+    assert profs.json()["profiles"][0]["id"] == "genshin.harmonic_keys.v1"
 
-    prof_detail = client.get("/v1/profiles/genshin.windsong_lyre.v1", headers=headers)
+    prof_detail = client.get("/v1/profiles/genshin.harmonic_keys.v1", headers=headers)
     assert prof_detail.status_code == 200
     assert prof_detail.json()["key_count"] == 21
 
@@ -359,7 +359,8 @@ def test_api_m3_profiles_ab_edit_favorite_vote_and_compare(tmp_path: Path) -> No
     profs = client.get("/v1/profiles", headers=headers)
     assert profs.status_code == 200
     profile_ids = [p["id"] for p in profs.json()["profiles"]]
-    assert profile_ids[0] == "genshin.windsong_lyre.v1"
+    assert profile_ids[0] == "genshin.harmonic_keys.v1"
+    assert "genshin.windsong_lyre.v1" in profile_ids
     assert "genshin.floral_zither.v1" in profile_ids
 
     mid_bytes = (FIXTURE_DIR / "c_major_scale.mid").read_bytes()

@@ -643,3 +643,12 @@
    - [PR #30](https://github.com/PariyaProject/LyraForge/pull/30)（`35d8e46`）→ PR CI [Run #45525242428](https://github.com/PariyaProject/LyraForge/actions/runs/45525242428) 全部 4 项活动作业 `success`；
    - Squash 合入 `main`（`6b2abaf`）→ 合并后 CI [Run #45525789807](https://github.com/PariyaProject/LyraForge/actions/runs/45525789807) 全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物：`LyraForge-dev-20261125-6b2abaf-windows-x64.zip`、`LyraForge-dev-20261125-6b2abaf-macos-arm64.zip`、`SHA256SUMS.txt`；
    - **验证边界**：真实人声流行歌在物理 Windows 安装 Demucs + 真实《原神》游戏客户端下的长曲动态对比听感，仍待维护者在新版 `dev-latest` 客户端中导入真实歌曲试听与实机演奏确认。
+
+## 32. Round 30：谐律键琴默认乐器、多音色试听与草稿播放体验全面升级
+
+1. **核心功能与修复**：
+   - **默认乐器切换为「谐律键琴」与多音色试听合成**：新增 [genshin.harmonic_keys.v1.json](../src/lyraforge/instruments/data/genshin.harmonic_keys.v1.json)（原神 4.6 谐律键琴 21 键 `C3–B5` `Z-M`/`A-J`/`Q-U`）并更新 `DEFAULT_PROFILE_ID`、预设 `presets.py`、自然语言识别 `agent/llm.py` 及前端默认选项（完整保留原有 3 份乐器档案 JSON 与校验哈希）；离线试听 [preview/synth.py](../src/lyraforge/preview/synth.py) 与浏览器端 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts) 同步支持 `piano` / `lyre` / `zither` / `vintage` 四套独立泛音与衰减包络（谐律键琴自动对应带槌击瞬态与高/低音区差异衰减的 `piano` 音色），透传 `LibraryStore` 缓存、`POST/GET /v1/preview`、CLI `--timbre`、MCP `preview` 与 Piano Roll `#pr-timbre-select`。
+   - **草稿播放控制与版本重置修复**：修复 [PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue) 切换或新生成编曲版本后未清零 `draftPlayheadMs` 导致从旧版本时间点续播的问题；暂停时保留可见播放头与 `mm:ss / mm:ss` 时间读数；区分 `试听草稿 / 继续草稿` 与显式 `从头播`；点击时间尺可在暂停或播放中直接定位跳转。
+   - **工作室全局快捷键与歌词式智能跟随 + 实时编辑**：在工作区级挂载 `Space`（播放/暂停）、`Shift+Space`（从头重播）、`Home`（归零）与 `F`（一键回正恢复跟随），焦点离开画布同样生效（输入框/弹窗内自动让位）；播放器按滑窗实时读取当前编辑谱面与音轨聚焦状态，实现边播边切独奏/边改谱即时生效；播放中手动横向滚动自动解除强制拉回并在角落显示带方向指示的 `#pr-return-playhead-btn`（`← 回到播放头` / `回到播放头 →`），拖回当前播放区停留 400 ms 自动重新吸附跟随。
+2. **验证记录**：
+   - 待 PR 合入与双平台 CI 完成后补充完整 `make check`、PR/CI Run 与 `dev-latest` 链接。
