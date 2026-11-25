@@ -651,4 +651,12 @@
    - **草稿播放控制与版本重置修复**：修复 [PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue) 切换或新生成编曲版本后未清零 `draftPlayheadMs` 导致从旧版本时间点续播的问题；暂停时保留可见播放头与 `mm:ss / mm:ss` 时间读数；区分 `试听草稿 / 继续草稿` 与显式 `从头播`；点击时间尺可在暂停或播放中直接定位跳转。
    - **工作室全局快捷键与歌词式智能跟随 + 实时编辑**：在工作区级挂载 `Space`（播放/暂停）、`Shift+Space`（从头重播）、`Home`（归零）与 `F`（一键回正恢复跟随），焦点离开画布同样生效（输入框/弹窗内自动让位）；播放器按滑窗实时读取当前编辑谱面与音轨聚焦状态，实现边播边切独奏/边改谱即时生效；播放中手动横向滚动自动解除强制拉回并在角落显示带方向指示的 `#pr-return-playhead-btn`（`← 回到播放头` / `回到播放头 →`），拖回当前播放区停留 400 ms 自动重新吸附跟随。
 2. **验证记录**：
-   - 待 PR 合入与双平台 CI 完成后补充完整 `make check`、PR/CI Run 与 `dev-latest` 链接。
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **293 passed, 2 warnings in 71.58s**，总覆盖率 **84.11%**（含 `test_harmonic_keys_and_timbres.py` 3 例与既有 3 份乐器档案 SHA-256 哈希零改动回归）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 5 passed (5), Tests 21 passed (21)**（含版本切换归零、全局 `Space`/`Shift+Space`/`Home`/`F`、边播边改独奏、`400 ms` 歌词式自动重吸附、方向回归按钮与谐律键琴默认选择回归）；
+   - `pnpm --dir apps/desktop/web build` → `49 modules transformed`，`built in 1.05s`；
+   - `make smoke` → 默认档案 `genshin.harmonic_keys.v1` 校验通过（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
+   - CSS 规范扫描（除 `tokens.css` 外）：无任何字面量色值；
+   - [PR #31](https://github.com/PariyaProject/LyraForge/pull/31)（`4ff0089`）→ PR CI [Run #45536932945](https://github.com/PariyaProject/LyraForge/actions/runs/45536932945) 4 项活动作业全部 `success`；
+   - Squash 合入 `main`（`7c1d78e`）→ 合并后 `main` CI [Run #45537569869](https://github.com/PariyaProject/LyraForge/actions/runs/45537569869) 全部 5 作业 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物：`LyraForge-dev-20261125-7c1d78e-windows-x64.zip`、`LyraForge-dev-20261125-7c1d78e-macos-arm64.zip`、`SHA256SUMS.txt`；
+   - **验证边界**：浏览器 Web Audio / 离线合成的钢琴与风物之诗琴音色均为纯跨平台数学泛音合成（无游戏提取音频样本），与《原神》游戏客户端真实音色听感对比、以及 Windows 物理机长曲工作流体验待用户在 `dev-latest` 上确认。
