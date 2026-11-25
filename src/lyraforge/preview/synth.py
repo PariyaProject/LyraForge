@@ -78,6 +78,7 @@ def synthesize_performance(
     doc: Mapping[str, Any],
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    fixed_velocity: bool = False,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> bytes:
     """Render a performance document to mono 16-bit PCM WAV bytes."""
@@ -108,7 +109,7 @@ def synthesize_performance(
                 buf,
                 start_idx=start_idx,
                 pitch=int(e["mapped_pitch"]),
-                velocity=int(e["velocity"]),
+                velocity=96 if fixed_velocity else int(e["velocity"]),
                 hold_ms=int(e["hold_ms"]),
                 sample_rate=sample_rate,
             )
@@ -134,10 +135,16 @@ def synthesize_performance_to_wav(
     out_path: str | Path,
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    fixed_velocity: bool = False,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Path:
     """Render ``doc`` and atomically write the resulting WAV to ``out_path``."""
-    wav_bytes = synthesize_performance(doc, sample_rate=sample_rate, is_cancelled=is_cancelled)
+    wav_bytes = synthesize_performance(
+        doc,
+        sample_rate=sample_rate,
+        fixed_velocity=fixed_velocity,
+        is_cancelled=is_cancelled,
+    )
     _check_cancel(is_cancelled)
     dest = Path(out_path)
     atomic_write_bytes(dest, wav_bytes)

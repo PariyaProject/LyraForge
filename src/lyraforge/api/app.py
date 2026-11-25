@@ -205,6 +205,9 @@ class ArrangeVariantConfig(BaseModel):
     melody_ceiling: bool = True
     anti_clash_semitones: bool = True
     timing_mode: str = "adapted"
+    accomp_density: str | None = None
+    phrase_octave_mode: str | None = None
+    cross_stem_align_ms: int | None = Field(default=None, ge=0, le=60)
     transcription_id: str | None = None
     label: str | None = None
 
@@ -257,6 +260,7 @@ class AgentRunRequest(BaseModel):
 class PreviewRequest(BaseModel):
     arrangement_id: str
     sample_rate: int = DEFAULT_SAMPLE_RATE
+    fixed_velocity: bool = False
 
 
 class PlaybackPrepareRequest(BaseModel):
@@ -754,6 +758,9 @@ def create_app(
             melody_ceiling=v.melody_ceiling,
             anti_clash_semitones=v.anti_clash_semitones,
             timing_mode=v.timing_mode,
+            accomp_density=v.accomp_density,
+            phrase_octave_mode=v.phrase_octave_mode,
+            cross_stem_align_ms=v.cross_stem_align_ms,
         )
 
     @app.post("/v1/jobs/transcribe", dependencies=[Depends(require_token)])
@@ -912,29 +919,43 @@ def create_app(
     @app.post("/v1/preview", dependencies=[Depends(require_token)])
     def render_preview(req: PreviewRequest) -> dict[str, Any]:
         with open_store() as store:
-            wav_path = store.render_preview(req.arrangement_id, sample_rate=req.sample_rate)
+            wav_path = store.render_preview(
+                req.arrangement_id,
+                sample_rate=req.sample_rate,
+                fixed_velocity=req.fixed_velocity,
+            )
             size_bytes = wav_path.stat().st_size
+        q = "?fixed_velocity=1" if req.fixed_velocity else ""
         return {
             "arrangement_id": req.arrangement_id,
-            "preview_url": f"/v1/arrangements/{req.arrangement_id}/preview.wav",
+            "preview_url": f"/v1/arrangements/{req.arrangement_id}/preview.wav{q}",
             "size_bytes": size_bytes,
             "sample_rate": req.sample_rate,
+            "fixed_velocity": req.fixed_velocity,
         }
 
     @app.get(
         "/v1/arrangements/{arrangement_id}/preview.wav",
         dependencies=[Depends(require_token)],
     )
-    def get_preview_wav(arrangement_id: str) -> Response:
+    def get_preview_wav(arrangement_id: str, fixed_velocity: bool = False) -> Response:
         with open_store() as store:
             rec = store.get_arrangement(arrangement_id)
             wav_path: Path | None = None
-            if rec.preview_path:
+            if fixed_velocity:
+                candidate = resolve_under(
+                    store.data_dir, f"songs/{rec.song_id}/previews/{rec.id}.fixed.wav"
+                )
+                if candidate.is_file():
+                    wav_path = candidate
+            elif rec.preview_path:
                 candidate = resolve_under(store.data_dir, rec.preview_path)
                 if candidate.is_file():
                     wav_path = candidate
             if wav_path is None:
-                wav_path = store.render_preview(arrangement_id)
+                wav_path = store.render_preview(
+                    arrangement_id, fixed_velocity=fixed_velocity
+                )
             data = wav_path.read_bytes()
         return Response(content=data, media_type="audio/wav")
 

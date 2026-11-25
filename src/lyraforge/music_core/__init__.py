@@ -24,6 +24,13 @@ from lyraforge.music_core.cleanup import (
     merge_stem_scores,
     vocal_cleanup_options,
 )
+from lyraforge.music_core.dynamics import (
+    AccompDensity,
+    PhraseOctaveMode,
+    StemDynamics,
+    align_accompaniment_onsets,
+    optimize_phrase_octaves,
+)
 from lyraforge.music_core.midi_export import (
     arrangement_to_midi_bytes,
     performance_to_midi_bytes,
@@ -52,6 +59,7 @@ from lyraforge.music_core.tempo import TempoChange, TempoMap
 
 __all__ = [
     "ARRANGER_VERSION",
+    "AccompDensity",
     "ArrangeOptions",
     "Arrangement",
     "ArrangerStrategyInfo",
@@ -61,7 +69,9 @@ __all__ = [
     "KeyDef",
     "NormalizedScore",
     "Note",
+    "PhraseOctaveMode",
     "QualityBreakdown",
+    "StemDynamics",
     "TempoChange",
     "TempoMap",
     "TimeSignature",
@@ -70,7 +80,9 @@ __all__ = [
     "TrackInfo",
     "TranscriptionAccuracy",
     "VOCAL_CLEANUP_PRESETS",
+    "align_accompaniment_onsets",
     "arrange",
+    "optimize_phrase_octaves",
     "arrangement_to_midi_bytes",
     "build_performance",
     "clean_score",

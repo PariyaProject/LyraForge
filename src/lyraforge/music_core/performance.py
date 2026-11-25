@@ -59,6 +59,12 @@ def transform_json(arr: Arrangement) -> dict[str, Any]:
         doc["anti_clash_semitones"] = o.anti_clash_semitones
     if str(o.timing_mode) != "adapted":
         doc["timing_mode"] = str(o.timing_mode)
+    if o.accomp_density is not None:
+        doc["accomp_density"] = o.accomp_density
+    if o.phrase_octave_mode is not None:
+        doc["phrase_octave_mode"] = o.phrase_octave_mode
+    if o.cross_stem_align_ms is not None:
+        doc["cross_stem_align_ms"] = int(o.cross_stem_align_ms)
     return doc
 
 

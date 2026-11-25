@@ -174,4 +174,55 @@ describe("PianoRollEditor DAW interactions", () => {
     expect(wrapper.text()).toContain("2 音符");
     expect(wrapper.text()).toContain("mid_1 @ 100 ms");
   });
+
+  it("supports ±1 octave shift, accompaniment thinning/clearing, undo/redo, and fixed-velocity preview", async () => {
+    const threeOctKeys = [
+      { key_id: "low_1", row: "low", degree: 1, pitch: 48, binding: "z" },
+      { key_id: "mid_1", row: "mid", degree: 1, pitch: 60, binding: "a" },
+      { key_id: "high_1", row: "high", degree: 1, pitch: 72, binding: "q" },
+    ];
+    const wrapper = mount(PianoRollEditor, {
+      props: {
+        keys: threeOctKeys,
+        melodyTrack: 0,
+        fixedVelocityPreview: true,
+        tracks: [
+          { index: 0, name: "Vocal", is_percussion: false, note_count: 1, channels: [0], min_pitch: 60, max_pitch: 60 },
+          { index: 1, name: "Guitar", is_percussion: false, note_count: 4, channels: [1], min_pitch: 48, max_pitch: 48 },
+        ],
+        events: [
+          { at_ms: 0, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, velocity: 110, adjustments: [] },
+          { at_ms: 100, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+          { at_ms: 200, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+          { at_ms: 300, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+          { at_ms: 520, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+        ],
+      },
+    });
+
+    // Initially first note (mid_1 @ 0 ms) is selected -> Shift+ArrowUp lifts +1 octave to high_1
+    const roll = wrapper.find(".piano-roll-editor");
+    await roll.trigger("keydown", { key: "ArrowUp", shiftKey: true });
+    expect(wrapper.text()).toContain("high_1 @ 0 ms");
+
+    // -1 octave button brings it back to mid_1
+    const octDownBtn = wrapper.findAll("button").find((b) => b.text().trim() === "-1八度")!;
+    await octDownBtn.trigger("click");
+    expect(wrapper.text()).toContain("mid_1 @ 0 ms");
+
+    // Select all -> 伴奏瘦身 thins dense 120ms & 240ms guitar notes while keeping 0ms & 480ms + melody
+    await roll.trigger("keydown", { key: "a", ctrlKey: true });
+    const thinBtn = wrapper.findAll("button").find((b) => b.text().trim() === "伴奏瘦身")!;
+    await thinBtn.trigger("click");
+    expect(wrapper.text()).toContain("3 音符");
+
+    // Undo restores all 5 notes, then 清伴奏 drops all 4 guitar notes keeping Vocal melody
+    await roll.trigger("keydown", { key: "z", ctrlKey: true });
+    expect(wrapper.text()).toContain("5 音符");
+
+    await roll.trigger("keydown", { key: "a", ctrlKey: true });
+    const clearAccBtn = wrapper.findAll("button").find((b) => b.text().trim() === "清伴奏")!;
+    await clearAccBtn.trigger("click");
+    expect(wrapper.text()).toContain("1 音符");
+  });
 });

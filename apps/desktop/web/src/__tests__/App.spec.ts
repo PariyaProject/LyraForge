@@ -1508,4 +1508,111 @@ describe("App", () => {
     expect(wrapper.text()).toContain("15 / 18");
     expect(wrapper.text()).toContain("58.5 ms");
   });
+
+  it("supports vocal_dynamic controls, dynamics adjustment badges, and fixed-velocity preview toggle", async () => {
+    const stub = makeStubApi("midi");
+    const dynArr = {
+      id: "arr-dyn",
+      song_id: "song-1",
+      profile_id: "genshin.windsong_lyre.v1",
+      style: "balanced",
+      speed: 1.0,
+      transpose: 0,
+      arranger_strategy: "vocal_dynamic",
+      playable_ratio: 0.9,
+      event_count: 12,
+      duration_ms: 4000,
+      preview_path: null,
+      is_favorite: false,
+      user_vote: 0,
+      score: 91.0,
+      label: "强弱动态",
+      created_at: "2026-11-25T00:00:00Z",
+    };
+    vi.mocked(stub.listArrangers).mockResolvedValue({
+      strategies: [
+        { id: "classic", display_name: "经典基线", description: "原算法", recommended_for: "纯器乐" },
+        { id: "vocal_lead", display_name: "主旋律优先", description: "让路", recommended_for: "人声" },
+        { id: "vocal_dynamic", display_name: "主旋律强弱动态", description: "分句护航", recommended_for: "分轨人声" },
+      ],
+    });
+    vi.mocked(stub.arrangeSong).mockResolvedValue({ arrangement: dynArr });
+    vi.mocked(stub.getArrangement).mockResolvedValue({
+      arrangement: dynArr,
+      performance: {
+        arrangement_id: "arr-dyn",
+        duration_ms: 4000,
+        events: [{ at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 0 }],
+      },
+      report: {
+        calibration_status: "verified",
+        stats: {
+          considered_notes: 20,
+          emitted_events: 12,
+          octave_folded: 2,
+          semitone_substituted: 0,
+          playable_ratio: 0.9,
+          dropped: { accomp_thinned: 5 },
+          dynamics_adjustments: {
+            phrases_shifted_up: 1,
+            cross_stem_aligned: 3,
+            accomp_thinned: 5,
+          },
+        },
+      },
+    });
+    vi.mocked(stub.getSong).mockResolvedValue({
+      song: {
+        id: "song-1",
+        title: "C Major Scale",
+        artist: "Tester",
+        tags: [],
+        arrangement_count: 1,
+        created_at: "2026-11-25T00:00:00Z",
+        updated_at: "2026-11-25T00:00:00Z",
+      },
+      sources: [{ id: "src-1", kind: "midi", original_name: "scale.mid" }],
+      transcriptions: [],
+      arrangements: [dynArr],
+    });
+
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "编曲工作室");
+    await flushPromises();
+
+    // Renders dynamics drop reason & adjustment pills
+    expect(wrapper.text()).toContain("伴奏节奏让路 5");
+    expect(wrapper.text()).toContain("低音句抬升八度 1");
+    expect(wrapper.text()).toContain("跨轨微对齐 3");
+
+    // Select vocal_dynamic & dynamic parameter overrides
+    await wrapper.find("#studio-arranger-strategy").setValue("vocal_dynamic");
+    await wrapper.find("#studio-accomp-density").setValue("minimal");
+    await wrapper.find("#studio-phrase-octave").setValue("centered");
+    await wrapper.find("#studio-cross-align").setValue("30");
+    const arrangeBtn = wrapper.findAll("button").find((b) => b.text().includes("生成改编版本"))!;
+    await arrangeBtn.trigger("click");
+    await flushPromises();
+    expect(stub.arrangeSong).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arranger_strategy: "vocal_dynamic",
+        accomp_density: "minimal",
+        phrase_octave_mode: "centered",
+        cross_stem_align_ms: 30,
+      }),
+    );
+
+    // Default fixed-velocity preview toggle is ON (true), clicking switches to false
+    const quickPreviewBtn = wrapper.findAll("button").find((b) => b.text().includes("快速试听"))!;
+    await quickPreviewBtn.trigger("click");
+    await flushPromises();
+    expect(stub.fetchPreviewAudioUrl).toHaveBeenLastCalledWith("arr-dyn", true);
+
+    await wrapper.find("#transport-fixed-vel-toggle").trigger("click");
+    const refreshPreviewBtn = wrapper.findAll("button").find((b) => b.text().includes("刷新试听"))!;
+    await refreshPreviewBtn.trigger("click");
+    await flushPromises();
+    expect(stub.fetchPreviewAudioUrl).toHaveBeenLastCalledWith("arr-dyn", false);
+  });
 });

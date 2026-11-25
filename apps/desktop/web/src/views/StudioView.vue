@@ -27,6 +27,7 @@ const DROP_REASON_LABELS: Record<string, string> = {
   polyphony_limit: "复音上限裁剪",
   semitone_dropped: "半音丢弃",
   out_of_range: "超音域丢弃",
+  accomp_thinned: "伴奏节奏让路",
 };
 
 const STYLES: Array<{ id: "melody" | "balanced" | "rich"; label: string }> = [
@@ -107,6 +108,34 @@ const timingAdjustmentItems = computed(() => {
       key: "inter_key",
       label: "异键防吞音微调",
       value: adj.inter_key_adjusted ?? 0,
+    });
+  }
+  return items;
+});
+
+const dynamicsAdjustmentItems = computed(() => {
+  const dyn = props.store.arrDetail.value?.report?.stats?.dynamics_adjustments;
+  if (!dyn) return [];
+  const items: Array<{ key: string; label: string; value: number }> = [];
+  if ((dyn.phrases_shifted_up ?? 0) > 0) {
+    items.push({
+      key: "phrases_up",
+      label: "低音句抬升八度",
+      value: dyn.phrases_shifted_up ?? 0,
+    });
+  }
+  if ((dyn.phrases_shifted_down ?? 0) > 0) {
+    items.push({
+      key: "phrases_down",
+      label: "高音句回落八度",
+      value: dyn.phrases_shifted_down ?? 0,
+    });
+  }
+  if ((dyn.cross_stem_aligned ?? 0) > 0) {
+    items.push({
+      key: "stem_align",
+      label: "跨轨微对齐",
+      value: dyn.cross_stem_aligned ?? 0,
     });
   }
   return items;
@@ -301,6 +330,7 @@ async function onArrangementChange(event: Event): Promise<void> {
             :saving="store.busy.value"
             :playhead-ms="store.previewCurrentMs.value"
             :is-playing="store.previewPlaying.value"
+            :fixed-velocity-preview="store.gameFixedPreview.value"
             @save="store.handleSaveEdited"
             @seek="store.requestPreviewSeek"
           />
@@ -516,11 +546,18 @@ async function onArrangementChange(event: Event): Promise<void> {
                 </span>
               </div>
               <div
-                v-if="timingAdjustmentItems.length > 0"
+                v-if="timingAdjustmentItems.length > 0 || dynamicsAdjustmentItems.length > 0"
                 class="drop-summary-list"
               >
                 <span
                   v-for="item in timingAdjustmentItems"
+                  :key="item.key"
+                  class="drop-summary-item"
+                >
+                  {{ item.label }} {{ item.value }}
+                </span>
+                <span
+                  v-for="item in dynamicsAdjustmentItems"
                   :key="item.key"
                   class="drop-summary-item"
                 >
@@ -603,6 +640,39 @@ async function onArrangementChange(event: Event): Promise<void> {
             </select>
           </div>
           <div class="field">
+            <label for="studio-accomp-density">伴奏动态密度</label>
+            <select id="studio-accomp-density" v-model="store.accompDensity.value">
+              <option value="">跟随所选策略默认</option>
+              <option value="auto">智能强弱分明（高潮稳重、间奏放开）</option>
+              <option value="minimal">极简纯净伴奏（仅重拍骨架）</option>
+              <option value="balanced">适度双声部（人声段适度减密）</option>
+              <option value="full">完整保留全部伴奏音符</option>
+            </select>
+          </div>
+          <div class="row">
+            <div class="field" style="flex: 1 1 130px">
+              <label for="studio-phrase-octave">分句八度平滑</label>
+              <select id="studio-phrase-octave" v-model="store.phraseOctaveMode.value">
+                <option value="">跟随策略默认</option>
+                <option value="smooth_lift">低音句智能抬升 (+12)</option>
+                <option value="centered">全曲均值居中平滑</option>
+                <option value="original">保持原始八度</option>
+              </select>
+            </div>
+            <div class="field" style="flex: 1 1 110px">
+              <label for="studio-cross-align">跨轨微对齐 (ms)</label>
+              <input
+                id="studio-cross-align"
+                v-model="store.crossStemAlignMs.value"
+                type="number"
+                min="0"
+                max="60"
+                step="5"
+                placeholder="默认"
+              />
+            </div>
+          </div>
+          <div class="field">
             <label for="studio-transpose">移调半音（auto 或整数）</label>
             <input id="studio-transpose" v-model="store.transposeInput.value" type="text" />
           </div>
@@ -647,6 +717,10 @@ async function onArrangementChange(event: Event): Promise<void> {
             <div class="inspector-dl-row">
               <dt>移动音符</dt>
               <dd><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd></dd>
+            </div>
+            <div class="inspector-dl-row">
+              <dt>升降一个八度</dt>
+              <dd><kbd>Shift+↑</kbd> / <kbd>Shift+↓</kbd></dd>
             </div>
             <div class="inspector-dl-row">
               <dt>撤销 / 重做</dt>

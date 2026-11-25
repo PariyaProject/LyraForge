@@ -37,6 +37,7 @@ from lyraforge.music_core.arranger import (
     detect_melody_track,
 )
 from lyraforge.music_core.canonical import pretty_json
+from lyraforge.music_core.dynamics import StemDynamics
 from lyraforge.music_core.midi_export import (
     arrangement_to_midi_bytes,
     performance_to_midi_bytes,
@@ -948,10 +949,16 @@ class LibraryStore:
         _check_stop(stop_token, "arrangement cancelled")
         score = load_midi_file(src_file)
         profile = load_builtin_profile(profile_id)
+        stem_dynamics = (
+            StemDynamics.from_dict(resolved_tr.metadata.get("stem_dynamics"))
+            if resolved_tr is not None and isinstance(resolved_tr.metadata, dict)
+            else None
+        )
         arr = arrange(
             score,
             profile,
             options,
+            stem_dynamics=stem_dynamics,
             is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
         )
         _check_stop(stop_token, "arrangement cancelled")
@@ -1315,7 +1322,8 @@ class LibraryStore:
                     "UPDATE songs SET updated_at = ? WHERE id = ?", (now, rec.song_id)
                 )
 
-            for rel in (rec.performance_path, rec.report_path, rec.preview_path):
+            fixed_preview_rel = f"songs/{rec.song_id}/previews/{arrangement_id}.fixed.wav"
+            for rel in (rec.performance_path, rec.report_path, rec.preview_path, fixed_preview_rel):
                 if not rel:
                     continue
                 with contextlib.suppress(OSError):
@@ -1514,18 +1522,20 @@ class LibraryStore:
         arrangement_id: str,
         *,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
+        fixed_velocity: bool = False,
         stop_token: StopToken | None = None,
     ) -> Path:
         """Synthesize an offline WAV preview for a stored arrangement safely."""
         _check_stop(stop_token, "preview synthesis cancelled")
         rec = self.get_arrangement(arrangement_id)
         doc = self.load_arrangement_performance(arrangement_id)
-        rel_wav = f"songs/{rec.song_id}/previews/{rec.id}.wav"
+        suffix = ".fixed.wav" if fixed_velocity else ".wav"
+        rel_wav = f"songs/{rec.song_id}/previews/{rec.id}{suffix}"
         wav_path = resolve_under(self.data_dir, rel_wav)
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_wav = wav_path.parent / f".{rec.id}.{uuid.uuid4().hex[:8]}.preview.tmp.wav"
         stripe_idx = hash(
-            (os.path.normcase(os.path.abspath(os.fspath(self.data_dir))), rec.id)
+            (os.path.normcase(os.path.abspath(os.fspath(self.data_dir))), rec.id, fixed_velocity)
         ) % len(_PREVIEW_PUBLISH_STRIPES)
         try:
             _check_stop(stop_token, "preview synthesis cancelled")
@@ -1534,6 +1544,7 @@ class LibraryStore:
                 tmp_wav,
                 sample_rate=sample_rate,
                 is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
+                **({"fixed_velocity": True} if fixed_velocity else {}),
             )
             _check_stop(stop_token, "preview synthesis cancelled")
             with _PREVIEW_PUBLISH_STRIPES[stripe_idx]:
@@ -1541,10 +1552,11 @@ class LibraryStore:
                 atomic_replace_file(tmp_wav, wav_path)
                 now = _utc_now_iso()
                 with self._conn:
-                    self._conn.execute(
-                        "UPDATE arrangements SET preview_path = ? WHERE id = ?",
-                        (rel_wav, rec.id),
-                    )
+                    if not fixed_velocity:
+                        self._conn.execute(
+                            "UPDATE arrangements SET preview_path = ? WHERE id = ?",
+                            (rel_wav, rec.id),
+                        )
                     self._conn.execute(
                         "UPDATE songs SET updated_at = ? WHERE id = ?", (now, rec.song_id)
                     )

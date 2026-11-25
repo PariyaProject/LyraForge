@@ -117,6 +117,9 @@ def _build_arrange_options(args: argparse.Namespace) -> ArrangeOptions:
         melody_ceiling=not getattr(args, "no_melody_ceiling", False),
         anti_clash_semitones=not getattr(args, "no_anti_clash_semitones", False),
         timing_mode=getattr(args, "timing_mode", "adapted"),
+        accomp_density=getattr(args, "accomp_density", None),
+        phrase_octave_mode=getattr(args, "phrase_octave_mode", None),
+        cross_stem_align_ms=getattr(args, "cross_stem_align_ms", None),
     )
 
 
@@ -142,7 +145,7 @@ def _add_arrange_option_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include-percussion", action="store_true")
     parser.add_argument(
         "--arranger-strategy",
-        choices=["classic", "vocal_lead"],
+        choices=["classic", "vocal_lead", "vocal_dynamic"],
         default="classic",
     )
     parser.add_argument("--melody-track", type=int, default=None)
@@ -154,6 +157,17 @@ def _add_arrange_option_flags(parser: argparse.ArgumentParser) -> None:
         choices=["adapted", "strict_fidelity"],
         default="adapted",
     )
+    parser.add_argument(
+        "--accomp-density",
+        choices=["auto", "minimal", "balanced", "full"],
+        default=None,
+    )
+    parser.add_argument(
+        "--phrase-octave-mode",
+        choices=["original", "smooth_lift", "centered"],
+        default=None,
+    )
+    parser.add_argument("--cross-stem-align-ms", type=int, default=None)
 
 
 def _validate_doc_with_builtin_profile(doc: Any) -> None:
@@ -448,7 +462,10 @@ def cmd_preview(args: argparse.Namespace) -> int:
             )
         doc = _load_json(target)
         out_path = synthesize_performance_to_wav(
-            doc, args.output, sample_rate=args.sample_rate
+            doc,
+            args.output,
+            sample_rate=args.sample_rate,
+            fixed_velocity=bool(getattr(args, "fixed_velocity", False)),
         )
         payload: dict[str, Any] = {
             "source": target,
@@ -458,7 +475,11 @@ def cmd_preview(args: argparse.Namespace) -> int:
         }
     else:
         with LibraryStore(args.data_dir) as store:
-            wav_path = store.render_preview(target, sample_rate=args.sample_rate)
+            wav_path = store.render_preview(
+                target,
+                sample_rate=args.sample_rate,
+                fixed_velocity=bool(getattr(args, "fixed_velocity", False)),
+            )
             out_path = wav_path
             if args.output:
                 out_path = Path(args.output)
@@ -941,6 +962,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("target", help="path to performance.json or saved arrangement_id")
     pv.add_argument("-o", "--output", default=None, help="output WAV path")
     pv.add_argument("--sample-rate", type=int, default=DEFAULT_SAMPLE_RATE)
+    pv.add_argument("--fixed-velocity", action="store_true")
     pv.add_argument("--data-dir", default=None)
     pv.set_defaults(func=cmd_preview)
 

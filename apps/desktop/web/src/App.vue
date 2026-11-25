@@ -404,6 +404,17 @@ onMounted(() => {
           {{ store.previewUrl.value ? "刷新试听" : "快速试听" }}
         </button>
         <button
+          id="transport-fixed-vel-toggle"
+          class="btn-sm"
+          type="button"
+          :class="store.gameFixedPreview.value ? 'active-pill' : 'ghost'"
+          :aria-pressed="store.gameFixedPreview.value"
+          title="原神自由演奏等乐器为固定触发音色，开启后试听按真实游戏固定音量合成"
+          @click="store.toggleGameFixedPreview"
+        >
+          {{ store.gameFixedPreview.value ? "游戏固定力度" : "MIDI原力度" }}
+        </button>
+        <button
           v-if="store.playbackStatus.value?.state === 'running'"
           class="secondary"
           type="button"

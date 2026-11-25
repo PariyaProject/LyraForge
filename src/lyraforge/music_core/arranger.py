@@ -19,6 +19,14 @@ from fractions import Fraction
 from typing import Any
 
 from lyraforge.errors import ErrorCode, LyraError
+from lyraforge.music_core.dynamics import (
+    AccompDensity,
+    PhraseOctaveMode,
+    StemDynamics,
+    align_accompaniment_onsets,
+    compute_vocal_section_profile,
+    optimize_phrase_octaves,
+)
 from lyraforge.music_core.models import NormalizedScore, Note, TrackInfo
 from lyraforge.music_core.profile import InstrumentProfile
 
@@ -58,6 +66,7 @@ class DropReason(StrEnum):
     DUPLICATE_KEY = "duplicate_key"
     POLYPHONY_LIMIT = "polyphony_limit"
     REPEAT_TOO_FAST = "repeat_too_fast"
+    ACCOMP_THINNED = "accomp_thinned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +128,40 @@ register_arranger_strategy(
         recommended_for="人声流行歌 / 分轨转录 / 复杂混音",
     )
 )
+register_arranger_strategy(
+    ArrangerStrategyInfo(
+        id="vocal_dynamic",
+        display_name="动态分层 · 节奏门控与乐句平滑（推荐人声）",
+        description=(
+            "结合分轨响度曲线与乐句结构动态控制伴奏密度（高潮仅在重拍稳重托底、"
+            "持续拖音时过滤碎音干扰、间奏自动放开），支持跨轨微起音对齐与换气处乐句级平滑抬升低音旋律。"
+        ),
+        recommended_for="主歌低副歌高 / 伴奏碎音打乱高潮的人声流行与二次元歌曲",
+    )
+)
+
+
+def resolve_effective_dynamics(
+    options: ArrangeOptions,
+) -> tuple[AccompDensity, PhraseOctaveMode, int]:
+    """Resolve strategy-aware defaults for accompaniment density, phrase octaves & alignment."""
+    is_dyn = options.arranger_strategy == "vocal_dynamic"
+    density = AccompDensity(
+        options.accomp_density
+        if options.accomp_density is not None
+        else (AccompDensity.AUTO.value if is_dyn else AccompDensity.FULL.value)
+    )
+    phrase_mode = PhraseOctaveMode(
+        options.phrase_octave_mode
+        if options.phrase_octave_mode is not None
+        else (PhraseOctaveMode.SMOOTH_LIFT.value if is_dyn else PhraseOctaveMode.ORIGINAL.value)
+    )
+    align_ms = (
+        int(options.cross_stem_align_ms)
+        if options.cross_stem_align_ms is not None
+        else (35 if is_dyn else 0)
+    )
+    return density, phrase_mode, align_ms
 
 
 @dataclass(frozen=True)
@@ -140,6 +183,9 @@ class ArrangeOptions:
     melody_ceiling: bool = True
     anti_clash_semitones: bool = True
     timing_mode: str = TimingMode.ADAPTED
+    accomp_density: str | None = None
+    phrase_octave_mode: str | None = None
+    cross_stem_align_ms: int | None = None
 
     def validate(self) -> None:
         problems: list[str] = []
@@ -164,6 +210,16 @@ class ArrangeOptions:
             problems.append("melody_track must be >= 0")
         if self.timing_mode not in {m.value for m in TimingMode}:
             problems.append(f"unknown timing_mode: {self.timing_mode!r}")
+        if self.accomp_density is not None and self.accomp_density not in {
+            d.value for d in AccompDensity
+        }:
+            problems.append(f"unknown accomp_density: {self.accomp_density!r}")
+        if self.phrase_octave_mode is not None and self.phrase_octave_mode not in {
+            m.value for m in PhraseOctaveMode
+        }:
+            problems.append(f"unknown phrase_octave_mode: {self.phrase_octave_mode!r}")
+        if self.cross_stem_align_ms is not None and not 0 <= self.cross_stem_align_ms <= 60:
+            problems.append("cross_stem_align_ms must be within [0, 60]")
         if problems:
             raise LyraError(ErrorCode.INVALID_ARGUMENT, "invalid arrange options",
                             {"problems": problems})
@@ -450,14 +506,44 @@ def _map_notes_classic(
     options: ArrangeOptions,
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
-) -> list[_Cand]:
+    *,
+    phrase_octave_mode: PhraseOctaveMode = PhraseOctaveMode.ORIGINAL,
+    melody_track: int | None = None,
+    multi_track: bool = False,
+) -> tuple[list[_Cand], dict[str, int]]:
     lo, hi = profile.min_pitch, profile.max_pitch
     available = profile.pitches
+    if phrase_octave_mode != PhraseOctaveMode.ORIGINAL:
+        mel_subset = (
+            [n for n in notes if n.track == melody_track]
+            if multi_track and melody_track is not None
+            else notes
+        )
+        has_accomp = multi_track and melody_track is not None and len(mel_subset) < len(notes)
+        phrase_shifts, phrase_stats = optimize_phrase_octaves(
+            mel_subset,
+            k,
+            profile,
+            phrase_octave_mode,
+            has_accompaniment=has_accomp,
+        )
+    else:
+        phrase_shifts = {}
+        phrase_stats = {
+            "phrase_count": 0,
+            "phrases_shifted_up": 0,
+            "phrases_shifted_down": 0,
+            "phrase_shifted_notes": 0,
+        }
+
     cands: list[_Cand] = []
     for n in notes:
         _check_cancel(is_cancelled)
         at_ms = _scale_ms(n.start_us, speed)
-        p, adj = _fold_pitch_to_range(n.pitch + k, lo, hi)
+        p_shift = phrase_shifts.get(id(n), 0)
+        p, adj = _fold_pitch_to_range(n.pitch + k + p_shift, lo, hi)
+        if p_shift != 0 and Adjustment.OCTAVE_FOLDED not in adj:
+            adj.append(Adjustment.OCTAVE_FOLDED)
         if not lo <= p <= hi:
             dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
             continue
@@ -473,7 +559,7 @@ def _map_notes_classic(
             key = profile.key_for_pitch(p)
             assert key is not None
         cands.append(_Cand(n, p, key.key_id, at_ms, _scale_ms(n.duration_us, speed), tuple(adj)))
-    return cands
+    return cands, phrase_stats
 
 
 def _build_melody_windows(
@@ -523,14 +609,32 @@ def _map_notes_vocal_lead(
     use_melody_priority: bool,
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
-) -> tuple[list[_Cand], list[tuple[int, int, int]], list[int], list[int]]:
+    *,
+    phrase_octave_mode: PhraseOctaveMode = PhraseOctaveMode.ORIGINAL,
+    cross_stem_align_ms: int = 0,
+) -> tuple[
+    list[_Cand],
+    list[_Cand],
+    list[tuple[int, int, int]],
+    list[int],
+    list[int],
+    int,
+    dict[str, int],
+]:
     if not (use_melody_priority and melody_track is not None):
-        return (
-            _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled),
-            [],
-            [],
-            [],
+        classic_cands, phrase_stats = _map_notes_classic(
+            notes,
+            k,
+            speed,
+            profile,
+            options,
+            dropped,
+            is_cancelled,
+            phrase_octave_mode=phrase_octave_mode,
+            melody_track=melody_track,
+            multi_track=False,
         )
+        return (classic_cands, [], [], [], [], 0, phrase_stats)
 
     lo, hi = profile.min_pitch, profile.max_pitch
     available = profile.pitches
@@ -543,12 +647,23 @@ def _map_notes_vocal_lead(
         key=lambda n: (n.start_us, n.pitch),
     )
 
+    phrase_shifts, phrase_stats = optimize_phrase_octaves(
+        mel_notes,
+        k,
+        profile,
+        phrase_octave_mode,
+        has_accompaniment=bool(acc_notes),
+    )
+
     mel_cands: list[_Cand] = []
     prev_mel_pitch: int | None = None
     for n in mel_notes:
         _check_cancel(is_cancelled)
         at_ms = _scale_ms(n.start_us, speed)
-        p, adj = _fold_pitch_to_range(n.pitch + k, lo, hi)
+        p_shift = phrase_shifts.get(id(n), 0)
+        p, adj = _fold_pitch_to_range(n.pitch + k + p_shift, lo, hi)
+        if p_shift != 0 and Adjustment.OCTAVE_FOLDED not in adj:
+            adj.append(Adjustment.OCTAVE_FOLDED)
         if not lo <= p <= hi:
             dropped.append(DroppedNote(at_ms, n.pitch, None, n.track, DropReason.OUT_OF_RANGE))
             continue
@@ -575,12 +690,26 @@ def _map_notes_vocal_lead(
         )
 
     windows, mel_onsets, mel_end_prefix_max = _build_melody_windows(mel_cands)
+
+    # Pre-align solo accompaniment micro-jitter to synced vocal onsets before ceiling/clash checks
+    acc_timed = [
+        _Cand(n, n.pitch, "", _scale_ms(n.start_us, speed), _scale_ms(n.duration_us, speed), ())
+        for n in acc_notes
+    ]
+    aligned_count = 0
+    if cross_stem_align_ms > 0 and mel_onsets and acc_timed:
+        aligned_count = align_accompaniment_onsets(
+            sorted(set(mel_onsets)), acc_timed, cross_stem_align_ms
+        )
+        acc_timed.sort(key=lambda c: (c.at_ms, c.note.pitch))
+
     cursor = 0
     acc_cands: list[_Cand] = []
 
-    for n in acc_notes:
+    for timed in acc_timed:
         _check_cancel(is_cancelled)
-        at_ms = _scale_ms(n.start_us, speed)
+        n = timed.note
+        at_ms = timed.at_ms
         active_pitches, cursor = _active_melody_pitches_at(windows, at_ms, cursor)
         active_max = max(active_pitches) if active_pitches else None
 
@@ -633,13 +762,21 @@ def _map_notes_vocal_lead(
                 p,
                 key.key_id,
                 at_ms,
-                _scale_ms(n.duration_us, speed),
+                timed.dur_ms,
                 tuple(adj),
                 above_melody=above_mel,
             )
         )
 
-    return [*mel_cands, *acc_cands], windows, mel_onsets, mel_end_prefix_max
+    return (
+        [*mel_cands, *acc_cands],
+        mel_cands,
+        windows,
+        mel_onsets,
+        mel_end_prefix_max,
+        aligned_count,
+        phrase_stats,
+    )
 
 
 def _pick_balanced_voices(
@@ -742,18 +879,28 @@ def _select_vocal_lead_clusters(
     options: ArrangeOptions,
     melody_track: int | None,
     use_melody_priority: bool,
+    mel_cands: Sequence[_Cand],
     mel_windows: Sequence[tuple[int, int, int]],
     mel_onsets: Sequence[int],
     mel_end_prefix_max: Sequence[int],
+    accomp_density: AccompDensity,
+    stem_dynamics: StemDynamics | None,
     dropped: list[DroppedNote],
     is_cancelled: Callable[[], bool] | None,
-) -> tuple[list[_Cand], int]:
+) -> tuple[list[_Cand], int, int]:
     limited: list[_Cand] = []
     arpeggiated_events = 0
+    accomp_thinned_count = 0
     cursor = 0
     prev_mel_pitch: int | None = None
     lo = profile.min_pitch
     strict = options.timing_mode == TimingMode.STRICT_FIDELITY
+    section_profile = (
+        compute_vocal_section_profile(mel_cands, lo, stem_dynamics)
+        if (accomp_density != AccompDensity.FULL and use_melody_priority)
+        else None
+    )
+    last_acc_emit_ms: int | None = None
 
     i = 0
     while i < len(deduped):
@@ -763,6 +910,7 @@ def _select_vocal_lead_clusters(
         cluster = deduped[i:j]
 
         clash_ids: set[int] = set()
+        thinned_ids: set[int] = set()
         if use_melody_priority and melody_track is not None:
             mel_in = sorted(
                 (c for c in cluster if c.note.track == melody_track),
@@ -798,6 +946,8 @@ def _select_vocal_lead_clusters(
                     priority.append(by_pitch[-1])
                 priority.extend(by_pitch[1:-1])
                 kept_cluster = priority[:cap]
+                if any(c.note.track != melody_track for c in kept_cluster):
+                    last_acc_emit_ms = start
             else:
                 kept_mel = mel_in[:max_chord]
                 clean_acc: list[_Cand] = []
@@ -826,18 +976,18 @@ def _select_vocal_lead_clusters(
                 rem = max_chord - len(kept_mel)
                 if options.vocal_ducking:
                     if options.style == Style.MELODY:
-                        acc_budget = 0
+                        style_acc_budget = 0
                     elif options.style == Style.BALANCED:
-                        acc_budget = min(rem, 2)
+                        style_acc_budget = min(rem, 2)
                     else:
-                        acc_budget = rem
+                        style_acc_budget = rem
                 else:
-                    acc_budget = rem
+                    style_acc_budget = rem
 
                 # When vocal drops into bottom fifth (<= lo + 5), keep up to 1 consonant
                 # fifth/octave note above vocal if all accompaniment below was filtered.
                 if (
-                    acc_budget > 0
+                    style_acc_budget > 0
                     and not clean_acc
                     and ceiling_blocked
                     and ref_max is not None
@@ -852,9 +1002,39 @@ def _select_vocal_lead_clusters(
                         clean_acc.append(min(gentle, key=lambda c: c.mapped))
 
                 primary_ref = active_refs[0] if active_refs else None
-                kept_acc = _pick_balanced_voices(
-                    clean_acc, acc_budget, consonant_ref=primary_ref
-                )
+                if section_profile is not None:
+                    _sec, min_acc_interval, max_acc_voices = section_profile.classify_moment(
+                        start,
+                        has_vocal_onset_now=bool(mel_in),
+                        active_mel_pitches=active_refs,
+                        density_mode=accomp_density,
+                    )
+                    throttled = (
+                        last_acc_emit_ms is not None
+                        and (start - last_acc_emit_ms) < min_acc_interval
+                    )
+                    eff_acc_budget = (
+                        0 if throttled else min(style_acc_budget, max_acc_voices)
+                    )
+                    if eff_acc_budget <= 0:
+                        kept_acc = []
+                        for c in acc_in:
+                            if id(c) not in clash_ids:
+                                thinned_ids.add(id(c))
+                    else:
+                        kept_acc = _pick_balanced_voices(
+                            clean_acc, eff_acc_budget, consonant_ref=primary_ref
+                        )
+                        kept_acc_ids = {id(c) for c in kept_acc}
+                        for c in clean_acc:
+                            if id(c) not in kept_acc_ids and eff_acc_budget < style_acc_budget:
+                                thinned_ids.add(id(c))
+                        if kept_acc:
+                            last_acc_emit_ms = start
+                else:
+                    kept_acc = _pick_balanced_voices(
+                        clean_acc, style_acc_budget, consonant_ref=primary_ref
+                    )
                 kept_cluster = [*kept_mel, *kept_acc]
         else:
             # Single-track vocal_lead: track melodic contour continuity + clean accompaniment below
@@ -905,18 +1085,20 @@ def _select_vocal_lead_clusters(
             if id(c) in keep_ids:
                 limited.append(c)
             else:
-                reason = (
-                    DropReason.SEMITONE_DROPPED
-                    if id(c) in clash_ids
-                    else DropReason.POLYPHONY_LIMIT
-                )
+                if id(c) in clash_ids:
+                    reason = DropReason.SEMITONE_DROPPED
+                elif id(c) in thinned_ids:
+                    reason = DropReason.ACCOMP_THINNED
+                    accomp_thinned_count += 1
+                else:
+                    reason = DropReason.POLYPHONY_LIMIT
                 dropped.append(
                     DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track, reason)
                 )
         arpeggiated_events += _apply_arpeggiate(kept_cluster, options.arpeggiate_ms)
         i = j
 
-    return limited, arpeggiated_events
+    return limited, arpeggiated_events, accomp_thinned_count
 
 
 def arrange(
@@ -924,6 +1106,7 @@ def arrange(
     profile: InstrumentProfile,
     options: ArrangeOptions | None = None,
     *,
+    stem_dynamics: StemDynamics | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> Arrangement:
     _check_cancel(is_cancelled)
@@ -932,6 +1115,7 @@ def arrange(
     speed = Fraction(options.speed).limit_denominator(10_000)
     max_chord = options.effective_max_chord_keys(profile)
     timing = profile.timing
+    eff_density, eff_phrase_mode, eff_align_ms = resolve_effective_dynamics(options)
     dropped: list[DroppedNote] = []
 
     # 1. track filter
@@ -963,7 +1147,7 @@ def arrange(
         and melody_track is not None
         and len(distinct_tracks) > 1
     )
-    vocal_lead_mode = options.arranger_strategy == "vocal_lead"
+    vocal_lead_mode = options.arranger_strategy in {"vocal_lead", "vocal_dynamic"}
 
     # 2. transposition
     if options.transpose is None:
@@ -988,9 +1172,24 @@ def arrange(
         pcs = frozenset(p % 12 for p in pitch_set)
         candidates = ((k, _transpose_cost(notes, k, pitch_set, pcs)),)
 
-    # 3-4. range folding + semitone handling
+    # 3-4. range folding + phrase octave smoothing + cross-stem alignment + semitone handling
+    aligned_count = 0
+    phrase_stats = {
+        "phrase_count": 0,
+        "phrases_shifted_up": 0,
+        "phrases_shifted_down": 0,
+        "phrase_shifted_notes": 0,
+    }
     if vocal_lead_mode:
-        cands, mel_windows, mel_onsets, mel_end_prefix_max = _map_notes_vocal_lead(
+        (
+            cands,
+            mel_cands,
+            mel_windows,
+            mel_onsets,
+            mel_end_prefix_max,
+            aligned_count,
+            phrase_stats,
+        ) = _map_notes_vocal_lead(
             notes,
             k,
             speed,
@@ -1000,10 +1199,23 @@ def arrange(
             use_melody_priority,
             dropped,
             is_cancelled,
+            phrase_octave_mode=eff_phrase_mode,
+            cross_stem_align_ms=eff_align_ms,
         )
     else:
-        cands = _map_notes_classic(notes, k, speed, profile, options, dropped, is_cancelled)
-        mel_windows, mel_onsets, mel_end_prefix_max = [], [], []
+        cands, phrase_stats = _map_notes_classic(
+            notes,
+            k,
+            speed,
+            profile,
+            options,
+            dropped,
+            is_cancelled,
+            phrase_octave_mode=eff_phrase_mode,
+            melody_track=melody_track,
+            multi_track=use_melody_priority,
+        )
+        mel_cands, mel_windows, mel_onsets, mel_end_prefix_max = [], [], [], []
 
     cands.sort(key=lambda c: (c.at_ms, c.mapped, c.note.track, c.note.channel, c.note.pitch))
 
@@ -1033,20 +1245,24 @@ def arrange(
             dropped.append(DroppedNote(c.at_ms, c.note.pitch, c.mapped, c.note.track,
                                        DropReason.DUPLICATE_KEY))
 
-    # 6. chord limit per onset cluster (+ optional simultaneous-chord arpeggiation)
+    # 6. chord limit per onset cluster (+ optional simultaneous-chord arpeggiation & rhythmic gate)
     arpeggiated_events = 0
+    accomp_thinned_count = 0
     strict = options.timing_mode == TimingMode.STRICT_FIDELITY
     if vocal_lead_mode:
-        limited, arpeggiated_events = _select_vocal_lead_clusters(
+        limited, arpeggiated_events, accomp_thinned_count = _select_vocal_lead_clusters(
             deduped,
             max_chord=max_chord,
             profile=profile,
             options=options,
             melody_track=melody_track,
             use_melody_priority=use_melody_priority,
+            mel_cands=mel_cands,
             mel_windows=mel_windows,
             mel_onsets=mel_onsets,
             mel_end_prefix_max=mel_end_prefix_max,
+            accomp_density=eff_density,
+            stem_dynamics=stem_dynamics,
             dropped=dropped,
             is_cancelled=is_cancelled,
         )
@@ -1252,6 +1468,15 @@ def arrange(
             "min_inter_key_interval_ms": timing.min_inter_key_interval_ms,
             "trigger_mode": timing.trigger_mode,
             "timing_provisional": timing.provisional,
+        },
+        "dynamics_adjustments": {
+            "accomp_density": str(eff_density),
+            "phrase_octave_mode": str(eff_phrase_mode),
+            "cross_stem_align_ms": eff_align_ms,
+            "cross_stem_aligned": aligned_count,
+            "accomp_thinned": accomp_thinned_count,
+            "used_stem_dynamics": stem_dynamics is not None,
+            **phrase_stats,
         },
     }
     return Arrangement(

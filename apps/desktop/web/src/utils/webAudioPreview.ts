@@ -79,6 +79,7 @@ export function startDraftSequencer(
     onTick: (posMs: number) => void;
     onEnded: () => void;
   },
+  options?: { fixedVelocity?: boolean },
 ): DraftSequencer {
   const ctx = resolveAudioContext();
   const sorted = [...events].sort((a, b) => a.at_ms - b.at_ms);
@@ -101,7 +102,8 @@ export function startDraftSequencer(
     const pos = Math.max(0, startMs) + elapsed;
     while (cursor < sorted.length && sorted[cursor].at_ms <= pos + 35) {
       const ev = sorted[cursor];
-      auditionMidiNote(ev.mapped_pitch, ev.velocity ?? 92, ev.hold_ms, ctx);
+      const vel = options?.fixedVelocity ? 96 : (ev.velocity ?? 92);
+      auditionMidiNote(ev.mapped_pitch, vel, ev.hold_ms, ctx);
       cursor += 1;
     }
     callbacks.onTick(Math.round(pos));

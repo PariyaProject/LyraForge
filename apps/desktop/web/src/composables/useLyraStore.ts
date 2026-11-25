@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import {
   LyraForgeApi,
+  type AccompDensity,
   type AgentRunResult,
   type ArrangementDetailResponse,
   type ArrangementRecord,
@@ -15,6 +16,7 @@ import {
   type HotkeyActionInfo,
   type LateEventPolicy,
   type PerformanceEventItem,
+  type PhraseOctaveMode,
   type PipelineInfo,
   type PlaybackPrepareResponse,
   type PlaybackStatusResponse,
@@ -65,7 +67,12 @@ export function arrangementTitle(arr: ArrangementRecord): string {
   const style = styles[arr.style] ?? arr.style;
   const transpose =
     arr.transpose === 0 ? "原调" : `移调${arr.transpose > 0 ? "+" : ""}${arr.transpose}`;
-  const stratSuffix = arr.arranger_strategy === "vocal_lead" ? " · 主旋律增强" : "";
+  const stratSuffix =
+    arr.arranger_strategy === "vocal_dynamic"
+      ? " · 强弱动态"
+      : arr.arranger_strategy === "vocal_lead"
+        ? " · 主旋律增强"
+        : "";
   return `${style} · ${transpose} · ${arr.speed}x${stratSuffix}`;
 }
 
@@ -99,6 +106,12 @@ const DEFAULT_ARRANGER_STRATEGIES: ArrangerStrategyInfo[] = [
     display_name: "主旋律优先 · 音乐学增强",
     description: "主旋律加权移调、伴奏低于主旋律、回避撞音并自动在人声段让路。",
     recommended_for: "人声流行歌 / 分轨转录 / 复杂混音",
+  },
+  {
+    id: "vocal_dynamic",
+    display_name: "主旋律强弱动态 · 分句护航",
+    description: "结合分轨响度轮廓在高潮稀疏伴奏让路，对低音换气句进行乐句级八度抬升并对齐跨轨微起音。",
+    recommended_for: "主歌低副歌高 / 伴奏碎音打乱高潮的人声曲目",
   },
 ];
 
@@ -168,6 +181,9 @@ export function createLyraStore(api: LyraForgeApi) {
   const arpeggiateMs = ref(0);
   const timingMode = ref<TimingMode>("adapted");
   const selectedArrangerStrategy = ref("classic");
+  const accompDensity = ref<"" | AccompDensity>("");
+  const phraseOctaveMode = ref<"" | PhraseOctaveMode>("");
+  const crossStemAlignMs = ref("");
   const selectedTranscriptionId = ref<string | null>(null);
   const songTracks = ref<SongTrackInfo[]>([]);
   const selectedTrackIndices = ref<number[] | null>(null);
@@ -180,6 +196,11 @@ export function createLyraStore(api: LyraForgeApi) {
   const previewDurationMs = ref(0);
   const previewPlaying = ref(false);
   const previewSeekTargetMs = ref<number | null>(null);
+  const gameFixedPreview = ref(true);
+
+  function toggleGameFixedPreview(): void {
+    gameFixedPreview.value = !gameFixedPreview.value;
+  }
 
   // Playback
   const playbackMode = ref<"dry-run" | "windows">("dry-run");
@@ -357,7 +378,11 @@ export function createLyraStore(api: LyraForgeApi) {
   }
 
   function clearPreviewUrl(): void {
-    if (previewUrl.value && previewUrl.value.startsWith("blob:")) {
+    if (
+      previewUrl.value &&
+      previewUrl.value.startsWith("blob:") &&
+      typeof URL.revokeObjectURL === "function"
+    ) {
       URL.revokeObjectURL(previewUrl.value);
     }
     previewUrl.value = null;
@@ -877,7 +902,11 @@ export function createLyraStore(api: LyraForgeApi) {
           ? `${activeTr.pipeline_id} · `
           : "";
       const strategyLabel =
-        selectedArrangerStrategy.value === "vocal_lead" ? "主旋律增强" : "经典基线";
+        selectedArrangerStrategy.value === "vocal_dynamic"
+          ? "强弱动态"
+          : selectedArrangerStrategy.value === "vocal_lead"
+            ? "主旋律增强"
+            : "经典基线";
       const customLabel =
         selectedArrangerStrategy.value !== "classic" || pipePrefix
           ? `${pipePrefix}${strategyLabel} · ${style.value}`
@@ -894,6 +923,19 @@ export function createLyraStore(api: LyraForgeApi) {
         arranger_strategy: selectedArrangerStrategy.value,
         timing_mode: timingMode.value,
       };
+      if (accompDensity.value) {
+        payload.accomp_density = accompDensity.value;
+      }
+      if (phraseOctaveMode.value) {
+        payload.phrase_octave_mode = phraseOctaveMode.value;
+      }
+      const rawAlign = String(crossStemAlignMs.value ?? "").trim();
+      if (rawAlign !== "") {
+        const parsedAlign = Number(rawAlign);
+        if (Number.isFinite(parsedAlign)) {
+          payload.cross_stem_align_ms = Math.max(0, Math.min(60, Math.round(parsedAlign)));
+        }
+      }
       if (activeTr?.id) payload.transcription_id = activeTr.id;
       if (includeTracks !== null) payload.include_tracks = includeTracks;
       if (selectedMelodyTrack.value !== null) payload.melody_track = selectedMelodyTrack.value;
@@ -934,6 +976,12 @@ export function createLyraStore(api: LyraForgeApi) {
         ? selectedTranscriptionId.value ?? songTranscriptions.value[0]?.id ?? null
         : null;
       const arp = Math.max(0, Math.min(60, Math.round(Number(arpeggiateMs.value) || 0)));
+      const isDynamicB = selectedArrangerStrategy.value === "vocal_dynamic";
+      const rawAlignB = String(crossStemAlignMs.value ?? "").trim();
+      const parsedAlignB =
+        rawAlignB !== "" && Number.isFinite(Number(rawAlignB))
+          ? Math.max(0, Math.min(60, Math.round(Number(rawAlignB))))
+          : null;
       const res = await api.arrangeAB({
         song_id: selectedSongId.value,
         instrument_profile_id: selectedProfileId.value,
@@ -954,11 +1002,16 @@ export function createLyraStore(api: LyraForgeApi) {
           speed: speed.value,
           transpose: parsedTranspose,
           arpeggiate_ms: arp,
-          arranger_strategy: "vocal_lead",
+          arranger_strategy: isDynamicB ? "vocal_dynamic" : "vocal_lead",
           include_tracks: includeTracks,
           melody_track: selectedMelodyTrack.value,
           timing_mode: timingMode.value,
-          label: "B · 主旋律增强",
+          ...(isDynamicB && accompDensity.value ? { accomp_density: accompDensity.value } : {}),
+          ...(isDynamicB && phraseOctaveMode.value
+            ? { phrase_octave_mode: phraseOctaveMode.value }
+            : {}),
+          ...(isDynamicB && parsedAlignB !== null ? { cross_stem_align_ms: parsedAlignB } : {}),
+          label: isDynamicB ? "B · 强弱动态" : "B · 主旋律增强",
         },
       });
       await refreshSongs({ alsoRefreshAll: true });
@@ -1093,8 +1146,15 @@ export function createLyraStore(api: LyraForgeApi) {
     errorMessage.value = "";
     clearPreviewUrl();
     try {
-      previewUrl.value = await api.fetchPreviewAudioUrl(selectedArrId.value);
-      reportOk("已合成离线试听 WAV，请点击播放器试听");
+      previewUrl.value = await api.fetchPreviewAudioUrl(
+        selectedArrId.value,
+        gameFixedPreview.value,
+      );
+      reportOk(
+        gameFixedPreview.value
+          ? "已合成游戏固定力度试听 WAV，请点击播放器试听"
+          : "已合成 MIDI 原力度试听 WAV，请点击播放器试听",
+      );
     } catch (err) {
       reportError((err as Error).message);
     } finally {
@@ -1773,6 +1833,9 @@ export function createLyraStore(api: LyraForgeApi) {
     selectedVocalRange,
     arrangerStrategies,
     selectedArrangerStrategy,
+    accompDensity,
+    phraseOctaveMode,
+    crossStemAlignMs,
     selectedTranscriptionId,
     songTracks,
     selectedTrackIndices,
@@ -1824,6 +1887,8 @@ export function createLyraStore(api: LyraForgeApi) {
     previewDurationMs,
     previewPlaying,
     previewSeekTargetMs,
+    gameFixedPreview,
+    toggleGameFixedPreview,
     updatePreviewPlayback,
     requestPreviewSeek,
     soundingKeyIds,
