@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import type { ArrangePresetInfo, SongTrackInfo } from "../api";
 import LyreKeyboard from "../components/LyreKeyboard.vue";
-import PianoRollEditor from "../components/PianoRollEditor.vue";
+import PianoRollEditor, { type LivePreviewSummary } from "../components/PianoRollEditor.vue";
 import StudioIcon from "../components/StudioIcon.vue";
 import { arrangementTitle, type LyraStore } from "../composables/useLyraStore";
 import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
+import {
+  formatTrackPitchRange,
+  formatTrackTooltip,
+  localizeTrackName,
+} from "../utils/trackNames";
 
 const props = defineProps<{
   store: LyraStore;
@@ -170,6 +176,45 @@ const profilePresets = computed(() =>
   ),
 );
 
+function profileDisplayName(profileId: string): string {
+  return (
+    props.store.profiles.value.find((p) => p.id === profileId)?.display_name ?? profileId
+  );
+}
+
+function presetShortTitle(preset: ArrangePresetInfo): string {
+  const parts = preset.name.split("·");
+  return parts.length > 1 ? parts[parts.length - 1].trim() : preset.name;
+}
+
+function presetParamBadge(preset: ArrangePresetInfo): string {
+  const styleLabel =
+    STYLES.find((s) => s.id === preset.style)?.label ?? preset.style;
+  const parts = [styleLabel];
+  if (preset.speed !== 1) parts.push(`${preset.speed}x`);
+  if (preset.arpeggiate_ms > 0) parts.push(`错峰${preset.arpeggiate_ms}ms`);
+  return parts.join(" · ");
+}
+
+function presetMatchesCurrent(preset: ArrangePresetInfo): boolean {
+  const curTr = props.store.transposeInput.value.trim();
+  const expectedTr = preset.transpose === null ? "auto" : String(preset.transpose);
+  return (
+    props.store.style.value === preset.style &&
+    Math.abs(props.store.speed.value - preset.speed) < 0.01 &&
+    props.store.arpeggiateMs.value === preset.arpeggiate_ms &&
+    (curTr === expectedTr || (expectedTr === "auto" && curTr === ""))
+  );
+}
+
+function displayTrackTitle(track: SongTrackInfo): string {
+  return localizeTrackName(track.name, track.index, track.is_percussion);
+}
+
+function trackRangeLabel(track: SongTrackInfo): string {
+  return formatTrackPitchRange(track);
+}
+
 const overallScore = computed(() => {
   if (!currentArr.value || !props.store.arrDetail.value) return 0;
   return (
@@ -177,6 +222,46 @@ const overallScore = computed(() => {
     currentArr.value.playable_ratio * 100
   );
 });
+
+const livePreviewSummary = computed<LivePreviewSummary | null>(() => {
+  const meta = props.store.livePreviewMeta.value;
+  const evs = props.store.livePreviewEvents.value;
+  const baseEvs = props.store.arrDetail.value?.performance.events;
+  if (!meta || !evs || !baseEvs) return null;
+  return {
+    baseCount: baseEvs.length,
+    nextCount: evs.length,
+    baseScore: props.store.arrDetail.value ? overallScore.value : null,
+    nextScore: meta.nextScore,
+    alreadyExists: meta.alreadyExists,
+    existingLabel: meta.existingLabel,
+    loading: meta.loading,
+  };
+});
+
+watch(
+  [
+    () => props.store.style.value,
+    () => props.store.selectedArrangerStrategy.value,
+    () => props.store.accompDensity.value,
+    () => props.store.phraseOctaveMode.value,
+    () => props.store.crossStemAlignMs.value,
+    () => props.store.transposeInput.value,
+    () => props.store.speed.value,
+    () => props.store.arpeggiateMs.value,
+    () => props.store.timingMode.value,
+    () => props.store.selectedProfileId.value,
+    () => props.store.selectedTrackIndices.value,
+    () => props.store.selectedMelodyTrack.value,
+    () => props.store.selectedTranscriptionId.value,
+  ],
+  () => {
+    if (!props.store.suppressLivePreview.value && props.store.arrDetail.value) {
+      props.store.requestLiveArrangePreview();
+    }
+  },
+  { deep: true },
+);
 
 async function onArrangementChange(event: Event): Promise<void> {
   const arrId = (event.target as HTMLSelectElement).value;
@@ -202,19 +287,6 @@ async function onArrangementChange(event: Event): Promise<void> {
           </option>
         </select>
 
-        <span id="studio-style-label" class="sr-only-input">编曲风格</span>
-        <div class="segmented" role="group" aria-labelledby="studio-style-label">
-          <button
-            v-for="item in STYLES"
-            :key="item.id"
-            type="button"
-            :class="{ active: store.style.value === item.id }"
-            @click="store.style.value = item.id"
-          >
-            {{ item.label }}
-          </button>
-        </div>
-
         <select
           v-if="store.arrangements.value.length > 0"
           id="studio-arr-select"
@@ -224,7 +296,7 @@ async function onArrangementChange(event: Event): Promise<void> {
           @change="onArrangementChange"
         >
           <option v-for="a in store.arrangements.value" :key="a.id" :value="a.id">
-            {{ arrangementTitle(a) }}（{{ a.event_count }} 音 · {{ a.profile_id }}）
+            {{ store.recentCreatedArrIds.value.has(a.id) ? "[新] " : "" }}{{ arrangementTitle(a) }}（{{ a.event_count }} 音 · {{ profileDisplayName(a.profile_id) }}）
           </option>
         </select>
         <template v-if="store.selectedArrId.value">
@@ -267,14 +339,6 @@ async function onArrangementChange(event: Event): Promise<void> {
         >
           <StudioIcon name="sliders" :size="14" />
           生成改编版本
-        </button>
-        <button
-          class="secondary btn-sm"
-          type="button"
-          :disabled="!store.canArrange.value || store.busy.value"
-          @click="store.handleArrangeAB"
-        >
-          生成 A/B 对比版本
         </button>
         <button
           class="secondary btn-sm"
@@ -333,8 +397,12 @@ async function onArrangementChange(event: Event): Promise<void> {
             :is-playing="store.previewPlaying.value"
             :fixed-velocity-preview="store.gameFixedPreview.value"
             :profile-id="store.selectedProfileId.value"
+            :preview-events="store.livePreviewEvents.value"
+            :preview-summary="livePreviewSummary"
             @save="store.handleSaveEdited"
             @seek="store.requestPreviewSeek"
+            @apply-preview="store.handleArrange"
+            @discard-preview="store.syncStudioParamsFromCurrentArrangement"
           />
           <div v-else class="empty-state" style="margin: var(--space-lg); flex: 1">
             <StudioIcon name="sliders" :size="24" />
@@ -354,7 +422,7 @@ async function onArrangementChange(event: Event): Promise<void> {
             </template>
             <template v-else>
               <p style="margin: 0">
-                当前曲目「{{ store.selectedSong.value.title }}」尚无改编版本。请点击上方「生成改编版本」或「生成 A/B 对比版本」。
+                当前曲目「{{ store.selectedSong.value.title }}」尚无改编版本，点击上方或下方按钮即可生成。
               </p>
               <button
                 class="primary"
@@ -389,10 +457,14 @@ async function onArrangementChange(event: Event): Promise<void> {
       <aside
         v-show="inspectorOpen"
         class="studio-inspector"
-        aria-label="编曲属性与质量检查器"
+        aria-label="编曲方案与质量检查器"
       >
         <div class="inspector-section">
-          <h2 class="subsection-heading">转谱源与编曲算法</h2>
+          <h2 class="subsection-heading">编曲方案（预设与核心设置）</h2>
+          <p class="muted" style="margin: 0; font-size: 12px">
+            点击场景预设会填入参数并立即生成；微调任何选项时，左侧谱面会实时预览变化。
+          </p>
+
           <div
             v-if="!store.hasMidiSource.value && store.songTranscriptions.value.length > 0"
             class="field"
@@ -408,10 +480,65 @@ async function onArrangementChange(event: Event): Promise<void> {
                 :key="tr.id"
                 :value="tr.id"
               >
-                {{ tr.pipeline_id ?? "direct" }} · {{ tr.engine }} ({{ tr.note_count }} 音符)
+                {{ tr.pipeline_id === "vocal_split_full" ? "双轨分离" : tr.pipeline_id === "vocal_split_lead" ? "人声分离" : "单引擎直转" }} · {{ tr.engine }} ({{ tr.note_count }} 音符)
               </option>
             </select>
           </div>
+
+          <div class="preset-list">
+            <button
+              v-if="!store.hasMidiSource.value || store.songTracks.value.length > 1"
+              class="preset-item-btn"
+              type="button"
+              :disabled="!store.canArrange.value || store.busy.value"
+              @click="store.applyRecommendedVocalSetup"
+            >
+              <span class="preset-title-row">
+                <strong>流行人声护航（推荐）</strong>
+                <span class="badge pill-accent">强弱动态 · 自动抬升</span>
+              </span>
+              <span class="muted" style="font-size: 12px">
+                高潮自动精简伴奏、低音主歌整句抬高八度，适合带人声的多轨流行歌。
+              </span>
+            </button>
+            <button
+              v-for="preset in profilePresets"
+              :key="preset.id"
+              class="preset-item-btn"
+              :class="{ 'is-active': presetMatchesCurrent(preset) }"
+              type="button"
+              :title="preset.description"
+              @click="store.applyPreset(preset.id, { autoArrange: true })"
+            >
+              <span class="preset-title-row">
+                <span>{{ presetShortTitle(preset) }}</span>
+                <span class="badge">{{ presetParamBadge(preset) }}</span>
+              </span>
+              <span class="muted" style="font-size: 12px">{{ preset.description }}</span>
+            </button>
+          </div>
+
+          <div class="field">
+            <span id="studio-style-label" class="field-label-text">编曲风格（决定同时按下的键数上限）</span>
+            <div class="segmented" role="group" aria-labelledby="studio-style-label">
+              <button
+                v-for="item in STYLES"
+                :key="item.id"
+                type="button"
+                class="style-picto-btn"
+                :class="{ active: store.style.value === item.id }"
+                @click="store.style.value = item.id"
+              >
+                <svg class="style-picto" width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
+                  <rect x="1" y="2" width="14" height="2" rx="1" fill="currentColor" />
+                  <rect v-if="item.id !== 'melody'" x="3" y="5" width="11" height="2" rx="1" fill="currentColor" opacity="0.72" />
+                  <rect v-if="item.id === 'rich'" x="5" y="8" width="11" height="2" rx="1" fill="currentColor" opacity="0.52" />
+                </svg>
+                <span>{{ item.label }}</span>
+              </button>
+            </div>
+          </div>
+
           <div class="field">
             <label for="studio-arranger-strategy">编曲映射策略</label>
             <select
@@ -430,6 +557,81 @@ async function onArrangementChange(event: Event): Promise<void> {
           <p v-if="activeStrategyInfo" class="muted" style="margin: 0; font-size: 12px">
             {{ activeStrategyInfo.description }}
           </p>
+
+          <div class="row">
+            <div class="field" style="flex: 1 1 130px">
+              <label for="studio-accomp-density">伴奏动态密度</label>
+              <select id="studio-accomp-density" v-model="store.accompDensity.value">
+                <option value="">跟随策略默认</option>
+                <option value="auto">智能强弱分明（高潮稳重、间奏放开）</option>
+                <option value="minimal">极简纯净伴奏（仅重拍骨架）</option>
+                <option value="balanced">适度双声部（人声段适度减密）</option>
+                <option value="full">完整保留全部伴奏音符</option>
+              </select>
+            </div>
+            <div class="field" style="flex: 1 1 130px">
+              <label for="studio-phrase-octave">分句八度平滑</label>
+              <select id="studio-phrase-octave" v-model="store.phraseOctaveMode.value">
+                <option value="">跟随策略默认</option>
+                <option value="smooth_lift">低音句智能抬升 (+12)</option>
+                <option value="centered">全曲均值居中平滑</option>
+                <option value="original">保持原始八度</option>
+              </select>
+            </div>
+          </div>
+
+          <details class="advanced-box">
+            <summary>专业微调（移调 / 倍速 / 和弦错峰 / 时序）</summary>
+            <div class="advanced-stack">
+              <div class="field">
+                <label for="studio-transpose">移调半音（auto 或整数）</label>
+                <input id="studio-transpose" v-model="store.transposeInput.value" type="text" />
+              </div>
+              <div class="row">
+                <div class="field" style="flex: 1 1 110px">
+                  <label for="studio-speed">速度倍率</label>
+                  <input
+                    id="studio-speed"
+                    v-model.number="store.speed.value"
+                    type="number"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                  />
+                </div>
+                <div class="field" style="flex: 1 1 110px">
+                  <label for="studio-arp">和弦错峰 (0~60 ms)</label>
+                  <input
+                    id="studio-arp"
+                    v-model.number="store.arpeggiateMs.value"
+                    type="number"
+                    min="0"
+                    max="60"
+                    step="5"
+                  />
+                </div>
+              </div>
+              <div class="field">
+                <label for="studio-timing-mode">时序适配策略</label>
+                <select id="studio-timing-mode" v-model="store.timingMode.value">
+                  <option value="adapted">乐器时序适配（保真琶音顺序 + 同键释放间隙）</option>
+                  <option value="strict_fidelity">严格忠实原谱（保留 0 ms 原始时值）</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="studio-cross-align">跨轨微对齐 (0~60 ms)</label>
+                <input
+                  id="studio-cross-align"
+                  v-model="store.crossStemAlignMs.value"
+                  type="number"
+                  min="0"
+                  max="60"
+                  step="5"
+                  placeholder="默认"
+                />
+              </div>
+            </div>
+          </details>
         </div>
 
         <div v-if="store.songTracks.value.length > 0" class="inspector-section">
@@ -449,6 +651,7 @@ async function onArrangementChange(event: Event): Promise<void> {
               v-for="track in store.songTracks.value"
               :key="track.index"
               class="track-row"
+              :title="formatTrackTooltip(track)"
             >
               <label class="track-check-label">
                 <input
@@ -461,7 +664,10 @@ async function onArrangementChange(event: Event): Promise<void> {
                   class="track-dot"
                   :class="track.is_percussion ? '' : trackColorClass(trackColorMap.get(track.index) ?? 0)"
                 />
-                <span class="track-title">{{ track.name }}</span>
+                <span class="track-title">{{ displayTrackTitle(track) }}</span>
+                <span v-if="trackRangeLabel(track)" class="track-range-tag">
+                  {{ trackRangeLabel(track) }}
+                </span>
               </label>
               <div class="track-meta-actions">
                 <span class="track-count-delta">
@@ -486,14 +692,21 @@ async function onArrangementChange(event: Event): Promise<void> {
             </li>
           </ul>
           <p class="muted" style="margin: 0; font-size: 12px">
-            勾选音轨后点击「生成改编版本」生效；21 键映射会去重同键与过密连击，输出音符数通常少于原始音轨。
+            勾选或取消音轨时左侧谱面会实时预览；悬停音轨可查看原始英文轨名，21 键映射会合并超音域与极密重复音。
           </p>
         </div>
 
         <div class="inspector-section">
           <div class="pane-header">
             <h2 class="subsection-heading">编曲适配评分</h2>
-            <span v-if="currentArr" class="pill tabular">
+            <span
+              v-if="currentArr && store.lastArrangeOutcome.value?.arrangementId === currentArr.id"
+              class="pill"
+              :class="store.lastArrangeOutcome.value.created ? 'pill-ok' : ''"
+            >
+              {{ store.lastArrangeOutcome.value.created ? "本次新建" : "匹配已有版本" }}
+            </span>
+            <span v-else-if="currentArr" class="pill tabular">
               {{ currentArr.event_count }} 音
             </span>
           </div>
@@ -603,105 +816,6 @@ async function onArrangementChange(event: Event): Promise<void> {
           <p v-else class="muted" style="margin: 0; font-size: 12px">
             生成改编版本后将在此展示可演奏率、主旋律保留度与八度折半统计。
           </p>
-        </div>
-
-        <div v-if="store.comparisonResult.value" class="inspector-section">
-          <div class="pane-header">
-            <h2 class="subsection-heading">A/B 编曲对比结果</h2>
-            <span class="pill pill-ok">胜出：{{ store.comparisonResult.value.winner }}</span>
-          </div>
-          <p class="muted" style="margin: 0; font-size: 12px">
-            {{ store.comparisonResult.value.summary }}
-          </p>
-        </div>
-
-        <div class="inspector-section">
-          <h2 class="subsection-heading">一键预设（当前乐器）</h2>
-          <div class="preset-list">
-            <button
-              v-for="preset in profilePresets"
-              :key="preset.id"
-              class="preset-item-btn"
-              type="button"
-              :title="preset.description"
-              @click="store.applyPreset(preset.id, { autoArrange: true })"
-            >
-              <span>{{ preset.name }}</span>
-              <span class="muted" style="font-size: 12px">{{ preset.description }}</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="inspector-section">
-          <h2 class="subsection-heading">高级编曲参数</h2>
-          <div class="field">
-            <label for="studio-timing-mode">时序适配策略</label>
-            <select id="studio-timing-mode" v-model="store.timingMode.value">
-              <option value="adapted">乐器时序适配（保真琶音顺序 + 同键释放间隙）</option>
-              <option value="strict_fidelity">严格忠实原谱（保留 0 ms 原始时值）</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="studio-accomp-density">伴奏动态密度</label>
-            <select id="studio-accomp-density" v-model="store.accompDensity.value">
-              <option value="">跟随所选策略默认</option>
-              <option value="auto">智能强弱分明（高潮稳重、间奏放开）</option>
-              <option value="minimal">极简纯净伴奏（仅重拍骨架）</option>
-              <option value="balanced">适度双声部（人声段适度减密）</option>
-              <option value="full">完整保留全部伴奏音符</option>
-            </select>
-          </div>
-          <div class="row">
-            <div class="field" style="flex: 1 1 130px">
-              <label for="studio-phrase-octave">分句八度平滑</label>
-              <select id="studio-phrase-octave" v-model="store.phraseOctaveMode.value">
-                <option value="">跟随策略默认</option>
-                <option value="smooth_lift">低音句智能抬升 (+12)</option>
-                <option value="centered">全曲均值居中平滑</option>
-                <option value="original">保持原始八度</option>
-              </select>
-            </div>
-            <div class="field" style="flex: 1 1 110px">
-              <label for="studio-cross-align">跨轨微对齐 (ms)</label>
-              <input
-                id="studio-cross-align"
-                v-model="store.crossStemAlignMs.value"
-                type="number"
-                min="0"
-                max="60"
-                step="5"
-                placeholder="默认"
-              />
-            </div>
-          </div>
-          <div class="field">
-            <label for="studio-transpose">移调半音（auto 或整数）</label>
-            <input id="studio-transpose" v-model="store.transposeInput.value" type="text" />
-          </div>
-          <div class="row">
-            <div class="field" style="flex: 1 1 110px">
-              <label for="studio-speed">速度倍率</label>
-              <input
-                id="studio-speed"
-                v-model.number="store.speed.value"
-                type="number"
-                min="0.5"
-                max="2.0"
-                step="0.05"
-              />
-            </div>
-            <div class="field" style="flex: 1 1 110px">
-              <label for="studio-arp">和弦错峰 (0~60 ms)</label>
-              <input
-                id="studio-arp"
-                v-model.number="store.arpeggiateMs.value"
-                type="number"
-                min="0"
-                max="60"
-                step="5"
-              />
-            </div>
-          </div>
           <button
             class="secondary btn-sm"
             type="button"
@@ -712,6 +826,32 @@ async function onArrangementChange(event: Event): Promise<void> {
             前往试听与演奏控制台
           </button>
         </div>
+
+        <details class="advanced-box" :open="Boolean(store.comparisonResult.value)">
+          <summary>版本对照（A/B 对比 · 可选）</summary>
+          <div class="advanced-stack">
+            <p class="muted" style="margin: 0; font-size: 12px">
+              同时生成「经典基线」与「人声增强/动态」两版并自动对比评分，拿不准策略时可用于试听比较。
+            </p>
+            <button
+              class="secondary btn-sm"
+              type="button"
+              :disabled="!store.canArrange.value || store.busy.value"
+              @click="store.handleArrangeAB"
+            >
+              生成 A/B 对比版本
+            </button>
+            <div v-if="store.comparisonResult.value" class="ab-compare-box">
+              <div class="pane-header">
+                <strong>A/B 编曲对比结果</strong>
+                <span class="pill pill-ok">胜出：{{ store.comparisonResult.value.winner }}</span>
+              </div>
+              <p class="muted" style="margin: 0; font-size: 12px">
+                {{ store.comparisonResult.value.summary }}
+              </p>
+            </div>
+          </div>
+        </details>
 
         <details class="advanced-box">
           <summary>快捷键说明</summary>
@@ -961,6 +1101,56 @@ async function onArrangementChange(event: Event): Promise<void> {
   white-space: normal;
   background: var(--color-paper);
   border-color: var(--color-rule);
+}
+
+.preset-item-btn.is-active {
+  background: var(--color-paper-3);
+  border-color: var(--color-accent);
+}
+
+.preset-title-row {
+  inline-size: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.field-label-text {
+  font-size: 12px;
+  color: var(--color-ink-2);
+}
+
+.style-picto-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.style-picto {
+  flex-shrink: 0;
+}
+
+.advanced-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-block-start: var(--space-xs);
+}
+
+.track-range-tag {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.ab-compare-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding-block-start: var(--space-xs);
+  border-block-start: var(--rule-hair) solid var(--color-rule);
 }
 
 @media (hover: hover) {

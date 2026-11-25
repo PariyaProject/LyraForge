@@ -54,6 +54,7 @@
 | [muscriptor/muscriptor](https://github.com/muscriptor/muscriptor) | `68456b17da8eea651eee6084c104611089810231` | 代码 **MIT**；权重 **CC BY-NC 4.0** | 活跃（stars: 2002） | README 明确要求登录 HuggingFace 并接受非商用（CC BY-NC 4.0）权重协议；**禁止默认打包进公开发行版**，仅列为研究参考。 |
 | [zeikar/pianoize](https://github.com/zeikar/pianoize) | `66b3f6ad540f2fab1c68e54fa831c630f8a2d387` | **MIT** | 活跃（stars: 3） | Agent 编曲验证思路参考；非原琴专用，未复用代码。 |
 | [mido/mido](https://github.com/mido/mido) | `d261ee41db32717fb73dfaa14162159fb6529ef5` | **MIT** | 活跃（stars: 1661） | M0 直接使用的 MIDI 文件解析库。 |
+| [sgossner/VCSL](https://github.com/sgossner/VCSL) | `c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e` | **CC0-1.0**（Public Domain） | 活跃（stars: 46） | 从 Steinway Model B 三角钢琴、音乐会竖琴与越式十三弦（Dan Tranh）抽取并降采样裁剪的真实原声试听采样（`src/lyraforge/preview/samples/`），与 `GPL-3.0` 完全兼容；严禁提取游戏本体音频。 |
 
 ---
 

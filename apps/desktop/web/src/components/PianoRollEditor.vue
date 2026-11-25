@@ -2,13 +2,25 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PerformanceEventItem, PreviewTimbre, ProfileKeyDef, SongTrackInfo } from "../api";
 import { buildTrackColorMap, trackColorClass } from "../utils/trackColors";
+import { formatAdjustmentLabel, localizeTrackName } from "../utils/trackNames";
 import {
   auditionMidiNote,
+  preloadPreviewSamples,
   resolvePreviewTimbre,
   startDraftSequencer,
   type DraftSequencer,
 } from "../utils/webAudioPreview";
 import StudioIcon from "./StudioIcon.vue";
+
+export interface LivePreviewSummary {
+  baseCount: number;
+  nextCount: number;
+  baseScore: number | null;
+  nextScore: number | null;
+  alreadyExists: boolean;
+  existingLabel?: string | null;
+  loading?: boolean;
+}
 
 const props = withDefaults(
   defineProps<{
@@ -24,9 +36,13 @@ const props = withDefaults(
     profileId?: string | null;
     previewTimbre?: PreviewTimbre;
     shortcutsActive?: boolean;
+    previewEvents?: PerformanceEventItem[] | null;
+    previewSummary?: LivePreviewSummary | null;
   }>(),
   {
     shortcutsActive: true,
+    previewEvents: null,
+    previewSummary: null,
   },
 );
 
@@ -34,6 +50,8 @@ const emit = defineEmits<{
   save: [payload: { events: PerformanceEventItem[]; label: string }];
   seek: [ms: number];
   "update:previewTimbre": [timbre: PreviewTimbre];
+  applyPreview: [];
+  discardPreview: [];
 }>();
 
 const ROW_HEIGHT_PX = 26;
@@ -72,7 +90,22 @@ const historyIndex = ref(0);
 const selectedIndices = ref<Set<number>>(
   new Set(workingEvents.value.length > 0 ? [0] : []),
 );
-const focusedTrackIndex = ref<number | null>(null);
+// null = all tracks audible; a Set lists currently enabled track indices for multi-track audition
+const audibleTracks = ref<Set<number> | null>(null);
+const previewDisplayMode = ref<"diff" | "after">("diff");
+
+function isTrackAudible(trackIndex: number): boolean {
+  return audibleTracks.value === null || audibleTracks.value.has(trackIndex);
+}
+
+watch(
+  () => props.previewEvents,
+  (next) => {
+    if (!next) {
+      previewDisplayMode.value = "diff";
+    }
+  },
+);
 
 const newKeyId = ref("mid_1");
 const newAtMs = ref(0);
@@ -94,6 +127,9 @@ watch(
 );
 const activeTimbre = computed(() => props.previewTimbre ?? internalTimbre.value);
 const resolvedTimbre = computed(() => resolvePreviewTimbre(props.profileId, activeTimbre.value));
+watch(resolvedTimbre, (next) => {
+  void preloadPreviewSamples(next);
+});
 function onTimbreSelectChange(event: Event): void {
   const next = (event.target as HTMLSelectElement).value as PreviewTimbre;
   internalTimbre.value = next;
@@ -106,8 +142,8 @@ const followDetached = ref(false);
 const playheadDirection = ref<"left" | "right" | "visible">("visible");
 let activeSequencer: DraftSequencer | null = null;
 let isProgrammaticScroll = false;
+let lastProgrammaticScrollLeft: number | null = null;
 let programmaticScrollTimer: number | null = null;
-let reattachTimer: number | null = null;
 
 // Context menu state
 const contextMenu = ref<{ idx: number; x: number; y: number } | null>(null);
@@ -148,12 +184,11 @@ function stopDraftPlayback(): void {
 }
 
 function getAudibleDraftEvents(): PerformanceEventItem[] {
-  if (focusedTrackIndex.value === null) {
-    return workingEvents.value;
+  const sourceEvents = props.previewEvents ?? workingEvents.value;
+  if (audibleTracks.value === null) {
+    return sourceEvents;
   }
-  return workingEvents.value.filter(
-    (ev) => (ev.source_track ?? 0) === focusedTrackIndex.value,
-  );
+  return sourceEvents.filter((ev) => isTrackAudible(ev.source_track ?? 0));
 }
 
 function formatClockTime(ms: number): string {
@@ -180,6 +215,29 @@ function updatePlayheadDirection(): void {
   }
 }
 
+function setProgrammaticScrollLeft(targetLeft: number): void {
+  const el = scrollEl.value;
+  if (!el) return;
+  const clampedLeft = Math.max(0, Math.round(targetLeft));
+  if (programmaticScrollTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(programmaticScrollTimer);
+  }
+  isProgrammaticScroll = true;
+  lastProgrammaticScrollLeft = clampedLeft;
+  el.scrollLeft = clampedLeft;
+  updatePlayheadDirection();
+  if (typeof window !== "undefined") {
+    programmaticScrollTimer = window.setTimeout(() => {
+      isProgrammaticScroll = false;
+      lastProgrammaticScrollLeft = null;
+      programmaticScrollTimer = null;
+    }, 40);
+  } else {
+    isProgrammaticScroll = false;
+    lastProgrammaticScrollLeft = null;
+  }
+}
+
 function scrollPlayheadIntoView(ratio = 0.3): void {
   const el = scrollEl.value;
   if (!el) return;
@@ -188,49 +246,46 @@ function scrollPlayheadIntoView(ratio = 0.3): void {
     0,
     Math.round(activePlayheadMs.value * pxPerMs.value - laneViewWidth * ratio),
   );
-  if (programmaticScrollTimer !== null && typeof window !== "undefined") {
-    window.clearTimeout(programmaticScrollTimer);
-  }
-  isProgrammaticScroll = true;
-  el.scrollLeft = targetLeft;
-  updatePlayheadDirection();
-  if (typeof window !== "undefined") {
-    programmaticScrollTimer = window.setTimeout(() => {
-      isProgrammaticScroll = false;
-      programmaticScrollTimer = null;
-    }, 60);
-  } else {
-    isProgrammaticScroll = false;
-  }
+  setProgrammaticScrollLeft(targetLeft);
 }
 
 function returnToPlayhead(): void {
-  if (reattachTimer !== null && typeof window !== "undefined") {
-    window.clearTimeout(reattachTimer);
-    reattachTimer = null;
-  }
   followPlayhead.value = true;
   followDetached.value = false;
   scrollPlayheadIntoView(0.3);
 }
 
+function detachFollowIfPlaying(): void {
+  if ((draftPlaying.value || props.isPlaying) && followPlayhead.value) {
+    followDetached.value = true;
+  }
+}
+
 function onTimelineScroll(): void {
   updatePlayheadDirection();
-  if (isProgrammaticScroll) return;
-  if ((!draftPlaying.value && !props.isPlaying) || !followPlayhead.value) return;
-  followDetached.value = true;
-  if (reattachTimer !== null && typeof window !== "undefined") {
-    window.clearTimeout(reattachTimer);
-    reattachTimer = null;
+  const el = scrollEl.value;
+  if (
+    isProgrammaticScroll &&
+    el &&
+    lastProgrammaticScrollLeft !== null &&
+    Math.abs(el.scrollLeft - lastProgrammaticScrollLeft) <= 2
+  ) {
+    return;
   }
-  if (playheadDirection.value === "visible" && typeof window !== "undefined") {
-    reattachTimer = window.setTimeout(() => {
-      updatePlayheadDirection();
-      if (playheadDirection.value === "visible") {
-        followDetached.value = false;
-      }
-      reattachTimer = null;
-    }, 400);
+  detachFollowIfPlaying();
+}
+
+function onScrollPointerDown(event: PointerEvent): void {
+  if (!draftPlaying.value && !props.isPlaying) return;
+  const el = scrollEl.value;
+  if (!el || !followPlayhead.value) return;
+  const rect = el.getBoundingClientRect();
+  const onScrollbarArea =
+    event.target === el ||
+    event.clientY > rect.top + el.clientHeight ||
+    event.clientX > rect.left + el.clientWidth;
+  if (onScrollbarArea) {
+    detachFollowIfPlaying();
   }
 }
 
@@ -260,6 +315,7 @@ function startDraftFrom(startMs: number): void {
     {
       getFixedVelocity: () => Boolean(props.fixedVelocityPreview),
       getTimbre: () => resolvedTimbre.value,
+      getTotalDurationMs: () => totalDurationMs.value,
     },
   );
 }
@@ -282,22 +338,7 @@ function toggleDraftPlayback(): void {
 
 function restartDraftPlayback(): void {
   if (workingEvents.value.length === 0) return;
-  const el = scrollEl.value;
-  if (el) {
-    if (programmaticScrollTimer !== null && typeof window !== "undefined") {
-      window.clearTimeout(programmaticScrollTimer);
-    }
-    isProgrammaticScroll = true;
-    el.scrollLeft = 0;
-    if (typeof window !== "undefined") {
-      programmaticScrollTimer = window.setTimeout(() => {
-        isProgrammaticScroll = false;
-        programmaticScrollTimer = null;
-      }, 60);
-    } else {
-      isProgrammaticScroll = false;
-    }
-  }
+  setProgrammaticScrollLeft(0);
   startDraftFrom(0);
 }
 
@@ -343,29 +384,21 @@ watch(
     selectedIndices.value = new Set(initial.length > 0 ? [0] : []);
     contextMenu.value = null;
 
-    if (
-      focusedTrackIndex.value !== null &&
-      !initial.some((e) => (e.source_track ?? 0) === focusedTrackIndex.value) &&
-      !(props.tracks ?? []).some((t) => t.index === focusedTrackIndex.value)
-    ) {
-      focusedTrackIndex.value = null;
+    if (audibleTracks.value !== null) {
+      const validIds = new Set<number>([
+        ...initial.map((e) => e.source_track ?? 0),
+        ...(props.tracks ?? []).filter((t) => !t.is_percussion).map((t) => t.index),
+      ]);
+      const kept = new Set([...audibleTracks.value].filter((id) => validIds.has(id)));
+      audibleTracks.value = kept.size === 0 && audibleTracks.value.size > 0 ? null : kept;
     }
 
     void nextTick(() => {
       const el = scrollEl.value;
       if (!el) return;
       if (switchedArrangement) {
-        isProgrammaticScroll = true;
-        el.scrollLeft = 0;
+        setProgrammaticScrollLeft(0);
         scrollToMedianPitch();
-        if (typeof window !== "undefined") {
-          window.setTimeout(() => {
-            isProgrammaticScroll = false;
-            updatePlayheadDirection();
-          }, 60);
-        } else {
-          isProgrammaticScroll = false;
-        }
       } else if (prevScrollLeft === 0 && prevScrollTop === 0) {
         scrollToMedianPitch();
       } else {
@@ -404,10 +437,11 @@ const pxPerMs = computed(() => BASE_PX_PER_MS * (zoomPct.value / 100));
 const minNoteWidthPx = computed(() => (zoomPct.value <= 50 ? 8 : zoomPct.value <= 75 ? 14 : 22));
 
 const totalDurationMs = computed(() => {
-  if (workingEvents.value.length === 0) return 2400;
+  const candidates = [...workingEvents.value, ...(props.previewEvents ?? [])];
+  if (candidates.length === 0) return 2400;
   return Math.max(
     2400,
-    ...workingEvents.value.map((e) => e.at_ms + Math.max(40, e.hold_ms)),
+    ...candidates.map((e) => e.at_ms + Math.max(40, e.hold_ms)),
   );
 });
 
@@ -533,14 +567,143 @@ const legendTracks = computed(() => {
   return allIds.map((idx) => {
     const info = tracksByIdx.get(idx);
     const slot = trackColorMap.value.get(idx) ?? 0;
+    const rawName = info?.name ?? "";
+    const displayName = localizeTrackName(rawName, idx, false);
     return {
       index: idx,
-      name: info?.name || `轨 ${idx}`,
+      rawName,
+      name: displayName,
       count: eventCountsByTrack.value.get(idx) ?? 0,
       isMelody: props.melodyTrack !== null && props.melodyTrack !== undefined && props.melodyTrack === idx,
       colorClass: trackColorClass(slot),
     };
   });
+});
+
+const trackDisplayNameMap = computed(() => {
+  const map = new Map<number, string>();
+  for (const tr of legendTracks.value) {
+    map.set(tr.index, tr.name);
+  }
+  return map;
+});
+
+function formatNoteTooltip(keyDef: ProfileKeyDef, ev: PerformanceEventItem): string {
+  const trIdx = ev.source_track ?? 0;
+  const trName = trackDisplayNameMap.value.get(trIdx) ?? `音轨 ${trIdx + 1}`;
+  const base = `${keyDef.binding} (${keyDef.key_id}) @ ${ev.at_ms} ms · ${trName}`;
+  const adj = ev.adjustments?.length
+    ? ` · ${ev.adjustments.map(formatAdjustmentLabel).join("、")}`
+    : "";
+  return `${base}${adj}`;
+}
+
+const allKnownTrackIndices = computed(() => legendTracks.value.map((t) => t.index));
+const allTracksAudible = computed(
+  () =>
+    audibleTracks.value === null ||
+    (allKnownTrackIndices.value.length > 0 &&
+      allKnownTrackIndices.value.every((idx) => audibleTracks.value?.has(idx))),
+);
+
+function isTrackSoloed(trackIndex: number): boolean {
+  return (
+    audibleTracks.value !== null &&
+    audibleTracks.value.size === 1 &&
+    audibleTracks.value.has(trackIndex)
+  );
+}
+
+function enableAllTracks(): void {
+  audibleTracks.value = null;
+}
+
+function toggleTrackAudible(trackIndex: number): void {
+  const known = allKnownTrackIndices.value;
+  const current = new Set<number>(audibleTracks.value ?? known);
+  if (current.has(trackIndex)) {
+    current.delete(trackIndex);
+  } else {
+    current.add(trackIndex);
+  }
+  if (known.length > 0 && known.every((idx) => current.has(idx))) {
+    audibleTracks.value = null;
+  } else {
+    audibleTracks.value = current;
+  }
+}
+
+function soloTrack(trackIndex: number): void {
+  if (isTrackSoloed(trackIndex)) {
+    audibleTracks.value = null;
+    return;
+  }
+  audibleTracks.value = new Set([trackIndex]);
+}
+
+const primaryTargetTrack = computed(() => {
+  if (props.melodyTrack !== null && props.melodyTrack !== undefined) return props.melodyTrack;
+  if (audibleTracks.value && audibleTracks.value.size === 1) {
+    return [...audibleTracks.value][0];
+  }
+  return 0;
+});
+
+const previewDiff = computed(() => {
+  const preview = props.previewEvents;
+  if (!preview) return null;
+  const eventKey = (ev: PerformanceEventItem) =>
+    `${ev.at_ms}|${ev.key_id}|${ev.source_track ?? 0}`;
+  const prevCounts = new Map<string, number>();
+  for (const ev of preview) {
+    const k = eventKey(ev);
+    prevCounts.set(k, (prevCounts.get(k) ?? 0) + 1);
+  }
+  const baseRem = new Map(prevCounts);
+  const removedBaseIndices = new Set<number>();
+  workingEvents.value.forEach((ev, idx) => {
+    const k = eventKey(ev);
+    const cnt = baseRem.get(k) ?? 0;
+    if (cnt > 0) {
+      baseRem.set(k, cnt - 1);
+    } else {
+      removedBaseIndices.add(idx);
+    }
+  });
+
+  const baseCounts = new Map<string, number>();
+  for (const ev of workingEvents.value) {
+    const k = eventKey(ev);
+    baseCounts.set(k, (baseCounts.get(k) ?? 0) + 1);
+  }
+  const previewRem = new Map(baseCounts);
+  const addedPreviewEvents: PerformanceEventItem[] = [];
+  for (const ev of preview) {
+    const k = eventKey(ev);
+    const cnt = previewRem.get(k) ?? 0;
+    if (cnt > 0) {
+      previewRem.set(k, cnt - 1);
+    } else {
+      addedPreviewEvents.push(ev);
+    }
+  }
+  return {
+    removedBaseIndices,
+    addedPreviewEvents,
+    removedCount: removedBaseIndices.size,
+    addedCount: addedPreviewEvents.length,
+  };
+});
+
+const addedGhostsByKey = computed(() => {
+  const map: Record<string, PerformanceEventItem[]> = {};
+  const diff = previewDiff.value;
+  if (!diff) return map;
+  for (const ev of diff.addedPreviewEvents) {
+    if (!map[ev.key_id]) map[ev.key_id] = [];
+    map[ev.key_id].push(ev);
+  }
+  return map;
 });
 
 const showLegend = computed(
@@ -930,7 +1093,7 @@ const canDeleteSelection = computed(
 function selectAllVisible(): void {
   const next = new Set<number>();
   workingEvents.value.forEach((ev, idx) => {
-    if (focusedTrackIndex.value === null || (ev.source_track ?? 0) === focusedTrackIndex.value) {
+    if (isTrackAudible(ev.source_track ?? 0)) {
       next.add(idx);
     }
   });
@@ -938,7 +1101,7 @@ function selectAllVisible(): void {
 }
 
 function createNoteFor(key: ProfileKeyDef, atMs: number): void {
-  const targetTrack = focusedTrackIndex.value ?? 0;
+  const targetTrack = primaryTargetTrack.value;
   const created: PerformanceEventItem = {
     at_ms: Math.max(0, Math.round(atMs)),
     key_id: key.key_id,
@@ -1020,7 +1183,10 @@ function onScrollWheel(event: WheelEvent): void {
   }
   if (event.shiftKey) {
     event.preventDefault();
+    detachFollowIfPlaying();
     el.scrollLeft += event.deltaY || event.deltaX;
+  } else if (Math.abs(event.deltaX) > 0) {
+    detachFollowIfPlaying();
   }
 }
 
@@ -1207,7 +1373,7 @@ function updateMarqueeSelection(): void {
 
   const nextSet = m.additive ? new Set(m.baseSelected) : new Set<number>();
   workingEvents.value.forEach((ev, idx) => {
-    if (focusedTrackIndex.value !== null && (ev.source_track ?? 0) !== focusedTrackIndex.value) {
+    if (!isTrackAudible(ev.source_track ?? 0)) {
       return;
     }
     const rowIdx = rowIndexByKeyId.value.get(ev.key_id);
@@ -1393,6 +1559,7 @@ function onWindowShortcutKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   void nextTick(scrollToMedianPitch);
+  void preloadPreviewSamples(resolvedTimbre.value);
   if (typeof window !== "undefined") {
     window.addEventListener("mousedown", onGlobalClick);
     window.addEventListener("keydown", onWindowShortcutKeydown);
@@ -1407,10 +1574,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(programmaticScrollTimer);
     programmaticScrollTimer = null;
   }
-  if (reattachTimer !== null && typeof window !== "undefined") {
-    window.clearTimeout(reattachTimer);
-    reattachTimer = null;
-  }
+  isProgrammaticScroll = false;
+  lastProgrammaticScrollLeft = null;
   if (typeof window !== "undefined") {
     window.removeEventListener("mousedown", onGlobalClick);
     window.removeEventListener("keydown", onWindowShortcutKeydown);
@@ -1474,10 +1639,10 @@ onBeforeUnmount(() => {
           @change="onTimbreSelectChange"
         >
           <option value="auto">音色：跟随乐器</option>
-          <option value="piano">钢琴（谐律键琴）</option>
-          <option value="lyre">拨弦（风物之诗琴）</option>
-          <option value="zither">古筝（镜花之琴）</option>
-          <option value="vintage">木弦（老旧的诗琴）</option>
+          <option value="piano">真钢琴 · Steinway（谐律键琴）</option>
+          <option value="lyre">真竖琴（风物之诗琴）</option>
+          <option value="zither">真古筝（镜花之琴）</option>
+          <option value="vintage">复古木弦（老旧的诗琴）</option>
         </select>
         <span class="badge" :class="isDirty ? 'pill-warn' : 'pill-ok'">
           {{ isDirty ? "有未保存修改" : "已同步" }}
@@ -1565,29 +1730,88 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="showLegend" class="pr-legend" role="group" aria-label="按音轨区分颜色与聚焦">
-      <span class="pr-legend-label">音轨配色：</span>
+    <div v-if="showLegend" class="pr-legend" role="group" aria-label="按音轨区分颜色与多选试听">
+      <span class="pr-legend-label">试听音轨（可多选）：</span>
       <button
         type="button"
         class="pr-legend-btn"
-        :class="{ 'is-active': focusedTrackIndex === null }"
-        @click="focusedTrackIndex = null"
+        :class="{ 'is-active': allTracksAudible }"
+        @click="enableAllTracks"
       >
-        全部音轨 ({{ workingEvents.length }})
+        全部开启 ({{ workingEvents.length }})
       </button>
-      <button
-        v-for="tr in legendTracks"
-        :key="tr.index"
-        type="button"
-        class="pr-legend-btn"
-        :class="{ 'is-active': focusedTrackIndex === tr.index }"
-        @click="focusedTrackIndex = focusedTrackIndex === tr.index ? null : tr.index"
-      >
-        <span class="track-dot" :class="tr.colorClass" />
-        <span>
-          {{ tr.name }}<template v-if="tr.isMelody"> (主旋律)</template> ({{ tr.count }})
+      <div v-for="tr in legendTracks" :key="tr.index" class="pr-track-chip">
+        <button
+          type="button"
+          class="pr-legend-btn"
+          :class="{ 'is-active': isTrackAudible(tr.index) }"
+          :title="tr.rawName ? `原轨名：${tr.rawName}（点击勾选/取消此轨参与试听）` : '点击勾选/取消此轨参与试听'"
+          @click="toggleTrackAudible(tr.index)"
+        >
+          <span class="pr-check-mark" aria-hidden="true">{{ isTrackAudible(tr.index) ? "✓" : "" }}</span>
+          <span class="track-dot" :class="tr.colorClass" />
+          <span>
+            {{ tr.name }}<template v-if="tr.isMelody"> (主旋律)</template> ({{ tr.count }})
+          </span>
+        </button>
+        <button
+          type="button"
+          class="pr-solo-btn"
+          :class="{ 'is-active': isTrackSoloed(tr.index) }"
+          :title="`仅独奏 ${tr.name}`"
+          @click="soloTrack(tr.index)"
+        >
+          独奏
+        </button>
+      </div>
+    </div>
+
+    <div v-if="previewSummary && previewDiff" class="pr-preview-bar" role="status">
+      <div class="pr-preview-stats">
+        <strong>参数实时预览（未保存）</strong>
+        <span class="badge tabular">
+          {{ previewSummary.baseCount }} → {{ previewSummary.nextCount }} 音
         </span>
-      </button>
+        <span v-if="previewDiff.removedCount > 0" class="badge pill-warn tabular">
+          删减 -{{ previewDiff.removedCount }}
+        </span>
+        <span v-if="previewDiff.addedCount > 0" class="badge pill-ok tabular">
+          新增/移位 +{{ previewDiff.addedCount }}
+        </span>
+        <span v-if="previewSummary.nextScore !== null" class="muted tabular">
+          评分 {{ previewSummary.baseScore !== null ? previewSummary.baseScore.toFixed(1) : "-" }} →
+          {{ previewSummary.nextScore.toFixed(1) }}
+        </span>
+        <span class="badge" :class="previewSummary.alreadyExists ? '' : 'pill-accent'">
+          {{
+            previewSummary.loading
+              ? "计算中…"
+              : previewSummary.alreadyExists
+                ? `匹配已有版本${previewSummary.existingLabel ? `（${previewSummary.existingLabel}）` : ""}`
+                : "将新建独立版本"
+          }}
+        </span>
+      </div>
+      <div class="pr-preview-actions">
+        <button
+          type="button"
+          class="ghost btn-sm"
+          @click="previewDisplayMode = previewDisplayMode === 'diff' ? 'after' : 'diff'"
+        >
+          {{ previewDisplayMode === "diff" ? "仅看改后谱面" : "显示删减/新增对比" }}
+        </button>
+        <button
+          type="button"
+          class="primary btn-sm"
+          :disabled="saving || previewSummary.loading"
+          @click="emit('applyPreview')"
+        >
+          应用并生成版本
+        </button>
+        <button type="button" class="ghost btn-sm" @click="emit('discardPreview')">
+          还原当前参数
+        </button>
+      </div>
     </div>
 
     <div class="pr-add-bar">
@@ -1624,7 +1848,7 @@ onBeforeUnmount(() => {
             v-if="selectedAccompanimentCount > 0"
             type="button"
             class="secondary btn-sm"
-            title="在选区内每 380 ms 仅保留一个伴奏锚点，减少碎片抢戏"
+            title="仅对当前框选区域内的伴奏每 380 ms 保留一个锚点"
             @click="thinSelectedAccompaniment"
           >
             伴奏瘦身
@@ -1633,7 +1857,7 @@ onBeforeUnmount(() => {
             v-if="selectedAccompanimentCount > 0"
             type="button"
             class="secondary btn-sm"
-            title="清除选区内的非主旋律伴奏音符"
+            title="仅清除当前框选区域内的伴奏音符"
             @click="clearSelectedAccompaniment"
           >
             清伴奏
@@ -1696,17 +1920,17 @@ onBeforeUnmount(() => {
         id="pr-return-playhead-btn"
         type="button"
         class="primary btn-sm pr-return-playhead-btn"
-        title="快捷键 F：回到当前播放头并恢复自动滚动跟随"
+        title="快捷键 F：回到当前播放点并恢复自动跟随"
         @click="returnToPlayhead"
       >
         <template v-if="playheadDirection === 'left'">
-          ← 回到播放头 ({{ formatClockTime(activePlayheadMs) }})
+          ← 回到播放点 ({{ formatClockTime(activePlayheadMs) }})
         </template>
         <template v-else-if="playheadDirection === 'right'">
-          回到播放头 ({{ formatClockTime(activePlayheadMs) }}) →
+          回到播放点 ({{ formatClockTime(activePlayheadMs) }}) →
         </template>
         <template v-else>
-          恢复自动跟随 ({{ formatClockTime(activePlayheadMs) }})
+          回到播放点 ({{ formatClockTime(activePlayheadMs) }})
         </template>
       </button>
 
@@ -1715,6 +1939,7 @@ onBeforeUnmount(() => {
         class="pr-scroll"
         role="region"
         aria-label="MIDI Piano Roll 可视化编辑器"
+        @pointerdown="onScrollPointerDown"
         @scroll="onTimelineScroll"
         @wheel="onScrollWheel"
       >
@@ -1776,32 +2001,48 @@ onBeforeUnmount(() => {
                 class="pr-playhead"
                 :style="{ left: `${playheadLeftPx}px` }"
               />
-              <button
-                v-for="item in eventsByKey[k.key_id] ?? []"
-                :key="`${item.idx}-${item.ev.key_id}-${item.ev.at_ms}`"
-                type="button"
-                class="pr-note"
-                :class="[
-                  trackColorClass(trackSlotFor(item.ev)),
-                  {
-                    selected: selectedIndices.has(item.idx),
-                    dragging: isNoteDragging(item.idx),
-                    'is-adjusted': (item.ev.adjustments?.length ?? 0) > 0,
-                    'is-dimmed':
-                      focusedTrackIndex !== null &&
-                      (item.ev.source_track ?? 0) !== focusedTrackIndex,
-                  },
-                ]"
+              <template v-for="item in eventsByKey[k.key_id] ?? []" :key="`${item.idx}-${item.ev.key_id}-${item.ev.at_ms}`">
+                <button
+                  v-if="!(previewDiff && previewDisplayMode === 'after' && previewDiff.removedBaseIndices.has(item.idx))"
+                  type="button"
+                  class="pr-note"
+                  :class="[
+                    trackColorClass(trackSlotFor(item.ev)),
+                    {
+                      selected: selectedIndices.has(item.idx),
+                      dragging: isNoteDragging(item.idx),
+                      'is-adjusted': (item.ev.adjustments?.length ?? 0) > 0,
+                      'is-dimmed': !isTrackAudible(item.ev.source_track ?? 0),
+                      'is-ghost-removed':
+                        Boolean(previewDiff) &&
+                        previewDisplayMode === 'diff' &&
+                        previewDiff!.removedBaseIndices.has(item.idx),
+                    },
+                  ]"
+                  :style="{
+                    left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
+                    width: `${noteWidthPx(item.ev)}px`,
+                  }"
+                  :title="formatNoteTooltip(k, item.ev)"
+                  @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
+                  @contextmenu="onNoteContextMenu(item.idx, $event)"
+                >
+                  {{ k.binding }}
+                </button>
+              </template>
+              <span
+                v-for="(ghost, gIdx) in addedGhostsByKey[k.key_id] ?? []"
+                :key="`ghost-${gIdx}-${ghost.key_id}-${ghost.at_ms}`"
+                class="pr-note-ghost-added"
+                :class="{ 'is-dimmed': !isTrackAudible(ghost.source_track ?? 0) }"
                 :style="{
-                  left: `${Math.round(item.ev.at_ms * pxPerMs)}px`,
-                  width: `${noteWidthPx(item.ev)}px`,
+                  left: `${Math.round(ghost.at_ms * pxPerMs)}px`,
+                  width: `${noteWidthPx(ghost)}px`,
                 }"
-                :title="`${k.binding} (${k.key_id}) @ ${item.ev.at_ms} ms · 轨 ${item.ev.source_track ?? 0}`"
-                @pointerdown="onNotePointerDown(item.idx, k.key_id, item.ev, $event)"
-                @contextmenu="onNoteContextMenu(item.idx, $event)"
+                :title="`预览新增/移位：${k.binding} @ ${ghost.at_ms} ms`"
               >
                 {{ k.binding }}
-              </button>
+              </span>
             </div>
           </div>
         </div>

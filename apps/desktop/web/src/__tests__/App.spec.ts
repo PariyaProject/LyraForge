@@ -446,7 +446,41 @@ function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
       },
     }),
     importMedia: vi.fn(),
-    arrangeSong: vi.fn(),
+    arrangeSong: vi.fn().mockResolvedValue({ arrangement: arr, created: true }),
+    previewArrange: vi.fn().mockResolvedValue({
+      arrangement_id: "arr-preview-new",
+      already_exists: false,
+      existing_label: null,
+      performance: {
+        arrangement_id: "arr-preview-new",
+        duration_ms: 4000,
+        events: [
+          { at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 0 },
+          { at_ms: 500, key_id: "high_1", mapped_pitch: 72, hold_ms: 40, source_track: 0 },
+        ],
+      },
+      report: {
+        calibration_status: "unverified",
+        stats: {
+          emitted_events: 2,
+          considered_notes: 2,
+          octave_folded: 0,
+          semitone_substituted: 0,
+          playable_ratio: 1.0,
+        },
+        quality: {
+          overall_score: 96.0,
+          melody_preservation: 1.0,
+          rhythmic_fidelity: 1.0,
+          pitch_contour_preservation: 1.0,
+          harmonic_coherence: 1.0,
+          missing_note_penalty: 0,
+          dense_key_conflict_penalty: 0,
+          large_leap_penalty: 0,
+          warnings: [],
+        },
+      },
+    }),
     arrangeAB: vi.fn().mockResolvedValue({
       arrangement_a: arr,
       arrangement_b: arrB,
@@ -1080,8 +1114,9 @@ describe("App", () => {
         (wrapper.find("#studio-arranger-strategy").element as HTMLSelectElement).value,
       ).toBe("vocal_lead");
       expect(wrapper.text()).toContain("MIDI 分轨与主旋律");
-      expect(wrapper.text()).toContain("Vocal Lead");
-      expect(wrapper.text()).toContain("Accompaniment");
+      expect(wrapper.text()).toContain("人声主旋律");
+      expect(wrapper.text()).toContain("伴奏");
+      expect(wrapper.find("li.track-row").attributes("title")).toContain("Vocal Lead");
 
       // Pin Vocal Lead (track 1) as melody and uncheck Accompaniment (track 2)
       const trackRows = wrapper.findAll("li.track-row");
@@ -1659,5 +1694,63 @@ describe("App", () => {
     expect((wrapper.find("#profile-select").element as HTMLSelectElement).value).toBe(
       "genshin.harmonic_keys.v1",
     );
+  });
+
+  it("previews Studio parameter changes live without writing DB and distinguishes created vs deduplicated arrange", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, "", "/");
+      const stub = makeStubApi("midi");
+      const wrapper = mount(App, { props: { client: stub } });
+      await flushPromises();
+      await clickNav(wrapper, "编曲工作室");
+      await flushPromises();
+
+      // Tweak Studio style -> debounced previewArrange updates Piano Roll preview bar
+      const richStyleBtn = wrapper
+        .findAll(".style-picto-btn")
+        .find((b) => b.text().includes("丰满"))!;
+      await richStyleBtn.trigger("click");
+      await vi.advanceTimersByTimeAsync(280);
+      await flushPromises();
+
+      expect(stub.previewArrange).toHaveBeenCalledTimes(1);
+      expect(stub.arrangeSong).not.toHaveBeenCalled();
+      expect(wrapper.find(".pr-preview-bar").exists()).toBe(true);
+      expect(wrapper.text()).toContain("将新建独立版本");
+
+      // First explicit generation returns created=true
+      const arrangeBtn = wrapper
+        .findAll("button")
+        .find((b) => b.text().includes("生成改编版本"))!;
+      await arrangeBtn.trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("本次新建");
+      expect(wrapper.text()).toContain("已新建版本");
+
+      // Second identical generation returns created=false -> honest deduplication message
+      vi.mocked(stub.arrangeSong).mockResolvedValueOnce({
+        arrangement: {
+          id: "arr-1",
+          song_id: "song-1",
+          profile_id: "genshin.windsong_lyre.v1",
+          style: "balanced",
+          transpose: 0,
+          speed: 1.0,
+          playable_ratio: 1.0,
+          event_count: 8,
+          duration_ms: 4000,
+          preview_path: null,
+          created_at: "2026-11-25T00:00:00Z",
+        },
+        created: false,
+      });
+      await arrangeBtn.trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("匹配已有版本");
+      expect(wrapper.text()).toContain("未重复新建");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

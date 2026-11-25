@@ -57,7 +57,11 @@ from lyraforge.playback import (
     run_calibration_benchmark,
 )
 from lyraforge.presets import list_presets
-from lyraforge.preview import DEFAULT_SAMPLE_RATE
+from lyraforge.preview import (
+    DEFAULT_SAMPLE_RATE,
+    get_sample_file_path,
+    load_sample_manifest,
+)
 from lyraforge.separators import list_separators
 from lyraforge.toolchain import status as toolchain_status
 from lyraforge.toolchain import tools_root as toolchain_tools_root
@@ -816,14 +820,25 @@ def create_app(
     def arrange_job(req: ArrangeJobRequest) -> dict[str, Any]:
         opts = _variant_to_arrange_options(req)
         with open_store() as store:
-            rec = store.arrange_song(
+            rec, created = store.arrange_song_with_status(
                 req.song_id,
                 profile_id=req.instrument_profile_id,
                 options=opts,
                 label=req.label,
                 transcription_id=req.transcription_id,
             )
-        return {"arrangement": rec.to_json()}
+        return {"arrangement": rec.to_json(), "created": created}
+
+    @app.post("/v1/studio/preview-arrange", dependencies=[Depends(require_token)])
+    def preview_arrange_route(req: ArrangeJobRequest) -> dict[str, Any]:
+        opts = _variant_to_arrange_options(req)
+        with open_store() as store:
+            return store.preview_arrange(
+                req.song_id,
+                profile_id=req.instrument_profile_id,
+                options=opts,
+                transcription_id=req.transcription_id,
+            )
 
     @app.post("/v1/jobs/arrange-ab", dependencies=[Depends(require_token)])
     def arrange_ab_job(req: ArrangeABRequest) -> dict[str, Any]:
@@ -916,6 +931,19 @@ def create_app(
             res = store.delete_arrangement(arrangement_id)
         queue_manager.remove_arrangement(arrangement_id)
         return {**res, "queue": queue_manager.snapshot()}
+
+    @app.get("/v1/preview/samples/manifest", dependencies=[Depends(require_token)])
+    def get_preview_samples_manifest() -> dict[str, Any]:
+        return load_sample_manifest()
+
+    @app.get("/v1/preview/samples/{pack}/{filename}", dependencies=[Depends(require_token)])
+    def get_preview_sample_wav(pack: str, filename: str) -> Response:
+        wav_path = get_sample_file_path(pack, filename)
+        return Response(
+            content=wav_path.read_bytes(),
+            media_type="audio/wav",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
 
     @app.post("/v1/preview", dependencies=[Depends(require_token)])
     def render_preview(req: PreviewRequest) -> dict[str, Any]:
