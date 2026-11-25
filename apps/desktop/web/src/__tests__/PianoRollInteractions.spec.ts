@@ -333,7 +333,22 @@ describe("PianoRollEditor DAW interactions", () => {
       expect(playedHz.some((hz) => Math.abs(hz - 262) <= 2)).toBe(true);
       expect(playedHz.some((hz) => Math.abs(hz - 392) <= 2)).toBe(false);
 
-      // Manual scroll ahead while playing detaches follow & keeps manual return button visible
+      // Vertical-only scrolling, vertical wheel, and vertical scrollbar drag must NEVER detach follow!
+      scrollEl.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 480, height: 220, right: 496, bottom: 220, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+      scrollEl.scrollTop = 140;
+      await wrapper.find(".pr-scroll").trigger("scroll");
+      await wrapper.find(".pr-scroll").trigger("wheel", { deltaY: 120, deltaX: 0 });
+      const PointerOrMouse = globalThis.PointerEvent ?? MouseEvent;
+      await wrapper.find(".pr-scroll").trigger("pointerdown", { clientX: 490, clientY: 110 });
+      expect(PointerOrMouse).toBeDefined();
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
+
+      // Continuous smooth scroll progressively keeps scrollLeft synced around 30% anchor before right edge
+      expect(scrollEl.scrollLeft).toBeGreaterThan(800);
+
+      // Manual horizontal scroll ahead while playing detaches follow & keeps manual return button visible
       scrollEl.scrollLeft = 2400;
       await wrapper.find(".pr-scroll").trigger("scroll");
       await wrapper.vm.$nextTick();

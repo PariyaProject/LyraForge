@@ -542,34 +542,18 @@ def test_tools_status_and_background_install(
     assert item["progress"] == 1.0
 
 
-def test_api_samples_preview_arrange_and_created_flag(tmp_path: Path) -> None:
-    token = "r31-tok"
-    client = TestClient(create_app(data_dir=tmp_path / "r31_data", session_token=token))
+def test_api_preview_arrange_and_created_flag(tmp_path: Path) -> None:
+    token = "r32-tok"
+    client = TestClient(create_app(data_dir=tmp_path / "r32_data", session_token=token))
     headers = {SESSION_TOKEN_HEADER: token}
 
-    # Unauthenticated sample access is blocked
-    assert client.get("/v1/preview/samples/manifest").status_code == 401
-    assert client.get("/v1/preview/samples/piano/60_C4.wav").status_code == 401
-
-    manifest_resp = client.get("/v1/preview/samples/manifest", headers=headers)
-    assert manifest_resp.status_code == 200
-    assert manifest_resp.json()["license"] == "CC0-1.0"
-
-    sample_resp = client.get("/v1/preview/samples/piano/60_C4.wav", headers=headers)
-    assert sample_resp.status_code == 200
-    assert sample_resp.headers["content-type"].startswith("audio/wav")
-    assert sample_resp.content[:4] == b"RIFF"
-
-    bad_sample = client.get("/v1/preview/samples/piano/nonexistent.wav", headers=headers)
-    assert bad_sample.status_code == 400
-
-    # Import MIDI and check created flag + non-mutating live preview-arrange
+    # Import MIDI and check created flag + non-mutating live preview-arrange + transform payload
     chords_bytes = (FIXTURE_DIR / "chords_type1.mid").read_bytes()
     imp = client.post(
         "/v1/imports",
         headers=headers,
         files={"file": ("chords_type1.mid", chords_bytes, "audio/midi")},
-        data={"title": "R31 Chords"},
+        data={"title": "R32 Chords"},
     )
     assert imp.status_code == 200
     song_id = imp.json()["song"]["id"]
@@ -588,24 +572,30 @@ def test_api_samples_preview_arrange_and_created_flag(tmp_path: Path) -> None:
     first = client.post(
         "/v1/jobs/arrange",
         headers=headers,
-        json={"song_id": song_id, "style": "balanced"},
+        json={"song_id": song_id, "style": "balanced", "arpeggiate_ms": 15},
     )
     assert first.status_code == 200
     assert first.json()["created"] is True
+    arr_id = first.json()["arrangement"]["id"]
+
+    detail = client.get(f"/v1/arrangements/{arr_id}", headers=headers).json()
+    assert detail["report"]["transform"]["strategy"] == "balanced"
+    assert detail["report"]["transform"]["arpeggiate_ms"] == 15
+    assert detail["performance"]["transform"]["arpeggiate_ms"] == 15
 
     second = client.post(
         "/v1/jobs/arrange",
         headers=headers,
-        json={"song_id": song_id, "style": "balanced"},
+        json={"song_id": song_id, "style": "balanced", "arpeggiate_ms": 15},
     )
     assert second.status_code == 200
     assert second.json()["created"] is False
-    assert second.json()["arrangement"]["id"] == first.json()["arrangement"]["id"]
+    assert second.json()["arrangement"]["id"] == arr_id
 
     pv_existing = client.post(
         "/v1/studio/preview-arrange",
         headers=headers,
-        json={"song_id": song_id, "style": "balanced"},
+        json={"song_id": song_id, "style": "balanced", "arpeggiate_ms": 15},
     )
     assert pv_existing.status_code == 200
     assert pv_existing.json()["already_exists"] is True

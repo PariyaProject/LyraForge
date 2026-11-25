@@ -36,7 +36,6 @@ import {
   type ToolStatus,
 } from "../api";
 import type { ToastItem } from "../components/ToastStack.vue";
-import { configurePreviewSampleBase } from "../utils/webAudioPreview";
 
 export type StudioViewId =
   | "home"
@@ -760,7 +759,11 @@ export function createLyraStore(api: LyraForgeApi) {
 
   const selectTranscribeSong = selectSong;
 
-  async function selectArrangement(arrangementId: string, expectedArrSeq?: number): Promise<void> {
+  async function selectArrangement(
+    arrangementId: string,
+    expectedArrSeq?: number,
+    opts?: { preserveStudioForm?: boolean },
+  ): Promise<void> {
     const arrSeq = expectedArrSeq ?? ++selectArrSeq;
     selectedArrId.value = arrangementId;
     prepared.value = null;
@@ -788,6 +791,9 @@ export function createLyraStore(api: LyraForgeApi) {
         selectedProfileId.value = detail.arrangement.profile_id;
       });
       profile.value = await api.getProfile(detail.arrangement.profile_id);
+    }
+    if (!opts?.preserveStudioForm) {
+      syncStudioParamsFromCurrentArrangement({ silent: true, syncTracks: true });
     }
   }
 
@@ -994,8 +1000,13 @@ export function createLyraStore(api: LyraForgeApi) {
     return { payload, error: null, activeTrId: activeTr?.id ?? null };
   }
 
-  function requestLiveArrangePreview(immediate = false): void {
-    if (suppressLivePreview.value || typeof api.previewArrange !== "function") return;
+  function requestLiveArrangePreview(
+    immediate = false,
+    opts?: { force?: boolean },
+  ): void {
+    if ((!opts?.force && suppressLivePreview.value) || typeof api.previewArrange !== "function") {
+      return;
+    }
     if (!selectedSongId.value || !canArrange.value || !arrDetail.value) {
       clearLiveArrangePreview();
       return;
@@ -1051,24 +1062,72 @@ export function createLyraStore(api: LyraForgeApi) {
     }
   }
 
-  function syncStudioParamsFromCurrentArrangement(): void {
-    const arr = arrDetail.value?.arrangement;
+  function syncStudioParamsFromCurrentArrangement(opts?: {
+    silent?: boolean;
+    syncTracks?: boolean;
+  }): void {
+    const detail = arrDetail.value;
+    const arr = detail?.arrangement;
     clearLiveArrangePreview();
-    if (!arr) return;
+    if (!arr || !detail) return;
+    const tf = detail.report?.transform ?? detail.performance?.transform ?? null;
+
     withSuppressedLivePreview(() => {
-      if (arr.style === "melody" || arr.style === "balanced" || arr.style === "rich") {
-        style.value = arr.style;
+      const nextStyle = tf?.strategy ?? arr.style;
+      if (nextStyle === "melody" || nextStyle === "balanced" || nextStyle === "rich") {
+        style.value = nextStyle;
       }
-      speed.value = arr.speed || 1.0;
-      transposeInput.value = arr.transpose === 0 ? "auto" : String(arr.transpose);
-      if (arr.arranger_strategy) {
-        selectedArrangerStrategy.value = arr.arranger_strategy;
+      speed.value = Number(tf?.speed ?? arr.speed ?? 1.0);
+      if (tf?.transpose_mode === "auto") {
+        transposeInput.value = "auto";
+      } else if (tf?.transpose_mode === "fixed" && tf.transpose_semitones !== undefined) {
+        transposeInput.value = String(tf.transpose_semitones);
+      } else {
+        transposeInput.value = arr.transpose === 0 ? "auto" : String(arr.transpose);
       }
-      accompDensity.value = "";
-      phraseOctaveMode.value = "";
-      crossStemAlignMs.value = "";
-      arpeggiateMs.value = 0;
-      timingMode.value = "adapted";
+
+      const nextStrategy = tf?.arranger_strategy ?? arr.arranger_strategy;
+      if (nextStrategy) {
+        selectedArrangerStrategy.value = nextStrategy;
+      }
+      if (tf) {
+        arpeggiateMs.value =
+          tf.arpeggiate_ms !== undefined && tf.arpeggiate_ms !== null ? Number(tf.arpeggiate_ms) : 0;
+        timingMode.value = tf.timing_mode === "strict_fidelity" ? "strict_fidelity" : "adapted";
+        accompDensity.value = (tf.accomp_density as AccompDensity | null | undefined) ?? "";
+        phraseOctaveMode.value =
+          (tf.phrase_octave_mode as PhraseOctaveMode | null | undefined) ?? "";
+        crossStemAlignMs.value =
+          tf.cross_stem_align_ms !== undefined && tf.cross_stem_align_ms !== null
+            ? String(tf.cross_stem_align_ms)
+            : "";
+        if (opts?.syncTracks && songTracks.value.length > 0) {
+          const validPitched = songTracks.value
+            .filter((t) => !t.is_percussion)
+            .map((t) => t.index);
+          const validSet = new Set(validPitched);
+          if (Array.isArray(tf.include_tracks)) {
+            const matched = tf.include_tracks.filter((id) => validSet.has(id));
+            selectedTrackIndices.value = matched.length > 0 ? matched : validPitched;
+          } else if (tf.include_tracks === null) {
+            selectedTrackIndices.value = validPitched;
+          }
+          if (tf.melody_track !== undefined) {
+            selectedMelodyTrack.value =
+              tf.melody_track !== null && validSet.has(tf.melody_track)
+                ? tf.melody_track
+                : null;
+          }
+        }
+      } else if (!opts?.silent) {
+        // Explicit user "还原当前参数" click resets fine knobs even when legacy record has no transform
+        accompDensity.value = "";
+        phraseOctaveMode.value = "";
+        crossStemAlignMs.value = "";
+        arpeggiateMs.value = 0;
+        timingMode.value = "adapted";
+      }
+
       if (arr.profile_id) {
         selectedProfileId.value = arr.profile_id;
       }
@@ -1076,7 +1135,9 @@ export function createLyraStore(api: LyraForgeApi) {
     if (arr.profile_id && profile.value?.id !== arr.profile_id) {
       void handleProfileChange();
     }
-    pushToast("info", "已还原为当前版本的参数配置");
+    if (!opts?.silent) {
+      pushToast("info", "已还原为当前版本的参数配置");
+    }
   }
 
   async function applyRecommendedVocalSetup(): Promise<void> {
@@ -1089,8 +1150,10 @@ export function createLyraStore(api: LyraForgeApi) {
       speed.value = 1.0;
       transposeInput.value = "auto";
       timingMode.value = "adapted";
+      crossStemAlignMs.value = "";
     });
-    await handleArrange();
+    requestLiveArrangePreview(true, { force: true });
+    pushToast("info", "已填入「流行人声护航」参数模板（未自动生成），请先预览后点击确认生成");
   }
 
   async function handleArrange(): Promise<void> {
@@ -1114,7 +1177,7 @@ export function createLyraStore(api: LyraForgeApi) {
         selectedTranscriptionId.value = activeTrId;
       }
       await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
-      await selectArrangement(res.arrangement.id);
+      await selectArrangement(res.arrangement.id, undefined, { preserveStudioForm: true });
       lastArrangeOutcome.value = { arrangementId: res.arrangement.id, created };
       if (created) {
         recentCreatedArrIds.value = new Set([...recentCreatedArrIds.value, res.arrangement.id]);
@@ -1220,7 +1283,7 @@ export function createLyraStore(api: LyraForgeApi) {
       const res = await api.editArrangement(selectedArrId.value, payload.events, payload.label);
       await refreshSongs({ alsoRefreshAll: true });
       await reloadSelectedSongDetail(selectedSongId.value, { preserveTrackSelection: true });
-      await selectArrangement(res.arrangement.id);
+      await selectArrangement(res.arrangement.id, undefined, { preserveStudioForm: true });
       reportOk(`已保存新版本：${res.arrangement.label ?? "手动编辑"}`);
     } catch (err) {
       reportError((err as Error).message);
@@ -1393,7 +1456,7 @@ export function createLyraStore(api: LyraForgeApi) {
       packFile.value = null;
       await refreshSongs({ alsoRefreshAll: true });
       await selectSong(res.song.id);
-      await selectArrangement(res.arrangement.id);
+      await selectArrangement(res.arrangement.id, undefined, { preserveStudioForm: true });
       reportOk(`已导入分享包曲目：${res.song.title}`);
     } catch (err) {
       reportError((err as Error).message);
@@ -1840,9 +1903,14 @@ export function createLyraStore(api: LyraForgeApi) {
       transposeInput.value = preset.transpose === null ? "auto" : String(preset.transpose);
       arpeggiateMs.value = preset.arpeggiate_ms;
       speed.value = preset.speed;
+      selectedArrangerStrategy.value = "classic";
+      accompDensity.value = "";
+      phraseOctaveMode.value = "";
+      crossStemAlignMs.value = "";
+      timingMode.value = "adapted";
     });
     if (
-      opts?.autoArrange &&
+      opts?.autoArrange === true &&
       !busy.value &&
       selectedSongId.value &&
       canArrange.value
@@ -1850,7 +1918,8 @@ export function createLyraStore(api: LyraForgeApi) {
       await handleArrange();
       return;
     }
-    pushToast("ok", `已应用预设：${preset.name}`);
+    requestLiveArrangePreview(true, { force: true });
+    pushToast("info", `已填入模板「${preset.name}」参数（未自动生成），请先预览或微调后点击生成`);
   }
 
   async function handleRelaunchElevated(): Promise<void> {
@@ -1933,13 +2002,6 @@ export function createLyraStore(api: LyraForgeApi) {
   async function initialize(): Promise<void> {
     initializing.value = true;
     try {
-      const apiConn = api as { base?: unknown; token?: unknown };
-      if (typeof apiConn.base === "string") {
-        configurePreviewSampleBase(
-          apiConn.base,
-          typeof apiConn.token === "string" ? apiConn.token : "",
-        );
-      }
       health.value = await api.health();
       const profList = await api.listProfiles();
       profiles.value = profList.profiles;

@@ -3,46 +3,30 @@ import type { PerformanceEventItem } from "../api";
 export type PreviewTimbre = "auto" | "piano" | "lyre" | "zither" | "vintage";
 export type ResolvedTimbre = "piano" | "lyre" | "zither" | "vintage";
 
-interface SampleManifestEntry {
-  pitch: number;
-  note: string;
-  file: string;
-  duration_ms?: number;
-}
-
-interface SampleManifest {
-  packs: Record<string, SampleManifestEntry[]>;
-}
-
-interface DecodedAnchor {
-  pitch: number;
-  buffer: AudioBuffer;
+interface ActiveVoice {
+  gain: GainNode;
+  endSec: number;
 }
 
 interface ContextAudioState {
   masterInput: AudioNode;
-  loadedPacks: Map<string, DecodedAnchor[]>;
-  pendingPacks: Map<string, Promise<void>>;
+  activeVoices: Map<number, ActiveVoice>;
+}
+
+interface TimbreVoiceSpec {
+  attackS: number;
+  decayDur: number;
+  h2Gain: number;
+  h3Gain: number;
+  h4Gain: number;
+  startFilterMult: number;
+  endFilterMult: number;
+  baseLevel: number;
 }
 
 let sharedCtx: AudioContext | null = null;
 let sharedCtxCtor: unknown = null;
-let sampleConfig: { base: string; token: string } | null = null;
-let manifestPromise: Promise<SampleManifest | null> | null = null;
 const ctxCache = new WeakMap<AudioContext, ContextAudioState>();
-
-export function configurePreviewSampleBase(apiBase: string, token = ""): void {
-  const normalizedBase = (apiBase ?? "").replace(/\/+$/, "");
-  if (
-    sampleConfig &&
-    sampleConfig.base === normalizedBase &&
-    sampleConfig.token === token
-  ) {
-    return;
-  }
-  sampleConfig = { base: normalizedBase, token };
-  manifestPromise = null;
-}
 
 function resolveAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -60,45 +44,24 @@ function resolveAudioContext(): AudioContext | null {
   return sharedCtx;
 }
 
-function createRoomImpulse(ctx: AudioContext): AudioBuffer | null {
-  if (typeof ctx.createBuffer !== "function") return null;
-  const sr = typeof ctx.sampleRate === "number" && ctx.sampleRate > 0 ? ctx.sampleRate : 44100;
-  const length = Math.max(256, Math.round(sr * 0.34));
-  const buf = ctx.createBuffer(2, length, sr);
-  for (let ch = 0; ch < 2; ch += 1) {
-    const data = buf.getChannelData(ch);
-    let seed = 0x12345678 ^ (ch * 0x9e3779b9);
-    for (let i = 0; i < length; i += 1) {
-      // Deterministic PRNG warm hall tail (zero network or audio glitches)
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      const white = (seed / 0x100000000) * 2 - 1;
-      const env = Math.exp((-6.8 * i) / length);
-      const earlyBoost = i < sr * 0.025 ? 0.55 : 0.35;
-      data[i] = white * env * earlyBoost;
-    }
-  }
-  return buf;
-}
-
 function getContextState(ctx: AudioContext): ContextAudioState {
   const existing = ctxCache.get(ctx);
   if (existing) return existing;
 
   const masterBus = ctx.createGain();
-  masterBus.gain.setValueAtTime(0.88, ctx.currentTime);
+  masterBus.gain.setValueAtTime(0.86, ctx.currentTime);
 
-  let outputNode: AudioNode = masterBus;
+  // Transparent safety limiter only for heavy chords (never crushes solo notes or adds white noise)
   if (typeof ctx.createDynamicsCompressor === "function") {
     try {
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.setValueAtTime(-14, ctx.currentTime);
-      comp.knee.setValueAtTime(18, ctx.currentTime);
-      comp.ratio.setValueAtTime(3.8, ctx.currentTime);
-      comp.attack.setValueAtTime(0.004, ctx.currentTime);
-      comp.release.setValueAtTime(0.14, ctx.currentTime);
+      comp.threshold.setValueAtTime(-6, ctx.currentTime);
+      comp.knee.setValueAtTime(14, ctx.currentTime);
+      comp.ratio.setValueAtTime(2.2, ctx.currentTime);
+      comp.attack.setValueAtTime(0.01, ctx.currentTime);
+      comp.release.setValueAtTime(0.18, ctx.currentTime);
       masterBus.connect(comp);
       comp.connect(ctx.destination);
-      outputNode = masterBus;
     } catch {
       masterBus.connect(ctx.destination);
     }
@@ -106,121 +69,12 @@ function getContextState(ctx: AudioContext): ContextAudioState {
     masterBus.connect(ctx.destination);
   }
 
-  // Subtle room warmth so chords blend naturally instead of sounding dry/choked
-  if (
-    typeof ctx.createConvolver === "function" &&
-    typeof ctx.createBuffer === "function"
-  ) {
-    try {
-      const impulse = createRoomImpulse(ctx);
-      if (impulse) {
-        const convolver = ctx.createConvolver();
-        convolver.buffer = impulse;
-        const wet = ctx.createGain();
-        wet.gain.setValueAtTime(0.13, ctx.currentTime);
-        const inputSplitter = ctx.createGain();
-        inputSplitter.gain.setValueAtTime(1.0, ctx.currentTime);
-        inputSplitter.connect(outputNode);
-        inputSplitter.connect(wet);
-        wet.connect(convolver);
-        convolver.connect(outputNode);
-        outputNode = inputSplitter;
-      }
-    } catch {
-      // Ignore convolver failures on constrained webviews
-    }
-  }
-
   const state: ContextAudioState = {
-    masterInput: outputNode,
-    loadedPacks: new Map(),
-    pendingPacks: new Map(),
+    masterInput: masterBus,
+    activeVoices: new Map(),
   };
   ctxCache.set(ctx, state);
   return state;
-}
-
-function packForTimbre(timbre: ResolvedTimbre): "piano" | "lyre" | "zither" {
-  if (timbre === "piano") return "piano";
-  if (timbre === "zither") return "zither";
-  return "lyre";
-}
-
-async function fetchManifest(): Promise<SampleManifest | null> {
-  if (!sampleConfig || typeof fetch !== "function") return null;
-  if (manifestPromise) return manifestPromise;
-  const headers: Record<string, string> = {};
-  if (sampleConfig.token) {
-    headers["X-LyraForge-Token"] = sampleConfig.token;
-  }
-  manifestPromise = fetch(`${sampleConfig.base}/v1/preview/samples/manifest`, { headers })
-    .then(async (resp) => {
-      if (!resp.ok) return null;
-      return (await resp.json()) as SampleManifest;
-    })
-    .catch(() => null);
-  return manifestPromise;
-}
-
-export async function preloadPreviewSamples(
-  timbre: ResolvedTimbre = "piano",
-  ctxOverride?: AudioContext | null,
-): Promise<void> {
-  const ctx = ctxOverride ?? resolveAudioContext();
-  if (!ctx || !sampleConfig || typeof fetch !== "function" || typeof ctx.decodeAudioData !== "function") {
-    return;
-  }
-  const pack = packForTimbre(timbre);
-  const state = getContextState(ctx);
-  if (state.loadedPacks.has(pack)) return;
-  const inflight = state.pendingPacks.get(pack);
-  if (inflight) {
-    await inflight;
-    return;
-  }
-
-  const cfg = sampleConfig;
-  const job = (async () => {
-    const manifest = await fetchManifest();
-    const entries = manifest?.packs?.[pack];
-    if (!Array.isArray(entries) || entries.length === 0) return;
-
-    const headers: Record<string, string> = {};
-    if (cfg.token) {
-      headers["X-LyraForge-Token"] = cfg.token;
-    }
-
-    const decoded: DecodedAnchor[] = [];
-    await Promise.all(
-      entries.map(async (entry) => {
-        const segs = String(entry.file).split("/");
-        const packSeg = encodeURIComponent(segs[0] ?? pack);
-        const fileSeg = encodeURIComponent(segs[segs.length - 1] ?? "");
-        if (!fileSeg) return;
-        try {
-          const resp = await fetch(`${cfg.base}/v1/preview/samples/${packSeg}/${fileSeg}`, { headers });
-          if (!resp.ok) return;
-          const rawBuf = await resp.arrayBuffer();
-          const audioBuf = await ctx.decodeAudioData(rawBuf);
-          decoded.push({ pitch: entry.pitch, buffer: audioBuf });
-        } catch {
-          // Non-fatal: partial anchors still shift cleanly
-        }
-      }),
-    );
-
-    if (decoded.length > 0) {
-      decoded.sort((a, b) => a.pitch - b.pitch);
-      state.loadedPacks.set(pack, decoded);
-    }
-  })();
-
-  state.pendingPacks.set(pack, job);
-  try {
-    await job;
-  } finally {
-    state.pendingPacks.delete(pack);
-  }
 }
 
 function midiToHz(pitch: number): number {
@@ -241,68 +95,60 @@ export function resolvePreviewTimbre(
   return "lyre";
 }
 
-function auditionWithSampleBuffer(
-  ctx: AudioContext,
-  state: ContextAudioState,
-  anchors: DecodedAnchor[],
-  pitch: number,
-  velocity: number,
-  holdMs: number,
-  timbre: ResolvedTimbre,
-  startTime: number,
-): boolean {
-  if (anchors.length === 0 || typeof ctx.createBufferSource !== "function") return false;
-  let best = anchors[0];
-  let bestDist = Math.abs(pitch - best.pitch);
-  for (let i = 1; i < anchors.length; i += 1) {
-    const dist = Math.abs(pitch - anchors[i].pitch);
-    if (dist < bestDist) {
-      best = anchors[i];
-      bestDist = dist;
-    }
+function voiceSpecForTimbre(timbre: ResolvedTimbre, pitchNorm: number, holdMs: number): TimbreVoiceSpec {
+  const holdS = holdMs / 1000;
+  if (timbre === "piano") {
+    return {
+      attackS: 0.004,
+      decayDur: Math.max(0.75, Math.min(1.65, holdS + 1.05 - pitchNorm * 0.35)),
+      h2Gain: Math.max(0.16, 0.36 - pitchNorm * 0.14),
+      h3Gain: Math.max(0.05, 0.14 - pitchNorm * 0.07),
+      h4Gain: Math.max(0.0, 0.05 - pitchNorm * 0.04),
+      startFilterMult: 3.8,
+      endFilterMult: 1.35,
+      baseLevel: 0.19,
+    };
   }
-
-  const src = ctx.createBufferSource();
-  src.buffer = best.buffer;
-  const rate = Math.pow(2, (pitch - best.pitch) / 12);
-  src.playbackRate.setValueAtTime(rate, startTime);
-
-  const naturalDurS = Math.min(
-    best.buffer.duration / Math.max(0.25, rate),
-    timbre === "piano"
-      ? Math.max(1.25, holdMs / 1000 + 1.0)
-      : timbre === "lyre"
-        ? Math.max(1.05, holdMs / 1000 + 0.8)
-        : Math.max(0.88, holdMs / 1000 + 0.62),
-  );
-
-  const noteGain = ctx.createGain();
-  const amp = Math.max(0.08, Math.min(0.62, (velocity / 127) * 0.48));
-  noteGain.gain.setValueAtTime(amp, startTime);
-  const fadeStart = Math.max(startTime + 0.04, startTime + naturalDurS - 0.12);
-  noteGain.gain.setValueAtTime(amp, fadeStart);
-  noteGain.gain.exponentialRampToValueAtTime(0.0005, startTime + naturalDurS);
-
-  if (timbre === "vintage" && typeof ctx.createBiquadFilter === "function") {
-    const warmFilter = ctx.createBiquadFilter();
-    warmFilter.type = "lowpass";
-    warmFilter.frequency.setValueAtTime(1850, startTime);
-    src.connect(warmFilter);
-    warmFilter.connect(noteGain);
-  } else {
-    src.connect(noteGain);
+  if (timbre === "zither") {
+    return {
+      attackS: 0.003,
+      decayDur: Math.max(0.45, Math.min(1.1, holdS + 0.55 - pitchNorm * 0.18)),
+      h2Gain: Math.max(0.18, 0.38 - pitchNorm * 0.12),
+      h3Gain: Math.max(0.06, 0.16 - pitchNorm * 0.07),
+      h4Gain: 0.06,
+      startFilterMult: 4.2,
+      endFilterMult: 1.45,
+      baseLevel: 0.18,
+    };
   }
-
-  noteGain.connect(state.masterInput);
-  src.start(startTime);
-  src.stop(startTime + naturalDurS + 0.03);
-  return true;
+  if (timbre === "vintage") {
+    return {
+      attackS: 0.008,
+      decayDur: Math.max(0.32, Math.min(0.95, holdS + 0.42)),
+      h2Gain: 0.18,
+      h3Gain: 0.04,
+      h4Gain: 0.0,
+      startFilterMult: 2.3,
+      endFilterMult: 1.15,
+      baseLevel: 0.18,
+    };
+  }
+  // Refined Windsong Lyre: pure crystal harp harmonics, zero grit
+  return {
+    attackS: 0.005,
+    decayDur: Math.max(0.42, Math.min(1.2, holdS + 0.62 - pitchNorm * 0.2)),
+    h2Gain: 0.30 - pitchNorm * 0.08,
+    h3Gain: 0.11 - pitchNorm * 0.04,
+    h4Gain: 0.03,
+    startFilterMult: 3.6,
+    endFilterMult: 1.3,
+    baseLevel: 0.18,
+  };
 }
 
 /**
  * Low-latency browser-side instrument audition for Piano Roll note clicks, drags, and draft play.
- * Uses real bundled CC0 acoustic samples (Steinway B Grand Piano, Concert Harp, Dan Tranh Zither)
- * through a soft compressor + room ambience bus, with a clean sine-harmonic fallback for tests.
+ * Uses pure-tuned studio additive sine synthesis with smooth same-pitch damping and zero white noise.
  */
 export function auditionMidiNote(
   pitch: number,
@@ -316,77 +162,88 @@ export function auditionMidiNote(
   if (!ctx) return;
   const startTime = whenSec !== undefined ? Math.max(ctx.currentTime, whenSec) : ctx.currentTime;
   const state = getContextState(ctx);
-  const pack = packForTimbre(timbre);
-  const anchors = state.loadedPacks.get(pack);
+  const roundedPitch = Math.round(pitch);
 
-  if (anchors && auditionWithSampleBuffer(ctx, state, anchors, pitch, velocity, holdMs, timbre, startTime)) {
-    return;
+  // Cleanly damp previous note on the same pitch so repeated keys stay distinct and crisp
+  const prevVoice = state.activeVoices.get(roundedPitch);
+  if (prevVoice && startTime < prevVoice.endSec) {
+    const dampEnd = startTime + 0.018;
+    if (typeof prevVoice.gain.gain.cancelScheduledValues === "function") {
+      prevVoice.gain.gain.cancelScheduledValues(startTime);
+    }
+    if (typeof prevVoice.gain.gain.exponentialRampToValueAtTime === "function") {
+      prevVoice.gain.gain.exponentialRampToValueAtTime(0.0001, dampEnd);
+    }
   }
 
-  if (sampleConfig && typeof ctx.decodeAudioData === "function" && typeof fetch === "function") {
-    void preloadPreviewSamples(timbre, ctx);
-  }
-
-  // Clean, warm sine-harmonic fallback (no harsh sawtooth buzzers) for test mocks & pre-load ticks
-  const freq = midiToHz(pitch);
-  const amp = Math.max(0.03, Math.min(0.24, (velocity / 127) * 0.17));
   const pitchNorm = Math.max(0, Math.min(1, (pitch - 48) / 36));
-  const attack = timbre === "piano" ? 0.004 : timbre === "vintage" ? 0.01 : 0.006;
-  const dur =
-    timbre === "piano"
-      ? Math.max(0.45, Math.min(1.5, holdMs / 1000 + 0.9 - pitchNorm * 0.38))
-      : timbre === "vintage"
-        ? Math.max(0.24, Math.min(1.1, holdMs / 1000 + 0.35))
-        : Math.max(0.26, Math.min(1.25, holdMs / 1000 + 0.45));
-  const startCutoff =
-    timbre === "vintage"
-      ? Math.min(2200, freq * 2.4)
-      : Math.min(5400, Math.max(1200, freq * 4.4));
-  const endCutoff = Math.max(380, freq * 1.25);
+  const pitchLevel = 0.86 + 0.16 * pitchNorm;
+  const spec = voiceSpecForTimbre(timbre, pitchNorm, holdMs);
+  const freq = midiToHz(pitch);
+  const amp = Math.max(0.03, Math.min(0.24, (velocity / 127) * spec.baseLevel * pitchLevel));
+  const dur = spec.decayDur;
 
   const master = ctx.createGain();
   master.gain.setValueAtTime(0.0001, startTime);
-  master.gain.exponentialRampToValueAtTime(amp, startTime + attack);
+  master.gain.exponentialRampToValueAtTime(amp, startTime + spec.attackS);
   master.gain.exponentialRampToValueAtTime(0.0001, startTime + dur);
 
   const filter = ctx.createBiquadFilter();
   filter.type = "lowpass";
+  const startCutoff = Math.min(5200, Math.max(900, freq * spec.startFilterMult));
+  const endCutoff = Math.max(420, Math.min(3600, freq * spec.endFilterMult));
   filter.frequency.setValueAtTime(startCutoff, startTime);
   filter.frequency.exponentialRampToValueAtTime(endCutoff, startTime + dur);
 
   const osc1 = ctx.createOscillator();
   osc1.type = "sine";
   osc1.frequency.setValueAtTime(freq, startTime);
-
-  const osc2 = ctx.createOscillator();
-  osc2.type = "sine";
-  osc2.frequency.setValueAtTime(freq * 2, startTime);
-  const gain2 = ctx.createGain();
-  gain2.gain.setValueAtTime(timbre === "piano" ? 0.28 : 0.22, startTime);
-  gain2.gain.exponentialRampToValueAtTime(0.01, startTime + dur * 0.45);
-
-  const osc3 = ctx.createOscillator();
-  osc3.type = "sine";
-  osc3.frequency.setValueAtTime(freq * 3, startTime);
-  const gain3 = ctx.createGain();
-  gain3.gain.setValueAtTime(timbre === "vintage" ? 0.04 : 0.1, startTime);
-  gain3.gain.exponentialRampToValueAtTime(0.005, startTime + dur * 0.3);
-
   osc1.connect(filter);
-  osc2.connect(gain2);
-  gain2.connect(filter);
-  osc3.connect(gain3);
-  gain3.connect(filter);
+  osc1.start(startTime);
+  osc1.stop(startTime + dur + 0.02);
+
+  if (spec.h2Gain > 0.005) {
+    const osc2 = ctx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(freq * 2, startTime);
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(spec.h2Gain, startTime);
+    g2.gain.exponentialRampToValueAtTime(0.008, startTime + dur * 0.45);
+    osc2.connect(g2);
+    g2.connect(filter);
+    osc2.start(startTime);
+    osc2.stop(startTime + dur + 0.02);
+  }
+
+  if (spec.h3Gain > 0.005) {
+    const osc3 = ctx.createOscillator();
+    osc3.type = "sine";
+    osc3.frequency.setValueAtTime(freq * 3, startTime);
+    const g3 = ctx.createGain();
+    g3.gain.setValueAtTime(spec.h3Gain, startTime);
+    g3.gain.exponentialRampToValueAtTime(0.004, startTime + dur * 0.28);
+    osc3.connect(g3);
+    g3.connect(filter);
+    osc3.start(startTime);
+    osc3.stop(startTime + dur + 0.02);
+  }
+
+  if (spec.h4Gain > 0.005) {
+    const osc4 = ctx.createOscillator();
+    osc4.type = "sine";
+    osc4.frequency.setValueAtTime(freq * 4, startTime);
+    const g4 = ctx.createGain();
+    g4.gain.setValueAtTime(spec.h4Gain, startTime);
+    g4.gain.exponentialRampToValueAtTime(0.003, startTime + dur * 0.18);
+    osc4.connect(g4);
+    g4.connect(filter);
+    osc4.start(startTime);
+    osc4.stop(startTime + dur + 0.02);
+  }
 
   filter.connect(master);
   master.connect(state.masterInput);
-
-  osc1.start(startTime);
-  osc2.start(startTime);
-  osc3.start(startTime);
-  osc1.stop(startTime + dur + 0.02);
-  osc2.stop(startTime + dur + 0.02);
-  osc3.stop(startTime + dur + 0.02);
+  state.activeVoices.set(roundedPitch, { gain: master, endSec: startTime + dur });
 }
 
 export interface DraftSequencer {
@@ -417,13 +274,6 @@ export function startDraftSequencer(
   const getEvents =
     typeof eventsOrGetter === "function" ? eventsOrGetter : () => eventsOrGetter;
   const LOOKAHEAD_MS = 32;
-
-  const initialTimbre: ResolvedTimbre = options?.getTimbre
-    ? options.getTimbre()
-    : options?.timbre ?? "piano";
-  if (ctx && sampleConfig && typeof ctx.decodeAudioData === "function" && typeof fetch === "function") {
-    void preloadPreviewSamples(initialTimbre, ctx);
-  }
 
   const resolveEndMs = (evs: PerformanceEventItem[]): number => {
     if (options?.getTotalDurationMs) {

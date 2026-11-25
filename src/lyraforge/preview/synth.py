@@ -1,21 +1,19 @@
-"""Offline acoustic & plucked-lyre WAV preview synthesizer (pure cross-platform stdlib).
+"""Offline pure-tuned acoustic-inspired WAV preview synthesizer (pure stdlib).
 
-Renders a validated ``performance.json`` to mono 16-bit PCM WAV using bundled
-CC0-1.0 Versilian Community Sample Library (VCSL) acoustic recordings
-(Steinway Model B grand piano, Concert Harp, and Dan Tranh zither) with a
-soft-knee chord master stage and zero external audio dependencies.
+Renders a validated ``performance.json`` to mono 16-bit PCM WAV using
+phase-locked additive harmonics, pitch-balanced key voicing, same-pitch
+retrigger damping, and a soft-knee chord limiter (no noisy reverb or
+external sample assets).
 """
 
 from __future__ import annotations
 
 import array
 import io
-import json
 import math
 import sys
 import wave
 from collections.abc import Callable, Mapping
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -28,132 +26,11 @@ MIN_SAMPLE_RATE = 8_000
 MAX_SAMPLE_RATE = 48_000
 VALID_TIMBRES: tuple[str, ...] = ("auto", "piano", "lyre", "zither", "vintage")
 
-_ATTACK_S = 0.004
-_DECAY_RATE = 4.2
-_TAIL_MIN_S = 0.45
-_TAIL_MAX_S = 1.20
 _END_PAD_S = 0.25
 
 
-def resolve_samples_dir() -> Path:
-    """Locate bundled CC0 acoustic sample assets in source or PyInstaller bundle."""
-    local = Path(__file__).resolve().parent / "samples"
-    if (local / "manifest.json").is_file():
-        return local
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        bundled = Path(meipass) / "lyraforge" / "preview" / "samples"
-        if (bundled / "manifest.json").is_file():
-            return bundled
-    return local
-
-
-@lru_cache(maxsize=1)
-def load_sample_manifest() -> dict[str, Any]:
-    """Load and validate the bundled CC0 sample pack manifest."""
-    manifest_path = resolve_samples_dir() / "manifest.json"
-    if not manifest_path.is_file():
-        raise LyraError(
-            ErrorCode.SOURCE_UNAVAILABLE,
-            "bundled preview sample manifest is missing",
-            {"path": str(manifest_path)},
-        )
-    try:
-        doc = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise LyraError(
-            ErrorCode.SOURCE_UNAVAILABLE,
-            f"failed to read preview sample manifest: {exc}",
-        ) from exc
-    if not isinstance(doc, dict) or not isinstance(doc.get("packs"), dict):
-        raise LyraError(
-            ErrorCode.SOURCE_UNAVAILABLE,
-            "bundled preview sample manifest has invalid schema",
-        )
-    return doc
-
-
-def get_sample_file_path(pack: str, filename: str) -> Path:
-    """Strictly resolve an allowlisted CC0 sample WAV path from manifest.json."""
-    clean_pack = (pack or "").strip().lower()
-    clean_name = (filename or "").strip()
-    if (
-        not clean_pack
-        or not clean_name
-        or "/" in clean_name
-        or "\\" in clean_name
-        or ".." in clean_name
-        or "\x00" in clean_name
-    ):
-        raise LyraError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"invalid preview sample path: {pack}/{filename}",
-            {"pack": pack, "filename": filename},
-        )
-    manifest = load_sample_manifest()
-    entries = manifest.get("packs", {}).get(clean_pack)
-    if not isinstance(entries, list):
-        raise LyraError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"unknown preview sample pack: {pack!r}",
-            {"pack": pack, "available_packs": sorted(manifest.get("packs", {}))},
-        )
-    expected_rel = f"{clean_pack}/{clean_name}"
-    matched = next(
-        (e for e in entries if isinstance(e, dict) and e.get("file") == expected_rel),
-        None,
-    )
-    if matched is None:
-        raise LyraError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"unknown preview sample file: {expected_rel}",
-            {"pack": clean_pack, "filename": clean_name},
-        )
-    sample_path = (resolve_samples_dir() / expected_rel).resolve()
-    samples_root = resolve_samples_dir().resolve()
-    if not sample_path.is_relative_to(samples_root) or not sample_path.is_file():
-        raise LyraError(
-            ErrorCode.SOURCE_UNAVAILABLE,
-            f"preview sample file missing on disk: {expected_rel}",
-        )
-    return sample_path
-
-
-@lru_cache(maxsize=4)
-def _load_pack_samples(pack: str) -> tuple[tuple[int, int, tuple[float, ...]], ...]:
-    manifest_path = resolve_samples_dir() / "manifest.json"
-    if not manifest_path.is_file():
-        return ()
-    manifest = load_sample_manifest()
-    entries = manifest.get("packs", {}).get(pack)
-    if not isinstance(entries, list):
-        return ()
-    loaded: list[tuple[int, int, tuple[float, ...]]] = []
-    for entry in entries:
-        if not isinstance(entry, dict) or "file" not in entry or "pitch" not in entry:
-            continue
-        filename = Path(str(entry["file"])).name
-        wav_path = get_sample_file_path(pack, filename)
-        with wave.open(str(wav_path), "rb") as wf:
-            ch = wf.getnchannels()
-            sw = wf.getsampwidth()
-            sr = wf.getframerate()
-            raw = wf.readframes(wf.getnframes())
-        if sw != 2 or ch < 1:
-            continue
-        arr = array.array("h")
-        arr.frombytes(raw)
-        if sys.byteorder != "little":
-            arr.byteswap()
-        if ch == 1:
-            floats = tuple(s / 32768.0 for s in arr)
-        else:
-            floats = tuple(
-                sum(arr[i : i + ch]) / (ch * 32768.0) for i in range(0, len(arr) - ch + 1, ch)
-            )
-        loaded.append((int(entry["pitch"]), int(sr), floats))
-    loaded.sort(key=lambda item: item[0])
-    return tuple(loaded)
+def _midi_pitch_to_hz(pitch: int) -> float:
+    return 440.0 * (2.0 ** ((pitch - 69) / 12.0))
 
 
 def resolve_timbre(profile_id: str | None = None, timbre: str = "auto") -> str:
@@ -177,150 +54,51 @@ def resolve_timbre(profile_id: str | None = None, timbre: str = "auto") -> str:
     return "lyre"
 
 
-def _pack_for_timbre(timbre: str) -> str:
-    if timbre == "piano":
-        return "piano"
-    if timbre == "zither":
-        return "zither"
-    return "lyre"
+def _timbre_spec(
+    hold_ms: int, pitch: int, timbre: str
+) -> tuple[float, float, float, float, float, float, float, float, float, float]:
+    """Return studio-voiced envelope and harmonic decay parameters for a timbre.
 
-
-def _midi_pitch_to_hz(pitch: int) -> float:
-    return 440.0 * (2.0 ** ((pitch - 69) / 12.0))
-
-
-def _timbre_envelope(hold_ms: int, pitch: int, timbre: str) -> tuple[float, float, float]:
-    """Return ``(attack_s, decay_rate, note_dur_s)`` for fallback or tail estimation."""
+    Tuple fields:
+      ``(attack_s, body_decay, note_dur_s, h2, h3, h4, h2_decay, h3_decay, h4_decay, bloom)``
+    """
     hold_s = hold_ms / 1000.0
+    pitch_norm = max(0.0, min(1.0, (pitch - 48) / 36.0))
     if timbre == "piano":
-        pitch_norm = max(0.0, min(1.0, (pitch - 48) / 36.0))
-        attack_s = 0.0025
-        decay_rate = 2.2 + 2.5 * pitch_norm
-        note_dur_s = min(max(hold_s + 1.05, 1.35), 1.80)
-        return attack_s, decay_rate, note_dur_s
+        # Clear singing studio piano: warm lower register, bell-clear upper octave, longer tail
+        attack_s = 0.0035
+        body_decay = 2.0 + 1.8 * pitch_norm
+        note_dur_s = min(max(hold_s + 0.95, 1.30), 1.70)
+        h2 = 0.42 - 0.14 * pitch_norm
+        h3 = 0.18 - 0.08 * pitch_norm
+        h4 = 0.07 - 0.04 * pitch_norm
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 4.2, 7.6, 12.0, 0.24
     if timbre == "zither":
-        return 0.002, 3.2, min(max(hold_s + 0.65, 0.95), 1.30)
+        # Silky Chinese plucked zither at exact fundamental pitch (warm midrange, quick shimmer)
+        attack_s = 0.0025
+        body_decay = 3.1 + 1.2 * pitch_norm
+        note_dur_s = min(max(hold_s + 0.48, 0.78), 1.05)
+        h2 = 0.46 - 0.14 * pitch_norm
+        h3 = 0.22 - 0.08 * pitch_norm
+        h4 = 0.10 - 0.05 * pitch_norm
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.4, 9.2, 14.5, 0.28
     if timbre == "vintage":
-        return 0.006, 4.4, min(max(hold_s + 0.70, 0.95), 1.40)
-    return _ATTACK_S, _DECAY_RATE, min(max(hold_s + 0.85, 1.15), 1.60)
-
-
-def _render_sampled_note(
-    buf: list[float],
-    *,
-    start_idx: int,
-    pitch: int,
-    velocity: int,
-    hold_ms: int,
-    sample_rate: int,
-    timbre: str,
-    pack_samples: tuple[tuple[int, int, tuple[float, ...]], ...],
-    max_samples: int | None = None,
-) -> bool:
-    if not pack_samples:
-        return False
-    anchor_pitch, src_sr, src_pcm = min(
-        pack_samples, key=lambda item: (abs(item[0] - pitch), abs(item[0]))
-    )
-    n_src = len(src_pcm)
-    if n_src < 8:
-        return False
-
-    step = (src_sr / sample_rate) * (2.0 ** ((pitch - anchor_pitch) / 12.0))
-    if step <= 0.0:
-        return False
-
-    _, _, target_dur_s = _timbre_envelope(hold_ms, pitch, timbre)
-    max_src_samples = int((n_src - 2) / step)
-    total_samples = min(max_src_samples, max(1, int(round(target_dur_s * sample_rate))))
-    damped = max_samples is not None and max_samples < total_samples
-    if max_samples is not None:
-        total_samples = min(total_samples, max(1, max_samples))
-    if total_samples <= 0 or start_idx >= len(buf):
-        return True
-
-    count = min(total_samples, len(buf) - start_idx)
-    amp = (velocity / 127.0) * 0.48
-    fade_s = 0.024 if damped else 0.080
-    fade_out_len = min(count // 3, max(16, int(round(fade_s * sample_rate))))
-    main_end = count - fade_out_len
-    exact_step = abs(step - 1.0) < 1e-6
-
-    if timbre == "vintage":
-        lp = 0.0
-        alpha = 0.34
-        pos = 0.0
-        for offset in range(count):
-            if exact_step:
-                raw_val = src_pcm[offset]
-            else:
-                i0 = int(pos)
-                frac = pos - i0
-                raw_val = src_pcm[i0] + frac * (src_pcm[i0 + 1] - src_pcm[i0])
-                pos += step
-            lp += alpha * (raw_val - lp)
-            env = amp
-            if offset >= main_end:
-                env *= (count - offset) / fade_out_len
-            buf[start_idx + offset] += lp * env
-        return True
-
-    if exact_step:
-        for offset in range(main_end):
-            buf[start_idx + offset] += src_pcm[offset] * amp
-        for offset in range(main_end, count):
-            env = amp * (count - offset) / fade_out_len
-            buf[start_idx + offset] += src_pcm[offset] * env
-        return True
-
-    pos = 0.0
-    for offset in range(main_end):
-        i0 = int(pos)
-        sample = src_pcm[i0] + (pos - i0) * (src_pcm[i0 + 1] - src_pcm[i0])
-        buf[start_idx + offset] += sample * amp
-        pos += step
-    for offset in range(main_end, count):
-        i0 = int(pos)
-        sample = src_pcm[i0] + (pos - i0) * (src_pcm[i0 + 1] - src_pcm[i0])
-        buf[start_idx + offset] += sample * (amp * (count - offset) / fade_out_len)
-        pos += step
-    return True
-
-
-def _render_fallback_note(
-    buf: list[float],
-    *,
-    start_idx: int,
-    pitch: int,
-    velocity: int,
-    hold_ms: int,
-    sample_rate: int,
-    timbre: str = "lyre",
-) -> None:
-    freq = _midi_pitch_to_hz(pitch)
-    w = 2.0 * math.pi * freq / sample_rate
-    attack_s, decay_rate, note_dur_s = _timbre_envelope(hold_ms, pitch, timbre)
-    note_dur_s = min(note_dur_s, _TAIL_MAX_S)
-    total_samples = max(1, int(round(note_dur_s * sample_rate)))
-    attack_samples = max(1, int(round(attack_s * sample_rate)))
-    amp = (velocity / 127.0) * 0.42
-    limit = min(len(buf), start_idx + total_samples)
-    fade_out_start = max(attack_samples, total_samples - int(round(0.04 * sample_rate)))
-
-    for offset in range(limit - start_idx):
-        t = offset / sample_rate
-        if offset < attack_samples:
-            env = offset / attack_samples
-        else:
-            env = math.exp(-decay_rate * (t - attack_s))
-        if offset > fade_out_start and total_samples > fade_out_start:
-            env *= (total_samples - offset) / (total_samples - fade_out_start)
-        wave_val = (
-            math.sin(w * offset)
-            + 0.35 * math.sin(2.0 * w * offset) * math.exp(-5.0 * t)
-            + 0.14 * math.sin(3.0 * w * offset) * math.exp(-9.0 * t)
-        )
-        buf[start_idx + offset] += amp * env * wave_val
+        # Soft woody vintage harp with gentle attack and rounded treble
+        attack_s = 0.0070
+        body_decay = 4.0 + 1.0 * pitch_norm
+        note_dur_s = min(max(hold_s + 0.42, 0.68), 0.95)
+        h2 = 0.20 - 0.08 * pitch_norm
+        h3 = 0.05
+        h4 = 0.0
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.8, 10.5, 14.0, 0.08
+    # Default "lyre" — refined crystal plucked harp (smooth refinement of original Windsong Lyre)
+    attack_s = 0.0045
+    body_decay = 3.2 + 1.1 * pitch_norm
+    note_dur_s = min(max(hold_s + 0.55, 0.85), 1.15)
+    h2 = 0.36 - 0.10 * pitch_norm
+    h3 = 0.14 - 0.05 * pitch_norm
+    h4 = 0.04
+    return attack_s, body_decay, note_dur_s, h2, h3, h4, 4.8, 8.8, 13.5, 0.16
 
 
 def _render_note(
@@ -334,28 +112,110 @@ def _render_note(
     timbre: str = "lyre",
     max_samples: int | None = None,
 ) -> None:
-    pack_samples = _load_pack_samples(_pack_for_timbre(timbre))
-    used_real = _render_sampled_note(
-        buf,
-        start_idx=start_idx,
-        pitch=pitch,
-        velocity=velocity,
-        hold_ms=hold_ms,
-        sample_rate=sample_rate,
-        timbre=timbre,
-        pack_samples=pack_samples,
-        max_samples=max_samples,
-    )
-    if not used_real:
-        _render_fallback_note(
-            buf,
-            start_idx=start_idx,
-            pitch=pitch,
-            velocity=velocity,
-            hold_ms=hold_ms,
-            sample_rate=sample_rate,
-            timbre=timbre,
-        )
+    (
+        attack_s,
+        body_decay,
+        note_dur_s,
+        h2,
+        h3,
+        h4,
+        h2_decay,
+        h3_decay,
+        h4_decay,
+        bloom,
+    ) = _timbre_spec(hold_ms, pitch, timbre)
+
+    total_samples = max(1, int(round(note_dur_s * sample_rate)))
+    damped = max_samples is not None and max_samples < total_samples
+    if max_samples is not None:
+        total_samples = min(total_samples, max(1, max_samples))
+    count = min(total_samples, len(buf) - start_idx)
+    if count <= 0:
+        return
+
+    attack_samples = max(1, min(count, int(round(attack_s * sample_rate))))
+    fade_s = 0.024 if damped else 0.055
+    fade_out_len = min(count // 3, max(8, int(round(fade_s * sample_rate))))
+    fade_out_start = count - fade_out_len
+
+    # Subtle treble balance so low bass notes stay warm without muddying melody
+    pitch_norm = max(0.0, min(1.0, (pitch - 48) / 36.0))
+    pitch_level = 0.86 + 0.16 * pitch_norm
+    harm_norm = 1.0 / (1.0 + 0.35 * h2 + 0.25 * h3 + 0.15 * h4)
+    amp = (velocity / 127.0) * 0.44 * pitch_level * harm_norm
+
+    w = 2.0 * math.pi * _midi_pitch_to_hz(pitch) / sample_rate
+    cw = math.cos(w)
+    sw = math.sin(w)
+
+    # Anti-aliasing headroom for upper harmonics near Nyquist
+    nyquist_lim = math.pi * 0.88
+    if w * 2.0 > nyquist_lim:
+        h2 = 0.0
+    if w * 3.0 > nyquist_lim:
+        h3 = 0.0
+    if w * 4.0 > nyquist_lim:
+        h4 = 0.0
+
+    decay_step = 1.0 / sample_rate
+    body_mul = math.exp(-body_decay * decay_step)
+    bloom_mul = math.exp(-11.0 * decay_step)
+    h2_mul = math.exp(-h2_decay * decay_step)
+    h3_mul = math.exp(-h3_decay * decay_step)
+    h4_mul = math.exp(-h4_decay * decay_step)
+
+    c = 1.0
+    s = 0.0
+    env_body = 1.0
+    env_bloom = 1.0
+    e2 = 1.0
+    e3 = 1.0
+    e4 = 1.0
+
+    pi = math.pi
+    inv_att = pi / attack_samples
+    inv_fade = pi / fade_out_len if fade_out_len > 0 else 0.0
+
+    for offset in range(count):
+        s2 = 2.0 * s * c
+        c2 = c * c - s * s
+        wave_val = s
+        if h2 > 0.0:
+            wave_val += (h2 * e2) * s2
+        if h3 > 0.0:
+            s3 = s2 * c + c2 * s
+            wave_val += (h3 * e3) * s3
+        if h4 > 0.0:
+            s4 = 2.0 * s2 * c2
+            wave_val += (h4 * e4) * s4
+
+        if offset < attack_samples:
+            att = 0.5 * (1.0 - math.cos(offset * inv_att))
+            env = att * (1.0 + bloom * env_bloom)
+        else:
+            env = env_body * (1.0 + bloom * env_bloom)
+            env_body *= body_mul
+
+        if offset >= fade_out_start and fade_out_len > 0:
+            fade_pos = offset - fade_out_start
+            env *= 0.5 * (1.0 + math.cos(fade_pos * inv_fade))
+
+        buf[start_idx + offset] += amp * env * wave_val
+
+        # Advance fundamental oscillator phase & decay envelopes
+        next_c = c * cw - s * sw
+        next_s = s * cw + c * sw
+        if (offset & 511) == 511:
+            norm = math.hypot(next_c, next_s) or 1.0
+            c = next_c / norm
+            s = next_s / norm
+        else:
+            c = next_c
+            s = next_s
+        env_bloom *= bloom_mul
+        e2 *= h2_mul
+        e3 *= h3_mul
+        e4 *= h4_mul
 
 
 def _check_cancel(is_cancelled: Callable[[], bool] | None) -> None:
@@ -392,7 +252,7 @@ def synthesize_performance(
         (e["at_ms"] / 1000.0)
         + max(
             int(e.get("hold_ms", 40)) / 1000.0,
-            _timbre_envelope(
+            _timbre_spec(
                 int(e.get("hold_ms", 40)), int(e["mapped_pitch"]), effective_timbre
             )[2],
         )
@@ -401,8 +261,8 @@ def synthesize_performance(
     total_samples = max(1, int(math.ceil((max_end_s + _END_PAD_S) * sample_rate)))
     buf = [0.0] * total_samples
 
-    # Damp an active note slightly before the exact same pitch re-strikes so repeated
-    # notes do not accumulate or comb-filter while distinct pitches ring freely together.
+    # Damp an active note cleanly before the exact same pitch re-strikes so rapid runs
+    # sound crisp without accumulation or comb-filtering while distinct chord notes ring freely.
     next_at_by_pitch: dict[int, int] = {}
     same_pitch_caps: list[int | None] = [None] * len(events)
     min_cap_samples = max(16, int(round(0.025 * sample_rate)))
@@ -411,7 +271,7 @@ def synthesize_performance(
         at_ms = int(events[idx]["at_ms"])
         nxt = next_at_by_pitch.get(pitch)
         if nxt is not None and nxt > at_ms:
-            gap_s = (nxt - at_ms) / 1000.0 + 0.006
+            gap_s = (nxt - at_ms) / 1000.0 + 0.004
             same_pitch_caps[idx] = max(min_cap_samples, int(round(gap_s * sample_rate)))
         next_at_by_pitch[pitch] = at_ms
 
@@ -434,15 +294,15 @@ def synthesize_performance(
     peak = max((abs(x) for x in buf), default=0.0)
     if peak > 1e-9:
         rms = math.sqrt(sum(x * x for x in buf) / len(buf))
-        gain = min(2.2, max(0.75, 0.16 / max(rms, 1e-4)))
+        gain = min(2.0, max(0.65, 0.16 / max(rms, 1e-4)))
         if peak * gain <= 0.88:
             pcm = array.array(
                 "h",
                 (max(-32767, min(32767, round(x * gain * 32767.0))) for x in buf),
             )
         else:
-            knee = 0.68
-            headroom = 0.24
+            knee = 0.72
+            headroom = 0.20
 
             def _soft_limit(val: float) -> int:
                 y = val * gain

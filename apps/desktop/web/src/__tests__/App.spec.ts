@@ -1,7 +1,13 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import App from "../App.vue";
-import type { ArrangementRecord, LyraForgeApi, SongTrackInfo, TranscriptionRecord } from "../api";
+import type {
+  ArrangementDetailResponse,
+  ArrangementRecord,
+  LyraForgeApi,
+  SongTrackInfo,
+  TranscriptionRecord,
+} from "../api";
 
 function makeStubApi(sourceKind: "midi" | "audio" = "midi"): LyraForgeApi {
   const arr = {
@@ -1749,6 +1755,201 @@ describe("App", () => {
       await flushPromises();
       expect(wrapper.text()).toContain("匹配已有版本");
       expect(wrapper.text()).toContain("未重复新建");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fills template presets without auto-generating and syncs + displays exact version settings on switch", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, "", "/");
+      const stub = makeStubApi("midi");
+      vi.mocked(stub.listArrangers).mockResolvedValue({
+        strategies: [
+          { id: "classic", display_name: "经典基线", description: "原算法", recommended_for: "纯器乐" },
+          { id: "vocal_lead", display_name: "主旋律优先", description: "让路", recommended_for: "人声" },
+          { id: "vocal_dynamic", display_name: "主旋律强弱动态", description: "分句护航", recommended_for: "分轨人声" },
+        ],
+      });
+      const baseArr1: ArrangementRecord = {
+        id: "arr-1",
+        song_id: "song-1",
+        profile_id: "genshin.windsong_lyre.v1",
+        style: "balanced",
+        transpose: 0,
+        speed: 1.0,
+        playable_ratio: 1.0,
+        event_count: 8,
+        duration_ms: 4000,
+        preview_path: null,
+        is_favorite: false,
+        user_vote: 0,
+        score: 92.5,
+        label: "均衡版",
+        created_at: "2026-11-25T00:00:00Z",
+      };
+      const arrDetailB = {
+        arrangement: {
+          ...baseArr1,
+          id: "arr-2",
+          style: "rich",
+          speed: 0.85,
+          transpose: 3,
+          arranger_strategy: "vocal_dynamic",
+          label: "副歌定制版",
+        },
+        performance: {
+          arrangement_id: "arr-2",
+          duration_ms: 4000,
+          events: [{ at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 0 }],
+          transform: {
+            strategy: "rich",
+            transpose_semitones: 3,
+            transpose_mode: "fixed",
+            speed: 0.85,
+            arpeggiate_ms: 25,
+            arranger_strategy: "vocal_dynamic",
+            accomp_density: "minimal",
+            phrase_octave_mode: "smooth_lift",
+            cross_stem_align_ms: 20,
+            timing_mode: "strict_fidelity",
+          },
+        },
+        report: {
+          calibration_status: "verified",
+          transform: {
+            strategy: "rich",
+            transpose_semitones: 3,
+            transpose_mode: "fixed",
+            speed: 0.85,
+            arpeggiate_ms: 25,
+            arranger_strategy: "vocal_dynamic",
+            accomp_density: "minimal",
+            phrase_octave_mode: "smooth_lift",
+            cross_stem_align_ms: 20,
+            timing_mode: "strict_fidelity",
+          },
+          stats: {
+            considered_notes: 8,
+            emitted_events: 8,
+            octave_folded: 0,
+            semitone_substituted: 0,
+            playable_ratio: 1.0,
+          },
+          quality: {
+            overall_score: 95.0,
+            melody_preservation: 1.0,
+            rhythmic_fidelity: 0.95,
+            pitch_contour_preservation: 1.0,
+            harmonic_coherence: 0.9,
+            missing_note_penalty: 0,
+            dense_key_conflict_penalty: 0,
+            large_leap_penalty: 0,
+            warnings: [],
+          },
+        },
+      };
+      const arrDetailA: ArrangementDetailResponse = {
+        arrangement: baseArr1,
+        performance: {
+          arrangement_id: "arr-1",
+          duration_ms: 4000,
+          events: [{ at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 0 }],
+          transform: {
+            strategy: "balanced",
+            transpose_semitones: 0,
+            transpose_mode: "auto",
+            speed: 1.0,
+            arpeggiate_ms: 0,
+            arranger_strategy: "classic",
+            timing_mode: "adapted",
+          },
+        },
+        report: {
+          calibration_status: "verified",
+          transform: {
+            strategy: "balanced",
+            transpose_semitones: 0,
+            transpose_mode: "auto",
+            speed: 1.0,
+            arpeggiate_ms: 0,
+            arranger_strategy: "classic",
+            timing_mode: "adapted",
+          },
+          stats: {
+            considered_notes: 8,
+            emitted_events: 8,
+            octave_folded: 0,
+            semitone_substituted: 0,
+            playable_ratio: 1.0,
+          },
+        },
+      };
+      vi.mocked(stub.getSong).mockResolvedValue({
+        song: {
+          id: "song-1",
+          title: "C Major Scale",
+          artist: "Tester",
+          tags: [],
+          arrangement_count: 2,
+          created_at: "2026-11-25T00:00:00Z",
+          updated_at: "2026-11-25T00:00:00Z",
+        },
+        sources: [{ id: "src-1", kind: "midi", original_name: "scale.mid" }],
+        transcriptions: [],
+        arrangements: [baseArr1, arrDetailB.arrangement],
+      });
+      vi.mocked(stub.getArrangement).mockImplementation(async (id: string) =>
+        id === "arr-2" ? (arrDetailB as unknown as ArrangementDetailResponse) : arrDetailA,
+      );
+
+      const wrapper = mount(App, { props: { client: stub } });
+      await flushPromises();
+      await clickNav(wrapper, "编曲工作室");
+      await flushPromises();
+
+      // Clicking a template MUST fill parameters and preview without calling arrangeSong!
+      const melodyTplBtn = wrapper
+        .findAll(".preset-item-btn")
+        .find((b) => b.text().includes("主旋律优先"))!;
+      await melodyTplBtn.trigger("click");
+      await flushPromises();
+      expect(stub.arrangeSong).not.toHaveBeenCalled();
+      expect(stub.previewArrange).toHaveBeenCalledTimes(1);
+
+      // Clicking the bottom unified confirmation button explicitly calls arrangeSong
+      await wrapper.find("#studio-apply-arrange-btn").trigger("click");
+      await flushPromises();
+      expect(stub.arrangeSong).toHaveBeenCalledTimes(1);
+
+      // Selecting arr-2 displays its exact saved settings AND restores all form inputs!
+      await wrapper.find("#studio-arr-select").setValue("arr-2");
+      await flushPromises();
+      const verBox = wrapper.find("#studio-version-settings");
+      expect(verBox.exists()).toBe(true);
+      expect(verBox.text()).toContain("丰满 (≤6 键)");
+      expect(verBox.text()).toContain("强弱动态");
+      expect(verBox.text()).toContain("速度 0.85x");
+      expect(verBox.text()).toContain("固定移调 +3");
+      expect(verBox.text()).toContain("错峰 25ms");
+      expect(verBox.text()).toContain("严格原谱时序");
+      expect((wrapper.find("#studio-arranger-strategy").element as HTMLSelectElement).value).toBe(
+        "vocal_dynamic",
+      );
+      expect((wrapper.find("#studio-accomp-density").element as HTMLSelectElement).value).toBe(
+        "minimal",
+      );
+      expect((wrapper.find("#studio-phrase-octave").element as HTMLSelectElement).value).toBe(
+        "smooth_lift",
+      );
+      expect((wrapper.find("#studio-transpose").element as HTMLInputElement).value).toBe("3");
+      expect((wrapper.find("#studio-speed").element as HTMLInputElement).value).toBe("0.85");
+      expect((wrapper.find("#studio-arp").element as HTMLInputElement).value).toBe("25");
+      expect((wrapper.find("#studio-timing-mode").element as HTMLSelectElement).value).toBe(
+        "strict_fidelity",
+      );
+      expect((wrapper.find("#studio-cross-align").element as HTMLInputElement).value).toBe("20");
     } finally {
       vi.useRealTimers();
     }
