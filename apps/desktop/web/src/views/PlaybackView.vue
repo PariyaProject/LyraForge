@@ -1,11 +1,42 @@
 <script setup lang="ts">
 import LyreKeyboard from "../components/LyreKeyboard.vue";
 import StudioIcon from "../components/StudioIcon.vue";
-import { arrangementTitle, type LyraStore } from "../composables/useLyraStore";
+import {
+  PLAYBACK_TIMING_PRESETS,
+  arrangementTitle,
+  type LyraStore,
+  type PlaybackTimingPreset,
+} from "../composables/useLyraStore";
 
-defineProps<{
+const props = defineProps<{
   store: LyraStore;
 }>();
+
+function profileDisplayName(profileId: string): string {
+  return (
+    props.store.profiles.value.find((p) => p.id === profileId)?.display_name ?? profileId
+  );
+}
+
+async function onSongSelectChange(event: Event): Promise<void> {
+  const songId = (event.target as HTMLSelectElement).value;
+  if (songId) {
+    await props.store.selectSong(songId);
+  }
+}
+
+async function onArrangementSelectChange(event: Event): Promise<void> {
+  const arrId = (event.target as HTMLSelectElement).value;
+  await props.store.selectArrangement(arrId);
+}
+
+function isTimingPresetActive(preset: PlaybackTimingPreset): boolean {
+  return (
+    props.store.minKeyReleaseGapInput.value.trim() === preset.releaseGapMs &&
+    props.store.keyHoldMsInput.value.trim() === preset.keyHoldMs &&
+    props.store.lateEventPolicy.value === preset.latePolicy
+  );
+}
 </script>
 
 <template>
@@ -32,14 +63,71 @@ defineProps<{
       <div class="playback-left-col">
         <div class="pane">
           <div class="pane-header">
-            <h2>21 键实时映射舞台</h2>
+            <h2>当前演奏曲谱与 21 键舞台</h2>
             <span v-if="store.arrDetail.value" class="pill">
               {{ arrangementTitle(store.arrDetail.value.arrangement) }}
             </span>
           </div>
 
+          <div v-if="store.allSongs.value.length > 0" class="playback-selector-grid">
+            <div class="field">
+              <label for="playback-song-select">选择曲目</label>
+              <select
+                id="playback-song-select"
+                :value="store.selectedSongId.value ?? ''"
+                @change="onSongSelectChange"
+              >
+                <option v-for="s in store.allSongs.value" :key="s.id" :value="s.id">
+                  {{ s.title }}（{{ s.arrangement_count }} 版）
+                </option>
+              </select>
+            </div>
+            <div v-if="store.arrangements.value.length > 0" class="field">
+              <label for="playback-arr-select">选择编曲版本</label>
+              <select
+                id="playback-arr-select"
+                :value="store.selectedArrId.value"
+                @change="onArrangementSelectChange"
+              >
+                <option v-for="a in store.arrangements.value" :key="a.id" :value="a.id">
+                  {{ arrangementTitle(a) }}（{{ a.event_count }} 音 · {{ profileDisplayName(a.profile_id) }}）
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button
+              v-if="store.selectedArrId.value"
+              class="secondary btn-sm"
+              type="button"
+              :disabled="store.busy.value"
+              @click="store.handleAddToQueue"
+            >
+              <StudioIcon name="list-music" :size="13" />
+              加入播放队列
+            </button>
+            <button
+              class="ghost btn-sm"
+              type="button"
+              @click="store.setView('studio')"
+            >
+              <StudioIcon name="sliders" :size="13" />
+              前往编曲工作室调整谱面
+            </button>
+          </div>
+
+          <div v-if="store.arrangements.value.length === 0" class="empty-state">
+            <p style="margin: 0">
+              当前曲目还没有可演奏的编曲版本，请先在「编曲工作室」生成版本。
+            </p>
+            <button class="primary btn-sm" type="button" @click="store.setView('studio')">
+              前往编曲工作室生成
+            </button>
+          </div>
+
           <LyreKeyboard
-            v-if="store.profile.value"
+            v-else-if="store.profile.value"
             :keys="store.profile.value.keys"
             :event-counts="store.eventCounts.value"
             :active-key-ids="store.soundingKeyIds.value"
@@ -183,51 +271,122 @@ defineProps<{
           </select>
         </div>
 
-        <details class="advanced-box">
-          <summary>高级时序控制（实时节拍发送）</summary>
-          <div class="timing-controls-body">
-            <label class="checkbox-row">
-              <input v-model="store.realtime.value" type="checkbox" />
-              按真实演奏时间间隔发送事件（测试可取消勾选加快 Dry-Run）
-            </label>
-            <div class="field">
-              <label for="playback-late-policy">延迟事件策略</label>
-              <select id="playback-late-policy" v-model="store.lateEventPolicy.value">
-                <option value="shift_clock">平移时间轴（避免迟到音符堆成一团和弦）</option>
-                <option value="drop_late">丢弃严重滞后音符（保持节拍准点）</option>
-                <option value="catch_up">追赶补发（严格按绝对时钟）</option>
-              </select>
+        <div class="section-block">
+          <div class="pane-header">
+            <h3 class="subsection-heading">演奏节奏与防吞音设置</h3>
+            <button
+              id="playback-quick-check-btn"
+              class="secondary btn-sm"
+              type="button"
+              :disabled="store.busy.value"
+              @click="store.handleQuickTimingCheck"
+            >
+              一键本机调度检测（无需录音）
+            </button>
+          </div>
+
+          <p class="muted" style="margin: 0; font-size: 12px">
+            直接选择符合你电脑和曲风的按键参数；若游戏内发现漏音或慢半拍，点击检测或切换预设即可。
+          </p>
+
+          <div class="timing-preset-grid" role="group" aria-label="演奏防吞音场景预设">
+            <button
+              v-for="preset in PLAYBACK_TIMING_PRESETS"
+              :key="preset.id"
+              type="button"
+              class="timing-preset-btn"
+              :class="{ 'is-active': isTimingPresetActive(preset) }"
+              @click="store.applyPlaybackTimingPreset(preset.id)"
+            >
+              <strong>{{ preset.name }}</strong>
+              <span class="timing-preset-desc">{{ preset.summary }}</span>
+            </button>
+          </div>
+
+          <div v-if="store.playbackTimingAdvice.value" class="timing-check-card">
+            <div class="pane-header">
+              <strong>{{ store.playbackTimingAdvice.value.headline }}</strong>
+              <span
+                class="pill"
+                :class="
+                  store.playbackTimingAdvice.value.tier === 'excellent'
+                    ? 'pill-ok'
+                    : store.playbackTimingAdvice.value.tier === 'jittery'
+                      ? 'pill-warn'
+                      : ''
+                "
+              >
+                P95 {{ store.playbackTimingAdvice.value.p95Ms }} ms · Max
+                {{ store.playbackTimingAdvice.value.maxMs }} ms
+              </span>
             </div>
-            <div class="row">
-              <div class="field">
-                <label for="playback-release-gap">同键释放间隙 (ms)</label>
-                <input
-                  id="playback-release-gap"
-                  v-model="store.minKeyReleaseGapInput.value"
-                  type="text"
-                  inputmode="numeric"
-                  placeholder="默认 20 ms（暂定待实测）"
-                />
-              </div>
-              <div class="field">
-                <label for="playback-key-hold">最小按住覆盖 (ms)</label>
-                <input
-                  id="playback-key-hold"
-                  v-model="store.keyHoldMsInput.value"
-                  type="text"
-                  inputmode="numeric"
-                  placeholder="沿用编曲默认值"
-                />
-              </div>
+            <p class="muted" style="margin: 0; font-size: 12px">
+              {{ store.playbackTimingAdvice.value.detail }}
+            </p>
+            <div class="button-row">
+              <button
+                id="playback-apply-recommended-btn"
+                type="button"
+                class="primary btn-sm"
+                @click="store.applyRecommendedTimingAdvice"
+              >
+                一键应用推荐参数（{{ store.playbackTimingAdvice.value.recommendedPresetName }}）
+              </button>
             </div>
           </div>
-        </details>
+
+          <details class="advanced-box" open>
+            <summary>微调节拍与防吞音参数</summary>
+            <div class="timing-controls-body">
+              <label class="checkbox-row">
+                <input v-model="store.realtime.value" type="checkbox" />
+                按真实演奏时间间隔发送事件（快速调试时可取消勾选）
+              </label>
+              <div class="field">
+                <label for="playback-late-policy">遇到卡顿迟到音符时</label>
+                <select id="playback-late-policy" v-model="store.lateEventPolicy.value">
+                  <option value="shift_clock">平移时间轴（避免迟到音符堆成一团和弦）</option>
+                  <option value="drop_late">丢弃严重滞后音符（保持节拍准点）</option>
+                  <option value="catch_up">追赶补发（严格按绝对时钟）</option>
+                </select>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label for="playback-release-gap">同键连击释放间隙 (ms)</label>
+                  <input
+                    id="playback-release-gap"
+                    v-model="store.minKeyReleaseGapInput.value"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="默认 20 ms"
+                  />
+                </div>
+                <div class="field">
+                  <label for="playback-key-hold">按键按住时长覆盖 (ms)</label>
+                  <input
+                    id="playback-key-hold"
+                    v-model="store.keyHoldMsInput.value"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="留空沿用编曲默认"
+                  />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <ul class="timing-guide-list">
+            <li>同一按键连续快敲漏音 → 调大「同键连击释放间隙」（推荐 25–35 ms）</li>
+            <li>偶发单个音符完全不响 → 适当调大「按键按住时长」（推荐 25–35 ms）</li>
+            <li>窗口掉帧后突然挤出一团乱音 → 保持「平移时间轴」或选「严格卡拍」</li>
+          </ul>
+        </div>
 
         <details class="advanced-box">
-          <summary>乐器基准与实机校准（Benchmark A–G）</summary>
+          <summary>开发者实录波形分析（高级可选，日常演奏无需录音）</summary>
           <div class="timing-controls-body">
             <p class="hint">
-              Dry-Run / 调度测试仅验证事件时序与无重叠输出；是否真正发声请切到游戏后录制 WAV 并上传分析。
+              仅当你想做精度测量或提交反馈时使用：可用基准序列生成实录测试曲并分析游戏实录 WAV。
             </p>
             <div class="field">
               <label for="calibration-pattern-select">测试序列</label>

@@ -709,3 +709,27 @@
      - Squash 合入 `main`（`9811baa`）→ 合并后 `main` CI [Run #45591168649](https://github.com/PariyaProject/LyraForge/actions/runs/45591168649) 全部 5 项作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`2026-11-25T10:08:06Z`）：`LyraForge-dev-20261125-9811baa-windows-x64.zip`、`LyraForge-dev-20261125-9811baa-macos-arm64.zip`、`SHA256SUMS.txt`。
 5. **验证边界说明**：
    - 物理 Windows 10/11 桌面窗下浏览器真机音色听感、垂直/水平滚轮及滚动条平滑跟随手感，以及《原神》实机演奏表现，仍待维护者下载并试听新发布的 `dev-latest` 双平台包最终确认。
+
+
+## 35. Round 33：耳机零杂音与原神余音机制还原、Piano Roll 滚动/预览对齐及演奏台体验重构
+
+1. **声学与草稿调度修复**：
+   - 修复 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts) 同音覆盖时直接 `cancelScheduledValues` 造成的电平跳变爆音，改用 `cancelAndHoldAtTime`（带旧环境平滑估幅兜底）+ `11 ms` 零交叉线性收尾；将 `startDraftSequencer()` 升级为锁定硬件 `AudioContext.currentTime` 的 `120 ms` 前瞻调度，增加 `osc1.onended` 自动断链回收节点，软化母线保护器阈值至 `-2 dB`；同时将 [PianoRollEditor.vue](../apps/desktop/web/src/components/PianoRollEditor.vue) 中 21 个重复车道播放头替换为单条全高叠加播放头（`pr-playhead.is-body`），大幅压低播控期间 DOM 重绘压力。
+   - 按《原神》游戏自由演奏实测特征更新 [synth.py](../src/lyraforge/preview/synth.py) 与 [webAudioPreview.ts](../apps/desktop/web/src/utils/webAudioPreview.ts)：即便是 `40 ms` 短按触发也保留充沛自然的乐器余音尾音（谐律键琴最长歌唱余韵 > 风物之诗琴 > 镜花之琴 > 老旧的诗琴），同一音高连按时前音持续到第二声起音瞬间 `11 ms` 顺滑切替重新发声。
+2. **Piano Roll 滚动跟随与实时预览错位修复**：
+   - `enableAllTracks()` / `toggleTrackAudible()` / `soloTrack()` 接入 `preserveScrollDuringLayoutUpdate()` 与 `programmaticGuardUntil` DPI 回读校验，杜绝音轨开关误触脱离跟随；修复 `watch(activePlayheadMs)` 打断 `animateFollowToLivePlayhead()` 与编辑播放头前方音符保留焦点触发浏览器自动拉回导致 `回到播放点` 失效的问题。
+   - 将参数实时预览默认视图设为干净对齐的「改后谱面」（与空格键试听一致），并在 `previewDiff` 引入同键同轨 `±35 ms` 微调容差归并，消除 `arpeggiate_ms` / 对齐微调时「对照原版」出现红绿错位重影，修正 `.pr-note-ghost-added` 居中几何样式。
+3. **演奏台版本直选与「零录音」场景调优重构**：
+   - 在 [PlaybackView.vue](../apps/desktop/web/src/views/PlaybackView.vue) 新增曲目与编曲版本下拉 `#playback-song-select` / `#playback-arr-select`；在 [useLyraStore.ts](../apps/desktop/web/src/composables/useLyraStore.ts) 新增 4 档游戏场景时序预设（`标准推荐` / `高速琶音` / `稳健防吞音` / `严格卡拍`）与无需游戏录音的「一键本机调度检测（`#playback-quick-check-btn` + `#playback-apply-recommended-btn`）」，并保留 Benchmark A–G WAV 分析于高级折叠项兼容开发者排查与自动化接口。
+4. **本地全量验证结果（最终代码定稿后实测）**：
+   - `pnpm --dir apps/desktop/web install --frozen-lockfile` → 通过（`49ms`）；
+   - `pnpm --dir apps/desktop/web exec vue-tsc --noEmit` → 退出码 `0`；
+   - `uv run ruff check .` → `All checks passed!`；
+   - `uv run pytest --cov=lyraforge --cov-report=term-missing --cov-fail-under=80` → **297 passed, 2 warnings in 109.21s**，总覆盖率 **84.17%**（含新增 `test_genshin_one_shot_sustain_tail_and_same_pitch_retrigger` 验证 40 ms 短按保留自然长余音、300 ms 同音再击零削波且跨界单样本跃变平滑）；
+   - `pnpm --dir apps/desktop/web test` → **Test Files 6 passed (6), Tests 28 passed (28)**（新增/升级覆盖 `cancelAndHoldAtTime` 无爆音重触发、播控切轨不断跟随、回滚至播放点前编辑音符后一键归位、`after`/`diff` 与 `±35 ms` 微调归并、演奏台直接切版本、预设填参及一键检测推荐应用）；
+   - `pnpm --dir apps/desktop/web build` → `50 modules transformed`，`built in 1.10s`（CSS `63.18 kB` / JS `307.71 kB`）；
+   - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
+   - CSS 字面量色值扫描（除 `tokens.css` 与 `__tests__` 外）：`CSS_MATCHES: 0`；
+   - **纯 Python 150 音合成基准**：`piano 1.827s`、`lyre 1.737s`、`zither 1.690s`、`vintage 1.458s`（峰值 `0.916–0.919 <= 1.0`）。
+5. **验证边界说明**：
+   - 物理 Windows 10/11 佩戴耳机实听效果与《原神》实机窗口手感/防吞音预设匹配度仍待用户在下载合入后新版 `dev-latest` 上最终验证。

@@ -148,3 +148,41 @@ def test_synthesize_real_timbres_distinct_and_chord_safe() -> None:
         rms = math.sqrt(sum(s * s for s in samples) / len(samples))
         assert rms > 300.0
         assert max(abs(s) for s in samples) <= 32767
+
+
+def test_genshin_one_shot_sustain_tail_and_same_pitch_retrigger() -> None:
+    single = _tone_perf(60, timbre_profile="genshin.harmonic_keys.v1")
+    single["events"][0]["hold_ms"] = 40  # type: ignore[index]
+    single["duration_ms"] = 1200
+    wav_single = synthesize_performance(single, timbre="piano")
+    with wave.open(io.BytesIO(wav_single), "rb") as wf:
+        sr = wf.getframerate()
+        s_single = struct.unpack(f"<{wf.getnframes()}h", wf.readframes(wf.getnframes()))
+
+    onset_seg = s_single[int(sr * 0.02) : int(sr * 0.15)]
+    tail_seg = s_single[int(sr * 0.40) : int(sr * 0.70)]
+    onset_rms = math.sqrt(sum(x * x for x in onset_seg) / len(onset_seg))
+    tail_rms = math.sqrt(sum(x * x for x in tail_seg) / len(tail_seg))
+    # Brief 40ms tap must ring naturally well past key release like Genshin Harmonic Keys
+    assert tail_rms > onset_rms * 0.15
+
+    ev1 = dict(single["events"][0])  # type: ignore[index]
+    ev2 = dict(ev1)
+    ev2["at_ms"] = 300
+    repeated = dict(single)
+    repeated["events"] = [ev1, ev2]
+    repeated["duration_ms"] = 1500
+    wav_rep = synthesize_performance(repeated, timbre="piano")
+    with wave.open(io.BytesIO(wav_rep), "rb") as wf:
+        sr2 = wf.getframerate()
+        s_rep = struct.unpack(f"<{wf.getnframes()}h", wf.readframes(wf.getnframes()))
+
+    assert max(abs(x) for x in s_rep) <= 32767
+    retrigger_seg = s_rep[int(sr2 * 0.31) : int(sr2 * 0.50)]
+    retrigger_rms = math.sqrt(sum(x * x for x in retrigger_seg) / len(retrigger_seg))
+    assert retrigger_rms > 300.0
+    # Smooth retrigger handoff without discontinuous single-sample click spike across 300 ms
+    win_start = max(1, int(sr2 * 0.295))
+    win_end = min(len(s_rep), int(sr2 * 0.320))
+    max_step = max(abs(s_rep[i] - s_rep[i - 1]) for i in range(win_start, win_end))
+    assert max_step < 12000

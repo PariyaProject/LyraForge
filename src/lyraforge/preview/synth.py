@@ -61,44 +61,48 @@ def _timbre_spec(
 
     Tuple fields:
       ``(attack_s, body_decay, note_dur_s, h2, h3, h4, h2_decay, h3_decay, h4_decay, bloom)``
+
+    Notes in Genshin Impact's free-play instruments ring with a natural one-shot
+    sustain tail regardless of short key-tap duration, while same-pitch restrikes
+    cleanly damp the previous ring across the onset.
     """
     hold_s = hold_ms / 1000.0
     pitch_norm = max(0.0, min(1.0, (pitch - 48) / 36.0))
     if timbre == "piano":
-        # Clear singing studio piano: warm lower register, bell-clear upper octave, longer tail
-        attack_s = 0.0035
-        body_decay = 2.0 + 1.8 * pitch_norm
-        note_dur_s = min(max(hold_s + 0.95, 1.30), 1.70)
-        h2 = 0.42 - 0.14 * pitch_norm
-        h3 = 0.18 - 0.08 * pitch_norm
-        h4 = 0.07 - 0.04 * pitch_norm
-        return attack_s, body_decay, note_dur_s, h2, h3, h4, 4.2, 7.6, 12.0, 0.24
+        # Harmonic Keys piano: generous singing one-shot sustain tail, longest of the 4
+        attack_s = 0.0038
+        body_decay = 1.35 + 1.15 * pitch_norm
+        note_dur_s = min(max(hold_s * 0.35 + 1.85 - 0.45 * pitch_norm, 1.45), 2.30)
+        h2 = 0.38 - 0.14 * pitch_norm
+        h3 = 0.15 - 0.07 * pitch_norm
+        h4 = 0.05 - 0.03 * pitch_norm
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 3.8, 7.0, 11.5, 0.20
     if timbre == "zither":
-        # Silky Chinese plucked zither at exact fundamental pitch (warm midrange, quick shimmer)
-        attack_s = 0.0025
-        body_decay = 3.1 + 1.2 * pitch_norm
-        note_dur_s = min(max(hold_s + 0.48, 0.78), 1.05)
-        h2 = 0.46 - 0.14 * pitch_norm
-        h3 = 0.22 - 0.08 * pitch_norm
-        h4 = 0.10 - 0.05 * pitch_norm
-        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.4, 9.2, 14.5, 0.28
+        # Floral Zither: crisp warm pluck with natural acoustic tail
+        attack_s = 0.0028
+        body_decay = 2.35 + 0.95 * pitch_norm
+        note_dur_s = min(max(hold_s * 0.25 + 1.15 - 0.25 * pitch_norm, 0.92), 1.42)
+        h2 = 0.40 - 0.12 * pitch_norm
+        h3 = 0.18 - 0.07 * pitch_norm
+        h4 = 0.07 - 0.04 * pitch_norm
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.0, 8.8, 13.8, 0.22
     if timbre == "vintage":
-        # Soft woody vintage harp with gentle attack and rounded treble
+        # Vintage Lyre: rounded woody resonance with gentle attack
         attack_s = 0.0070
-        body_decay = 4.0 + 1.0 * pitch_norm
-        note_dur_s = min(max(hold_s + 0.42, 0.68), 0.95)
-        h2 = 0.20 - 0.08 * pitch_norm
-        h3 = 0.05
+        body_decay = 2.65 + 0.85 * pitch_norm
+        note_dur_s = min(max(hold_s * 0.20 + 1.05 - 0.20 * pitch_norm, 0.85), 1.30)
+        h2 = 0.18 - 0.06 * pitch_norm
+        h3 = 0.04
         h4 = 0.0
-        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.8, 10.5, 14.0, 0.08
-    # Default "lyre" — refined crystal plucked harp (smooth refinement of original Windsong Lyre)
+        return attack_s, body_decay, note_dur_s, h2, h3, h4, 5.4, 9.8, 13.5, 0.06
+    # Default "lyre" — clear crystal plucked Windsong Lyre with natural singing tail
     attack_s = 0.0045
-    body_decay = 3.2 + 1.1 * pitch_norm
-    note_dur_s = min(max(hold_s + 0.55, 0.85), 1.15)
-    h2 = 0.36 - 0.10 * pitch_norm
-    h3 = 0.14 - 0.05 * pitch_norm
-    h4 = 0.04
-    return attack_s, body_decay, note_dur_s, h2, h3, h4, 4.8, 8.8, 13.5, 0.16
+    body_decay = 2.0 + 1.0 * pitch_norm
+    note_dur_s = min(max(hold_s * 0.25 + 1.35 - 0.30 * pitch_norm, 1.05), 1.65)
+    h2 = 0.32 - 0.10 * pitch_norm
+    h3 = 0.12 - 0.05 * pitch_norm
+    h4 = 0.03
+    return attack_s, body_decay, note_dur_s, h2, h3, h4, 4.5, 8.2, 13.0, 0.14
 
 
 def _render_note(
@@ -134,7 +138,7 @@ def _render_note(
         return
 
     attack_samples = max(1, min(count, int(round(attack_s * sample_rate))))
-    fade_s = 0.024 if damped else 0.055
+    fade_s = 0.011 if damped else 0.065
     fade_out_len = min(count // 3, max(8, int(round(fade_s * sample_rate))))
     fade_out_start = count - fade_out_len
 
@@ -261,17 +265,17 @@ def synthesize_performance(
     total_samples = max(1, int(math.ceil((max_end_s + _END_PAD_S) * sample_rate)))
     buf = [0.0] * total_samples
 
-    # Damp an active note cleanly before the exact same pitch re-strikes so rapid runs
-    # sound crisp without accumulation or comb-filtering while distinct chord notes ring freely.
+    # Damp an active note cleanly across the onset of a same-pitch retrigger so the first
+    # note's tail sings right up to the second strike and cuts cleanly without click/double-ring.
     next_at_by_pitch: dict[int, int] = {}
     same_pitch_caps: list[int | None] = [None] * len(events)
-    min_cap_samples = max(16, int(round(0.025 * sample_rate)))
+    min_cap_samples = max(16, int(round(0.022 * sample_rate)))
     for idx in range(len(events) - 1, -1, -1):
         pitch = int(events[idx]["mapped_pitch"])
         at_ms = int(events[idx]["at_ms"])
         nxt = next_at_by_pitch.get(pitch)
         if nxt is not None and nxt > at_ms:
-            gap_s = (nxt - at_ms) / 1000.0 + 0.004
+            gap_s = (nxt - at_ms) / 1000.0 + 0.008
             same_pitch_caps[idx] = max(min_cap_samples, int(round(gap_s * sample_rate)))
         next_at_by_pitch[pitch] = at_ms
 

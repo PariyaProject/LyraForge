@@ -1954,4 +1954,98 @@ describe("App", () => {
       vi.useRealTimers();
     }
   });
+
+  it("lets users switch arrangements directly on Playback view and apply timing presets or one-click check", async () => {
+    window.history.replaceState(null, "", "/");
+    const stub = makeStubApi("midi");
+    const arr1: ArrangementRecord = {
+      id: "arr-1",
+      song_id: "song-1",
+      profile_id: "genshin.harmonic_keys.v1",
+      style: "balanced",
+      speed: 1.0,
+      transpose: 0,
+      playable_ratio: 1.0,
+      event_count: 8,
+      duration_ms: 4000,
+      preview_path: null,
+      label: "标准均衡版",
+      created_at: "2026-11-25T00:00:00Z",
+    };
+    const arr2: ArrangementRecord = {
+      ...arr1,
+      id: "arr-2",
+      style: "rich",
+      event_count: 14,
+      label: "丰满高配版",
+    };
+    vi.mocked(stub.getSong).mockResolvedValue({
+      song: {
+        id: "song-1",
+        title: "C Major Scale",
+        artist: "Tester",
+        tags: [],
+        arrangement_count: 2,
+        created_at: "2026-11-25T00:00:00Z",
+        updated_at: "2026-11-25T00:00:00Z",
+      },
+      sources: [{ id: "src-1", kind: "midi", original_name: "scale.mid" }],
+      transcriptions: [],
+      arrangements: [arr1, arr2],
+    });
+    vi.mocked(stub.getArrangement).mockImplementation(async (id: string) => ({
+      arrangement: id === "arr-2" ? arr2 : arr1,
+      performance: {
+        arrangement_id: id,
+        duration_ms: 4000,
+        events: [{ at_ms: 0, key_id: "mid_1", mapped_pitch: 60, hold_ms: 40, source_track: 0 }],
+      },
+      report: {
+        calibration_status: "unverified",
+        stats: {
+          considered_notes: 8,
+          emitted_events: id === "arr-2" ? 14 : 8,
+          octave_folded: 0,
+          semitone_substituted: 0,
+          playable_ratio: 1.0,
+        },
+      },
+    }));
+
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "试听与演奏");
+    await flushPromises();
+
+    // Direct arrangement switcher on Playback page switches without returning to Studio
+    await wrapper.find("#playback-arr-select").setValue("arr-2");
+    await flushPromises();
+    expect(stub.getArrangement).toHaveBeenCalledWith("arr-2");
+    expect(wrapper.text()).toContain("丰满高配版");
+
+    // Scenario preset populates timing inputs immediately
+    const safePresetBtn = wrapper
+      .findAll(".timing-preset-btn")
+      .find((b) => b.text().includes("稳健防吞音"))!;
+    await safePresetBtn.trigger("click");
+    expect((wrapper.find("#playback-release-gap").element as HTMLInputElement).value).toBe("35");
+    expect((wrapper.find("#playback-key-hold").element as HTMLInputElement).value).toBe("30");
+    expect((wrapper.find("#playback-late-policy").element as HTMLSelectElement).value).toBe(
+      "shift_clock",
+    );
+
+    // One-click PC scheduler timing check runs realtime benchmark and offers 1-click recommendation apply
+    await wrapper.find("#playback-quick-check-btn").trigger("click");
+    await flushPromises();
+    expect(stub.runDryCalibration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pattern_id: "same_key_retrigger",
+        realtime: true,
+      }),
+    );
+    expect(wrapper.text()).toContain("本机定时调度极稳");
+    await wrapper.find("#playback-apply-recommended-btn").trigger("click");
+    expect((wrapper.find("#playback-release-gap").element as HTMLInputElement).value).toBe("15");
+    expect((wrapper.find("#playback-key-hold").element as HTMLInputElement).value).toBe("20");
+  });
 });
