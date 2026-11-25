@@ -1,6 +1,17 @@
-import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { mount, type VueWrapper } from "@vue/test-utils";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import PianoRollEditor from "../components/PianoRollEditor.vue";
+
+const mountedWrappers: VueWrapper[] = [];
+function trackMount<T extends VueWrapper>(w: T): T {
+  mountedWrappers.push(w);
+  return w;
+}
+afterEach(() => {
+  while (mountedWrappers.length > 0) {
+    mountedWrappers.pop()?.unmount();
+  }
+});
 
 const KEYS = [
   { key_id: "mid_1", row: "mid", degree: 1, pitch: 60, binding: "a" },
@@ -23,9 +34,11 @@ const EVENTS = [
 
 describe("PianoRollEditor DAW interactions", () => {
   it("supports zoom, snap, keyboard shortcuts, mode switching, and pointer drag", async () => {
-    const wrapper = mount(PianoRollEditor, {
-      props: { keys: KEYS, events: EVENTS },
-    });
+    const wrapper = trackMount(
+      mount(PianoRollEditor, {
+        props: { keys: KEYS, events: EVENTS },
+      }),
+    );
 
     // Zoom & snap controls exist
     const zoomInBtn = wrapper.find('button[aria-label="放大时间轴"]');
@@ -68,29 +81,31 @@ describe("PianoRollEditor DAW interactions", () => {
   });
 
   it("renders full timelines past 60s without grid truncation and supports 25% zoom", async () => {
-    const wrapper = mount(PianoRollEditor, {
-      props: {
-        keys: KEYS,
-        events: [
-          {
-            at_ms: 0,
-            hold_ms: 80,
-            key_id: "mid_1",
-            mapped_pitch: 60,
-            source_track: 0,
-            adjustments: [],
-          },
-          {
-            at_ms: 180_000,
-            hold_ms: 120,
-            key_id: "mid_2",
-            mapped_pitch: 62,
-            source_track: 0,
-            adjustments: [],
-          },
-        ],
-      },
-    });
+    const wrapper = trackMount(
+      mount(PianoRollEditor, {
+        props: {
+          keys: KEYS,
+          events: [
+            {
+              at_ms: 0,
+              hold_ms: 80,
+              key_id: "mid_1",
+              mapped_pitch: 60,
+              source_track: 0,
+              adjustments: [],
+            },
+            {
+              at_ms: 180_000,
+              hold_ms: 120,
+              key_id: "mid_2",
+              mapped_pitch: 62,
+              source_track: 0,
+              adjustments: [],
+            },
+          ],
+        },
+      }),
+    );
 
     const canvas = wrapper.find(".pr-canvas");
     const widthMatch = /(\d+)px/.exec(canvas.attributes("style") ?? "");
@@ -106,34 +121,36 @@ describe("PianoRollEditor DAW interactions", () => {
   });
 
   it("colors notes by track, filters legend focus, multi-selects, duplicates, and discards changes", async () => {
-    const wrapper = mount(PianoRollEditor, {
-      props: {
-        keys: KEYS,
-        melodyTrack: 1,
-        tracks: [
-          { index: 1, name: "Vocal", is_percussion: false, note_count: 10, channels: [0], min_pitch: 60, max_pitch: 72 },
-          { index: 2, name: "Piano", is_percussion: false, note_count: 12, channels: [1], min_pitch: 48, max_pitch: 64 },
-        ],
-        events: [
-          {
-            at_ms: 100,
-            hold_ms: 80,
-            key_id: "mid_1",
-            mapped_pitch: 60,
-            source_track: 1,
-            adjustments: [],
-          },
-          {
-            at_ms: 500,
-            hold_ms: 80,
-            key_id: "mid_2",
-            mapped_pitch: 62,
-            source_track: 2,
-            adjustments: ["octave_folded"],
-          },
-        ],
-      },
-    });
+    const wrapper = trackMount(
+      mount(PianoRollEditor, {
+        props: {
+          keys: KEYS,
+          melodyTrack: 1,
+          tracks: [
+            { index: 1, name: "Vocal", is_percussion: false, note_count: 10, channels: [0], min_pitch: 60, max_pitch: 72 },
+            { index: 2, name: "Piano", is_percussion: false, note_count: 12, channels: [1], min_pitch: 48, max_pitch: 64 },
+          ],
+          events: [
+            {
+              at_ms: 100,
+              hold_ms: 80,
+              key_id: "mid_1",
+              mapped_pitch: 60,
+              source_track: 1,
+              adjustments: [],
+            },
+            {
+              at_ms: 500,
+              hold_ms: 80,
+              key_id: "mid_2",
+              mapped_pitch: 62,
+              source_track: 2,
+              adjustments: ["octave_folded"],
+            },
+          ],
+        },
+      }),
+    );
 
     const notes = wrapper.findAll(".pr-note");
     expect(notes).toHaveLength(2);
@@ -181,24 +198,26 @@ describe("PianoRollEditor DAW interactions", () => {
       { key_id: "mid_1", row: "mid", degree: 1, pitch: 60, binding: "a" },
       { key_id: "high_1", row: "high", degree: 1, pitch: 72, binding: "q" },
     ];
-    const wrapper = mount(PianoRollEditor, {
-      props: {
-        keys: threeOctKeys,
-        melodyTrack: 0,
-        fixedVelocityPreview: true,
-        tracks: [
-          { index: 0, name: "Vocal", is_percussion: false, note_count: 1, channels: [0], min_pitch: 60, max_pitch: 60 },
-          { index: 1, name: "Guitar", is_percussion: false, note_count: 4, channels: [1], min_pitch: 48, max_pitch: 48 },
-        ],
-        events: [
-          { at_ms: 0, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, velocity: 110, adjustments: [] },
-          { at_ms: 100, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
-          { at_ms: 200, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
-          { at_ms: 300, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
-          { at_ms: 520, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
-        ],
-      },
-    });
+    const wrapper = trackMount(
+      mount(PianoRollEditor, {
+        props: {
+          keys: threeOctKeys,
+          melodyTrack: 0,
+          fixedVelocityPreview: true,
+          tracks: [
+            { index: 0, name: "Vocal", is_percussion: false, note_count: 1, channels: [0], min_pitch: 60, max_pitch: 60 },
+            { index: 1, name: "Guitar", is_percussion: false, note_count: 4, channels: [1], min_pitch: 48, max_pitch: 48 },
+          ],
+          events: [
+            { at_ms: 0, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, velocity: 110, adjustments: [] },
+            { at_ms: 100, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+            { at_ms: 200, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+            { at_ms: 300, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+            { at_ms: 520, hold_ms: 80, key_id: "low_1", mapped_pitch: 48, source_track: 1, velocity: 45, adjustments: [] },
+          ],
+        },
+      }),
+    );
 
     // Initially first note (mid_1 @ 0 ms) is selected -> Shift+ArrowUp lifts +1 octave to high_1
     const roll = wrapper.find(".piano-roll-editor");
@@ -224,5 +243,147 @@ describe("PianoRollEditor DAW interactions", () => {
     const clearAccBtn = wrapper.findAll("button").find((b) => b.text().trim() === "清伴奏")!;
     await clearAccBtn.trigger("click");
     expect(wrapper.text()).toContain("1 音符");
+  });
+
+  it("resets playhead on arrangement switch, supports Space/Shift+Space/Home/F, live solo & lyric smart follow", async () => {
+    vi.useFakeTimers();
+    const origAudioCtx = window.AudioContext;
+    const playedHz: number[] = [];
+    class FakeAudioCtx {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      resume = vi.fn().mockResolvedValue(undefined);
+      createGain() {
+        return {
+          gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          connect: vi.fn(),
+        };
+      }
+      createBiquadFilter() {
+        return {
+          type: "lowpass",
+          frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          connect: vi.fn(),
+        };
+      }
+      createOscillator() {
+        return {
+          type: "triangle",
+          frequency: {
+            setValueAtTime: vi.fn((hz: number) => {
+              playedHz.push(Math.round(hz));
+            }),
+          },
+          detune: { setValueAtTime: vi.fn() },
+          connect: vi.fn(),
+          start: vi.fn(),
+          stop: vi.fn(),
+        };
+      }
+    }
+    (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioCtx;
+
+    try {
+      const longKeys = [
+        { key_id: "mid_1", row: "mid", degree: 1, pitch: 60, binding: "a" },
+        { key_id: "mid_5", row: "mid", degree: 5, pitch: 67, binding: "g" },
+      ];
+      const wrapper = mount(PianoRollEditor, {
+        attachTo: document.body,
+        props: {
+          keys: longKeys,
+          arrangementId: "arr-a",
+          profileId: "genshin.harmonic_keys.v1",
+          melodyTrack: 0,
+          tracks: [
+            { index: 0, name: "Vocal", is_percussion: false, note_count: 2, channels: [0], min_pitch: 60, max_pitch: 60 },
+            { index: 1, name: "Guitar", is_percussion: false, note_count: 1, channels: [1], min_pitch: 67, max_pitch: 67 },
+          ],
+          events: [
+            { at_ms: 0, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, adjustments: [] },
+            { at_ms: 15_000, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, adjustments: [] },
+            { at_ms: 15_120, hold_ms: 80, key_id: "mid_5", mapped_pitch: 67, source_track: 1, adjustments: [] },
+            { at_ms: 30_000, hold_ms: 80, key_id: "mid_1", mapped_pitch: 60, source_track: 0, adjustments: [] },
+          ],
+        },
+      });
+
+      const scrollEl = wrapper.find(".pr-scroll").element as HTMLElement;
+      Object.defineProperty(scrollEl, "clientWidth", { value: 480, configurable: true });
+
+      // Click ruler to seek to 15s (approx 1200px at 0.08 px/ms), then pause/resume & test Space shortcut
+      const rulerTrack = wrapper.find(".pr-ruler-track").element as HTMLElement;
+      rulerTrack.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 3000, height: 26, right: 3000, bottom: 26, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+      await wrapper.find(".pr-ruler-track").trigger("click", { clientX: 1200 });
+      expect(wrapper.text()).toContain("0:15 / 0:30");
+
+      // Window-level Space starts draft without canvas focus, then Space pauses while keeping 0:15 playhead
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", cancelable: true }));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-draft-toggle").text()).toContain("暂停草稿");
+
+      // Solo track 0 mid-playback: track 1 (392 Hz, G4) should not trigger after focus changes
+      playedHz.length = 0;
+      const vocalLegend = wrapper.findAll(".pr-legend-btn").find((b) => b.text().includes("Vocal"))!;
+      await vocalLegend.trigger("click");
+      await vi.advanceTimersByTimeAsync(220);
+      expect(playedHz.some((hz) => Math.abs(hz - 262) <= 2)).toBe(true);
+      expect(playedHz.some((hz) => Math.abs(hz - 392) <= 2)).toBe(false);
+
+      // Manual scroll ahead while playing detaches follow & reveals directional return pill
+      scrollEl.scrollLeft = 2400;
+      await wrapper.find(".pr-scroll").trigger("scroll");
+      await wrapper.vm.$nextTick();
+      const returnBtn = wrapper.find("#pr-return-playhead-btn");
+      expect(returnBtn.exists()).toBe(true);
+      expect(returnBtn.text()).toContain("← 回到播放头");
+
+      // Scrolling back near playhead (scrollLeft=1120 puts 15s=1200px visible) auto-reattaches after 400ms
+      scrollEl.scrollLeft = 1120;
+      await wrapper.find(".pr-scroll").trigger("scroll");
+      await vi.advanceTimersByTimeAsync(450);
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
+
+      // Scroll ahead again, then press F to snap back & reattach
+      scrollEl.scrollLeft = 2400;
+      await wrapper.find(".pr-scroll").trigger("scroll");
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(true);
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyF", key: "f", cancelable: true }));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-return-playhead-btn").exists()).toBe(false);
+
+      // Pause retains playhead > 0 ('继续草稿')
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", cancelable: true }));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-draft-toggle").text()).toContain("继续草稿");
+
+      // Shift+Space restarts from 0:00
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", shiftKey: true, cancelable: true }));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.text()).toContain("0:00 / 0:30");
+
+      // Advance briefly then pause at non-zero time, then switch arrangementId -> playhead resets to 0:00!
+      await vi.advanceTimersByTimeAsync(1100);
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", cancelable: true }));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find("#pr-draft-toggle").text()).toContain("继续草稿");
+
+      await wrapper.setProps({ arrangementId: "arr-b" });
+      await wrapper.vm.$nextTick();
+      expect(wrapper.text()).toContain("0:00 / 0:30");
+      expect(wrapper.find("#pr-draft-toggle").text()).toContain("试听草稿");
+
+      // Selecting timbre emits update:previewTimbre
+      await wrapper.find("#pr-timbre-select").setValue("zither");
+      expect(wrapper.emitted("update:previewTimbre")?.[0]).toEqual(["zither"]);
+
+      wrapper.unmount();
+    } finally {
+      (window as unknown as { AudioContext: unknown }).AudioContext = origAudioCtx;
+      vi.useRealTimers();
+    }
   });
 });

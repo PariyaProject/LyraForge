@@ -19,9 +19,16 @@ from lyraforge.music_core.profile import profile_from_dict
 
 
 def test_builtin_windsong_lyre_profile() -> None:
-    assert DEFAULT_PROFILE_ID in list_profile_ids()
-    p = load_builtin_profile(DEFAULT_PROFILE_ID)
+    assert DEFAULT_PROFILE_ID == "genshin.harmonic_keys.v1"
+    ids = list_profile_ids()
+    assert DEFAULT_PROFILE_ID in ids
+    assert "genshin.windsong_lyre.v1" in ids
+    p = load_builtin_profile("genshin.windsong_lyre.v1")
     assert p.id == "genshin.windsong_lyre.v1"
+    hk = load_builtin_profile(DEFAULT_PROFILE_ID)
+    assert hk.id == "genshin.harmonic_keys.v1"
+    assert hk.display_name == "谐律键琴"
+    assert len(hk.keys) == 21
     assert p.game_id == "genshin"
     assert p.kind == "pitched_diatonic"
     assert len(p.keys) == 21
@@ -37,7 +44,7 @@ def test_builtin_windsong_lyre_profile() -> None:
     assert p.key_for_pitch(61) is None
     assert p.key_by_id("mid_1") is not None
     # Deterministic hash
-    assert load_builtin_profile(DEFAULT_PROFILE_ID).hash == p.hash
+    assert load_builtin_profile("genshin.windsong_lyre.v1").hash == p.hash
 
 
 def test_load_profile_file_and_errors(tmp_path: Path) -> None:

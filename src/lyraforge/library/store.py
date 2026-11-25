@@ -54,7 +54,11 @@ from lyraforge.music_core.scoring import score_arrangement
 from lyraforge.pipelines import DEFAULT_PIPELINE_ID, PipelineRequest, get_pipeline
 from lyraforge.playback.guards import StopToken
 from lyraforge.playback.player import PlaybackResult
-from lyraforge.preview.synth import DEFAULT_SAMPLE_RATE, synthesize_performance_to_wav
+from lyraforge.preview.synth import (
+    DEFAULT_SAMPLE_RATE,
+    resolve_timbre,
+    synthesize_performance_to_wav,
+)
 from lyraforge.secrets import SecretStore, default_secret_store, is_sensitive_key
 from lyraforge.transcribers import (
     DEFAULT_TRANSCRIBER_ID,
@@ -1329,6 +1333,11 @@ class LibraryStore:
                 with contextlib.suppress(OSError):
                     resolve_under(self.data_dir, rel).unlink(missing_ok=True)
             with contextlib.suppress(OSError):
+                preview_dir = resolve_under(self.data_dir, f"songs/{rec.song_id}/previews")
+                if preview_dir.is_dir():
+                    for extra_wav in preview_dir.glob(f"{arrangement_id}.*.wav"):
+                        extra_wav.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
                 mid_dir = resolve_under(
                     self.data_dir, f"songs/{rec.song_id}/midis/{arrangement_id}"
                 )
@@ -1517,26 +1526,58 @@ class LibraryStore:
             self._conn.execute("UPDATE songs SET updated_at = ? WHERE id = ?", (now, song_id))
         return self.get_arrangement(arr_id)
 
+    @staticmethod
+    def preview_cache_rel_path(
+        song_id: str,
+        arrangement_id: str,
+        *,
+        fixed_velocity: bool = False,
+        timbre: str = "auto",
+    ) -> str:
+        clean_timbre = (timbre or "auto").strip().lower()
+        # Validate timbre even when set to 'auto'
+        resolve_timbre(None, clean_timbre)
+        timbre_part = "" if clean_timbre == "auto" else f".{clean_timbre}"
+        vel_part = ".fixed" if fixed_velocity else ""
+        return f"songs/{song_id}/previews/{arrangement_id}{timbre_part}{vel_part}.wav"
+
     def render_preview(
         self,
         arrangement_id: str,
         *,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         fixed_velocity: bool = False,
+        timbre: str = "auto",
         stop_token: StopToken | None = None,
     ) -> Path:
         """Synthesize an offline WAV preview for a stored arrangement safely."""
         _check_stop(stop_token, "preview synthesis cancelled")
+        clean_timbre = (timbre or "auto").strip().lower()
+        resolve_timbre(None, clean_timbre)
         rec = self.get_arrangement(arrangement_id)
         doc = self.load_arrangement_performance(arrangement_id)
-        suffix = ".fixed.wav" if fixed_velocity else ".wav"
-        rel_wav = f"songs/{rec.song_id}/previews/{rec.id}{suffix}"
+        rel_wav = self.preview_cache_rel_path(
+            rec.song_id,
+            rec.id,
+            fixed_velocity=fixed_velocity,
+            timbre=clean_timbre,
+        )
         wav_path = resolve_under(self.data_dir, rel_wav)
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_wav = wav_path.parent / f".{rec.id}.{uuid.uuid4().hex[:8]}.preview.tmp.wav"
         stripe_idx = hash(
-            (os.path.normcase(os.path.abspath(os.fspath(self.data_dir))), rec.id, fixed_velocity)
+            (
+                os.path.normcase(os.path.abspath(os.fspath(self.data_dir))),
+                rec.id,
+                fixed_velocity,
+                clean_timbre,
+            )
         ) % len(_PREVIEW_PUBLISH_STRIPES)
+        synth_kwargs: dict[str, Any] = {}
+        if fixed_velocity:
+            synth_kwargs["fixed_velocity"] = True
+        if clean_timbre != "auto":
+            synth_kwargs["timbre"] = clean_timbre
         try:
             _check_stop(stop_token, "preview synthesis cancelled")
             synthesize_performance_to_wav(
@@ -1544,7 +1585,7 @@ class LibraryStore:
                 tmp_wav,
                 sample_rate=sample_rate,
                 is_cancelled=(lambda: stop_token.stopped) if stop_token is not None else None,
-                **({"fixed_velocity": True} if fixed_velocity else {}),
+                **synth_kwargs,
             )
             _check_stop(stop_token, "preview synthesis cancelled")
             with _PREVIEW_PUBLISH_STRIPES[stripe_idx]:
@@ -1552,7 +1593,7 @@ class LibraryStore:
                 atomic_replace_file(tmp_wav, wav_path)
                 now = _utc_now_iso()
                 with self._conn:
-                    if not fixed_velocity:
+                    if not fixed_velocity and clean_timbre == "auto":
                         self._conn.execute(
                             "UPDATE arrangements SET preview_path = ? WHERE id = ?",
                             (rel_wav, rec.id),

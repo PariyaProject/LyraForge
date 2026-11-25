@@ -261,6 +261,7 @@ class PreviewRequest(BaseModel):
     arrangement_id: str
     sample_rate: int = DEFAULT_SAMPLE_RATE
     fixed_velocity: bool = False
+    timbre: str = "auto"
 
 
 class PlaybackPrepareRequest(BaseModel):
@@ -923,38 +924,56 @@ def create_app(
                 req.arrangement_id,
                 sample_rate=req.sample_rate,
                 fixed_velocity=req.fixed_velocity,
+                timbre=req.timbre,
             )
             size_bytes = wav_path.stat().st_size
-        q = "?fixed_velocity=1" if req.fixed_velocity else ""
+        params: list[str] = []
+        if req.fixed_velocity:
+            params.append("fixed_velocity=1")
+        clean_timbre = (req.timbre or "auto").strip().lower()
+        if clean_timbre != "auto":
+            params.append(f"timbre={clean_timbre}")
+        q = f"?{'&'.join(params)}" if params else ""
         return {
             "arrangement_id": req.arrangement_id,
             "preview_url": f"/v1/arrangements/{req.arrangement_id}/preview.wav{q}",
             "size_bytes": size_bytes,
             "sample_rate": req.sample_rate,
             "fixed_velocity": req.fixed_velocity,
+            "timbre": clean_timbre,
         }
 
     @app.get(
         "/v1/arrangements/{arrangement_id}/preview.wav",
         dependencies=[Depends(require_token)],
     )
-    def get_preview_wav(arrangement_id: str, fixed_velocity: bool = False) -> Response:
+    def get_preview_wav(
+        arrangement_id: str,
+        fixed_velocity: bool = False,
+        timbre: str = "auto",
+    ) -> Response:
         with open_store() as store:
             rec = store.get_arrangement(arrangement_id)
+            clean_timbre = (timbre or "auto").strip().lower()
+            cache_rel = store.preview_cache_rel_path(
+                rec.song_id,
+                rec.id,
+                fixed_velocity=fixed_velocity,
+                timbre=clean_timbre,
+            )
             wav_path: Path | None = None
-            if fixed_velocity:
-                candidate = resolve_under(
-                    store.data_dir, f"songs/{rec.song_id}/previews/{rec.id}.fixed.wav"
-                )
-                if candidate.is_file():
-                    wav_path = candidate
-            elif rec.preview_path:
-                candidate = resolve_under(store.data_dir, rec.preview_path)
-                if candidate.is_file():
-                    wav_path = candidate
+            candidate = resolve_under(store.data_dir, cache_rel)
+            if candidate.is_file():
+                wav_path = candidate
+            elif not fixed_velocity and clean_timbre == "auto" and rec.preview_path:
+                legacy = resolve_under(store.data_dir, rec.preview_path)
+                if legacy.is_file():
+                    wav_path = legacy
             if wav_path is None:
                 wav_path = store.render_preview(
-                    arrangement_id, fixed_velocity=fixed_velocity
+                    arrangement_id,
+                    fixed_velocity=fixed_velocity,
+                    timbre=clean_timbre,
                 )
             data = wav_path.read_bytes()
         return Response(content=data, media_type="audio/wav")

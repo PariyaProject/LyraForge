@@ -1614,5 +1614,50 @@ describe("App", () => {
     await refreshPreviewBtn.trigger("click");
     await flushPromises();
     expect(stub.fetchPreviewAudioUrl).toHaveBeenLastCalledWith("arr-dyn", false);
+
+    // Changing Piano Roll timbre selector forwards explicit timbre to offline WAV preview
+    await wrapper.find("#pr-timbre-select").setValue("piano");
+    await refreshPreviewBtn.trigger("click");
+    await flushPromises();
+    expect(stub.fetchPreviewAudioUrl).toHaveBeenLastCalledWith("arr-dyn", false, "piano");
+  });
+
+  it("defaults to genshin.harmonic_keys.v1 when offered first by backend", async () => {
+    const stub = makeStubApi("midi");
+    vi.mocked(stub.listSongs).mockResolvedValue({ songs: [] });
+    vi.mocked(stub.listProfiles).mockResolvedValue({
+      profiles: [
+        {
+          id: "genshin.harmonic_keys.v1",
+          display_name: "谐律键琴",
+          key_count: 21,
+          calibration_status: "unverified",
+        },
+        {
+          id: "genshin.windsong_lyre.v1",
+          display_name: "风物之诗琴",
+          key_count: 21,
+          calibration_status: "unverified",
+        },
+      ],
+    });
+    vi.mocked(stub.getProfile).mockResolvedValue({
+      id: "genshin.harmonic_keys.v1",
+      display_name: "谐律键琴",
+      key_count: 21,
+      calibration: { status: "unverified" },
+      keys: [
+        { key_id: "high_1", row: "high", degree: 1, pitch: 72, binding: "Q" },
+        { key_id: "mid_1", row: "mid", degree: 1, pitch: 60, binding: "A" },
+        { key_id: "low_1", row: "low", degree: 1, pitch: 48, binding: "Z" },
+      ],
+    });
+    const wrapper = mount(App, { props: { client: stub } });
+    await flushPromises();
+    await clickNav(wrapper, "编曲工作室");
+    await flushPromises();
+    expect((wrapper.find("#profile-select").element as HTMLSelectElement).value).toBe(
+      "genshin.harmonic_keys.v1",
+    );
   });
 });

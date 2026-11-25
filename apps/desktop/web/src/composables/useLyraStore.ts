@@ -20,6 +20,7 @@ import {
   type PipelineInfo,
   type PlaybackPrepareResponse,
   type PlaybackStatusResponse,
+  type PreviewTimbre,
   type ProfileDetail,
   type ProfileSummary,
   type QueueState,
@@ -126,7 +127,7 @@ export function createLyraStore(api: LyraForgeApi) {
 
   const health = ref<HealthResponse | null>(null);
   const profiles = ref<ProfileSummary[]>([]);
-  const selectedProfileId = ref("genshin.windsong_lyre.v1");
+  const selectedProfileId = ref("genshin.harmonic_keys.v1");
   const profile = ref<ProfileDetail | null>(null);
   const transcribers = ref<TranscriberInfo[]>([]);
   const pipelines = ref<PipelineInfo[]>([...DEFAULT_PIPELINES]);
@@ -197,6 +198,7 @@ export function createLyraStore(api: LyraForgeApi) {
   const previewPlaying = ref(false);
   const previewSeekTargetMs = ref<number | null>(null);
   const gameFixedPreview = ref(true);
+  const previewTimbre = ref<PreviewTimbre>("auto");
 
   function toggleGameFixedPreview(): void {
     gameFixedPreview.value = !gameFixedPreview.value;
@@ -1146,10 +1148,14 @@ export function createLyraStore(api: LyraForgeApi) {
     errorMessage.value = "";
     clearPreviewUrl();
     try {
-      previewUrl.value = await api.fetchPreviewAudioUrl(
-        selectedArrId.value,
-        gameFixedPreview.value,
-      );
+      previewUrl.value =
+        previewTimbre.value === "auto"
+          ? await api.fetchPreviewAudioUrl(selectedArrId.value, gameFixedPreview.value)
+          : await api.fetchPreviewAudioUrl(
+              selectedArrId.value,
+              gameFixedPreview.value,
+              previewTimbre.value,
+            );
       reportOk(
         gameFixedPreview.value
           ? "已合成游戏固定力度试听 WAV，请点击播放器试听"
@@ -1888,6 +1894,7 @@ export function createLyraStore(api: LyraForgeApi) {
     previewPlaying,
     previewSeekTargetMs,
     gameFixedPreview,
+    previewTimbre,
     toggleGameFixedPreview,
     updatePreviewPlayback,
     requestPreviewSeek,

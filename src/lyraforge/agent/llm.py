@@ -137,8 +137,12 @@ class RuleBasedLLMProvider:
                 local_path = path_match.group(1)
 
         profile_id = str(ctx.get("instrument_profile_id") or DEFAULT_PROFILE_ID)
-        if any(tok in low for tok in ("镜花", "floral", "zither")):
+        if any(tok in low for tok in ("谐律", "键琴", "钢琴", "harmonic", "piano")):
+            profile_id = "genshin.harmonic_keys.v1"
+        elif any(tok in low for tok in ("镜花", "floral", "zither")):
             profile_id = "genshin.floral_zither.v1"
+        elif any(tok in low for tok in ("老旧", "vintage")):
+            profile_id = "genshin.vintage_lyre.v1"
         elif any(tok in low for tok in ("风物", "诗琴", "windsong", "lyre")):
             profile_id = "genshin.windsong_lyre.v1"
         if profile_id not in list_profile_ids():

@@ -352,6 +352,7 @@ export interface ArrangementDetailResponse {
 
 export type TimingMode = "adapted" | "strict_fidelity";
 export type LateEventPolicy = "shift_clock" | "drop_late" | "catch_up";
+export type PreviewTimbre = "auto" | "piano" | "lyre" | "zither" | "vintage";
 
 export interface PlaybackPrepareResponse {
   prepare_token: string;
@@ -842,22 +843,40 @@ export class LyraForgeApi {
     });
   }
 
-  async fetchPreviewAudioUrl(arrangementId: string, fixedVelocity = false): Promise<string> {
+  async fetchPreviewAudioUrl(
+    arrangementId: string,
+    fixedVelocity = false,
+    timbre: PreviewTimbre = "auto",
+  ): Promise<string> {
     const headers = new Headers();
     if (this.token) {
       headers.set("X-LyraForge-Token", this.token);
     }
+    const cleanTimbre: PreviewTimbre = timbre || "auto";
+    const bodyPayload: {
+      arrangement_id: string;
+      fixed_velocity: boolean;
+      timbre?: PreviewTimbre;
+    } = {
+      arrangement_id: arrangementId,
+      fixed_velocity: fixedVelocity,
+    };
+    if (cleanTimbre !== "auto") {
+      bodyPayload.timbre = cleanTimbre;
+    }
     const resp = await fetch(`${this.base}/v1/preview`, {
       method: "POST",
       headers: { ...Object.fromEntries(headers.entries()), "Content-Type": "application/json" },
-      body: JSON.stringify({ arrangement_id: arrangementId, fixed_velocity: fixedVelocity }),
+      body: JSON.stringify(bodyPayload),
     });
     if (!resp.ok) {
       throw new Error(`预览生成失败 (HTTP ${resp.status})`);
     }
-    let previewPath = `/v1/arrangements/${encodeURIComponent(arrangementId)}/preview.wav${
-      fixedVelocity ? "?fixed_velocity=true" : ""
-    }`;
+    const fallbackParams: string[] = [];
+    if (fixedVelocity) fallbackParams.push("fixed_velocity=true");
+    if (cleanTimbre !== "auto") fallbackParams.push(`timbre=${encodeURIComponent(cleanTimbre)}`);
+    const fallbackQuery = fallbackParams.length > 0 ? `?${fallbackParams.join("&")}` : "";
+    let previewPath = `/v1/arrangements/${encodeURIComponent(arrangementId)}/preview.wav${fallbackQuery}`;
     if (typeof resp.json === "function") {
       try {
         const meta = (await resp.json()) as { preview_url?: string };

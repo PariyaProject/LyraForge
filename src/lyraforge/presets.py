@@ -59,6 +59,7 @@ class ArrangePreset:
 
 
 _PROFILE_IDS: tuple[str, ...] = (
+    "genshin.harmonic_keys.v1",
     "genshin.windsong_lyre.v1",
     "genshin.floral_zither.v1",
     "genshin.vintage_lyre.v1",

@@ -9,7 +9,7 @@ from pathlib import Path
 from lyraforge.errors import ErrorCode, LyraError
 from lyraforge.music_core.profile import InstrumentProfile, profile_from_dict
 
-DEFAULT_PROFILE_ID = "genshin.windsong_lyre.v1"
+DEFAULT_PROFILE_ID = "genshin.harmonic_keys.v1"
 _DATA_PACKAGE = "lyraforge.instruments.data"
 
 

@@ -112,6 +112,10 @@ def test_rule_based_llm_provider_parses_intents() -> None:
     assert i4.action == "adjust"
     assert i4.transpose_delta == 2
 
+    i5 = llm.parse_intent("帮我找 星空 转成谐律键琴钢琴主旋律")
+    assert i5.action == "arrange"
+    assert i5.instrument_profile_id == "genshin.harmonic_keys.v1"
+
     with pytest.raises(LyraError) as empty_exc:
         llm.parse_intent("   ")
     assert empty_exc.value.code == ErrorCode.INVALID_ARGUMENT

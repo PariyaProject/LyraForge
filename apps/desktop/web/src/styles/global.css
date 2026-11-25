@@ -1470,6 +1470,23 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .pr-viewport-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-block-size: 260px;
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+  }
+
+  .pr-return-playhead-btn {
+    position: absolute;
+    inset-block-start: var(--space-sm);
+    inset-inline-end: var(--space-md);
+    z-index: 12;
+    border-radius: var(--radius-pill);
+  }
+
   .pr-scroll {
     flex: 1 1 auto;
     min-block-size: 260px;
