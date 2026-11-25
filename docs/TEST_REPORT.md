@@ -678,5 +678,8 @@
    - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
    - **纯 Python 合成基准（`genshin.harmonic_keys.v1`, 150 音富和弦谱）**：`0.829s` 生成 `459,566` 字节 WAV；采样包总占用 `1.4 MB`；
    - **CSS 设计规范扫描**：`apps/desktop/web/src/` 下除 `tokens.css` 外零字面量色值。
+   - **GitHub PR、双平台 CI 与 `dev-latest` 发布验证**：
+     - [PR #32](https://github.com/PariyaProject/LyraForge/pull/32)（`43b748d`）→ PR CI [Run #45553263693](https://github.com/PariyaProject/LyraForge/actions/runs/45553263693) 全部 4 项活动作业（`Test (windows-latest, Python 3.11)`、`Test (macos-latest, Python 3.11)`、`Build Windows Bundle (PyInstaller)` 含 `lyraforge/preview/samples/` payload 检查、`Build macOS Bundle (PyInstaller)`）均为 `success`；
+     - Squash 合入 `main`（`451a1d6`）→ 合并后 `main` CI [Run #45553803862](https://github.com/PariyaProject/LyraForge/actions/runs/45553803862) 全部 5 项作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物（`2026-11-25T05:32:57Z`）：`LyraForge-dev-20261125-451a1d6-windows-x64.zip`、`LyraForge-dev-20261125-451a1d6-macos-arm64.zip`、`SHA256SUMS.txt`。
 3. **验证边界说明**：
-   - 浏览器真声样本解码与《原神》实机谐律键琴真机演奏听感仍待维护者在双平台 CI 产物或本地桌面窗中实际试听确认（本轮自动化测试运行在 `FakeAudioCtx` 与本地 FastAPI/Pytest 环境下）。
+   - 物理 Windows 10/11 客户端下 CC0 原声采样音色的实际桌面听感、PyInstaller 窗口启动体验，以及《原神》实机谐律键琴演奏表现，仍待用户在下载最新 `dev-latest` 构建后现场确认（自动化端到端浏览器采样路径已在 `FakeAudioCtx` 与本地 FastAPI/Pytest 环境下验证通过）。
