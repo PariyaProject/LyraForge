@@ -731,5 +731,8 @@
    - `make smoke` → 退出码 `0`（`OK: 24 events, profile genshin.harmonic_keys.v1 (hash verified)`）；
    - CSS 字面量色值扫描（除 `tokens.css` 与 `__tests__` 外）：`CSS_MATCHES: 0`；
    - **纯 Python 150 音合成基准**：`piano 1.827s`、`lyre 1.737s`、`zither 1.690s`、`vintage 1.458s`（峰值 `0.916–0.919 <= 1.0`）。
+   - **GitHub PR、双平台 CI 与 `dev-latest` 发布验证**：
+     - [PR #34](https://github.com/PariyaProject/LyraForge/pull/34)（`e4a00e8`）→ PR CI [Run #45604103273](https://github.com/PariyaProject/LyraForge/actions/runs/45604103273) 全部 4 项活动作业（`Test (macos-latest, Python 3.11)`、`Test (windows-latest, Python 3.11)`、`Build Windows Bundle (PyInstaller)`、`Build macOS Bundle (PyInstaller)`）均为 `success`；
+     - Squash 合入 `main`（`840198d`）→ 合并后 `main` CI [Run #45604963223](https://github.com/PariyaProject/LyraForge/actions/runs/45604963223) 初次 `windows-latest` 遇到历史子进程管道耗时偶发抖动（`test_subprocess_derived_process_tree_timeout_cancel_orphan_pipes_and_stress`），重跑失败作业后全部 5 作业（含 `Publish Desktop Releases (Windows & macOS)`）均为 `success`，已更新双平台 [`dev-latest`](https://github.com/PariyaProject/LyraForge/releases/tag/dev-latest) 产物：`LyraForge-dev-20261125-840198d-windows-x64.zip`、`LyraForge-dev-20261125-840198d-macos-arm64.zip`、`SHA256SUMS.txt`。
 5. **验证边界说明**：
    - 物理 Windows 10/11 佩戴耳机实听效果与《原神》实机窗口手感/防吞音预设匹配度仍待用户在下载合入后新版 `dev-latest` 上最终验证。
